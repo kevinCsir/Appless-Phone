@@ -44,6 +44,8 @@ export struct HtmlHomeSurfaceView {
   @Prop @Watch('onMultiTaskPayloadChange') multiTaskPayloadTick: number = 0;
   @Prop @Watch('onWaterfallPayloadChange') waterfallPayloadJson: string = '';
   @Prop @Watch('onWaterfallPayloadChange') waterfallPayloadTick: number = 0;
+  @Prop @Watch('onSuggestedActionsPayloadChange') suggestedActionsPayloadJson: string = '';
+  @Prop @Watch('onSuggestedActionsPayloadChange') suggestedActionsPayloadTick: number = 0;
   @Prop @Watch('onMailDetailEventChange') mailDetailEventJson: string = '';
   @Prop @Watch('onMailReplyEventChange') mailReplyEventJson: string = '';
   @Prop @Watch('onMailCalendarEventChange') mailCalendarEventJson: string = '';
@@ -65,6 +67,8 @@ export struct HtmlHomeSurfaceView {
   private lastMultiTaskPayloadTick: number = -1;
   private lastWaterfallPayloadJson: string = '';
   private lastWaterfallPayloadTick: number = -1;
+  private lastSuggestedActionsPayloadJson: string = '';
+  private lastSuggestedActionsPayloadTick: number = -1;
   private appliedLuckinPatchTick: number = -1;
   @State private popupVisible: boolean = false;
   @State private popupTitle: string = '支付确认';
@@ -106,6 +110,8 @@ export struct HtmlHomeSurfaceView {
       this.lastMultiTaskPayloadTick = -1;
       this.lastWaterfallPayloadJson = '';
       this.lastWaterfallPayloadTick = -1;
+      this.lastSuggestedActionsPayloadJson = '';
+      this.lastSuggestedActionsPayloadTick = -1;
       this.appliedLuckinPatchTick = this.luckinInlinePatchTick;
       aiLogInfo('[AIPhone][HtmlHomeSurfaceLoad] chars=' + this.html.length.toString() +
         ' renderTick=' + this.renderTick.toString() +
@@ -149,6 +155,37 @@ export struct HtmlHomeSurfaceView {
         ' payloadChars=' + this.waterfallPayloadJson.length.toString());
     } catch (error) {
       aiLogError('[AIPhone][HtmlHomeWaterfallPushError] ' + JSON.stringify(error));
+    }
+  }
+
+  onSuggestedActionsPayloadChange(): void {
+    this.pushSuggestedActionsPayloadIfNeeded();
+  }
+
+  private pushSuggestedActionsPayloadIfNeeded(): void {
+    if (this.suggestedActionsPayloadJson.length === 0 ||
+      (this.suggestedActionsPayloadJson === this.lastSuggestedActionsPayloadJson &&
+        this.suggestedActionsPayloadTick === this.lastSuggestedActionsPayloadTick)) {
+      return;
+    }
+    if (!this.webReady) {
+      aiLogInfo('[AIPhone][HtmlHomeSuggestedActionsPushDeferred] tick=' +
+        this.suggestedActionsPayloadTick.toString());
+      return;
+    }
+    try {
+      const encoded = JSON.stringify(this.suggestedActionsPayloadJson);
+      this.controller.runJavaScript(
+        'if (window.__aiphoneApplySuggestedActions) {' +
+        ' window.__aiphoneApplySuggestedActions(JSON.parse(' + encoded + ')); }'
+      );
+      this.lastSuggestedActionsPayloadJson = this.suggestedActionsPayloadJson;
+      this.lastSuggestedActionsPayloadTick = this.suggestedActionsPayloadTick;
+      aiLogInfo('[AIPhone][HtmlHomeSuggestedActionsPush] tick=' +
+        this.suggestedActionsPayloadTick.toString() +
+        ' payloadChars=' + this.suggestedActionsPayloadJson.length.toString());
+    } catch (error) {
+      aiLogError('[AIPhone][HtmlHomeSuggestedActionsPushError] ' + JSON.stringify(error));
     }
   }
 
@@ -321,6 +358,7 @@ export struct HtmlHomeSurfaceView {
           this.loadHtmlIfNeeded();
           this.pushMultiTaskPayloadIfNeeded();
           this.pushWaterfallPayloadIfNeeded();
+          this.pushSuggestedActionsPayloadIfNeeded();
           this.pushMailDetailEventIfNeeded();
           this.pushMailReplyEventIfNeeded();
           this.pushMailCalendarEventIfNeeded();

@@ -1,6 +1,7 @@
 import {
   ActionCatalog,
   ActionExecutionContext,
+  AgentMessage,
   ActionOfferResolver,
   ActionPlanCompiler,
   A2uiAction,
@@ -15,6 +16,8 @@ import {
   LeaderPlanningContext,
   LinkedMessageBus,
   RegisteredActionExecutor,
+  SuggestedActionPreparer,
+  SuggestedActionStatusPayload,
   TurnResultStatus,
   UiLayoutPlanner,
   UiSurfaceWriter,
@@ -67,6 +70,11 @@ export interface MultiAgentRuntimeOptions {
   dataPlanner?: DataTaskPlanner;
   actionCompiler?: ActionPlanCompiler;
   virtualActionResolver?: VirtualActionIntentResolver;
+  suggestedActionPreparer?: SuggestedActionPreparer;
+  suggestedActionStatusObserver?: (
+    message: AgentMessage,
+    status: SuggestedActionStatusPayload
+  ) => void;
   submitTimeoutMs?: number;
   actionTimeoutMs?: number;
   settingsFingerprint?: string;

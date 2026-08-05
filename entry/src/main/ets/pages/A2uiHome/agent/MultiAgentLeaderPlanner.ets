@@ -1,5 +1,6 @@
 import {
   AgentMessage,
+  aiLogInfo,
   calendarEventRequiredFields,
   calendarMissingArgsResult,
   ConversationContext,
@@ -22,6 +23,7 @@ import {
   LeaderUiIntent,
   LocalModel,
   MAX_LEADER_DATA_TASKS_PER_ROUND,
+  MAX_LEADER_SUGGESTED_GOALS,
   normalizedCalendarArgsForPrompt,
   ObservationDigest,
   leaderActionCapabilityIds,
@@ -39,7 +41,11 @@ const DECISION_KEYS: string[] = [
   'dataTasks,personaId,requestedCapabilityIds,roundAction,skillId,uiIntent',
   'answer,dataTasks,personaId,requestedCapabilityIds,roundAction,skillId,uiIntent',
   'actionIntent,dataTasks,personaId,requestedCapabilityIds,roundAction,skillId,uiIntent',
-  'actionIntent,answer,dataTasks,personaId,requestedCapabilityIds,roundAction,skillId,uiIntent'
+  'actionIntent,answer,dataTasks,personaId,requestedCapabilityIds,roundAction,skillId,uiIntent',
+  'dataTasks,personaId,requestedCapabilityIds,roundAction,skillId,suggestedGoals,uiIntent',
+  'answer,dataTasks,personaId,requestedCapabilityIds,roundAction,skillId,suggestedGoals,uiIntent',
+  'actionIntent,dataTasks,personaId,requestedCapabilityIds,roundAction,skillId,suggestedGoals,uiIntent',
+  'actionIntent,answer,dataTasks,personaId,requestedCapabilityIds,roundAction,skillId,suggestedGoals,uiIntent'
 ];
 const DATA_TASK_KEYS: string = 'allowedToolIds,goal,input,localId,required,toolId';
 const UI_INTENT_KEYS: string = 'preferredDensity,purpose,requiredSections';
@@ -63,7 +69,8 @@ const FULL_DECISION_CONTRACT: string =
   'roundAction, continuationMode, dataTasks, and uiIntent. For answer or clarify, set continuationMode to complete, ' +
   'set dataTasks to [], and include a non-empty answer. ' +
   'uiIntent must contain exactly purpose, preferredDensity, and requiredSections. Choose purpose, preferredDensity, ' +
-  'and requiredSections from the current user request and real recentObservations when present; never omit them.';
+  'and requiredSections from the current user request and real recentObservations when present; never omit them. ' +
+  'When a rejected decision contains valid suggestedGoals, preserve them exactly through repair.';
 const BIM_FIELD_RULES: string =
   'bimSuggestion is optional. Include it only when the subject remains useful after this answer, ' +
   'needs later progress, and has a stable boundary. Omit it for one-off lookup, explanation, ' +
@@ -96,10 +103,44 @@ const REQUEST_SCOPE_CONTRACT: string =
   'mail or email. Explicit multi-domain requests remain valid and should keep independent tasks in the same round. ' +
   'Before returning JSON, silently scope-check every requestedCapabilityId, Data task, allowed tool, and Action ' +
   'against that closed set; do not output the check.';
+const SUGGESTED_GOALS_CONTRACT: string =
+  'suggestedGoals predicts plausible next user intentions from the current request and trusted context. ' +
+  'It is a top-level field of LeaderDecision, beside dataTasks and actionIntent. Every first-round execute ' +
+  'decision must include suggestedGoals as a JSON array of 1 to ' +
+  MAX_LEADER_SUGGESTED_GOALS.toString() + ' unique strings. Each string must be a standalone natural-language ' +
+  'goal written in Chinese from a third-person perspective and must start with "帮用户". ' +
+  'Do not omit suggestedGoals from a first-round execute decision. Omit it for answer or clarify decisions and ' +
+  'for every later planning round. Do not emit [], null, a single string, or an array of objects. ' +
+  'Suggested goals may be exploratory and may be emitted whenever they are related to the current request. ' +
+  'They do not need to be strongly related or limited to content explicitly present in the context, but they ' +
+  'must never be fully contained by the user\'s original request. ' +
+  'Suggestions are not part of the current request scope: never add them to requestedCapabilityIds, dataTasks, ' +
+  'or actionIntent. Downstream modules decide implementability, so do not ' +
+  'restrict suggestions to available tools and do not mention tool IDs, agents, schemas, or implementation steps. ' +
+  'A suggestion is contained by the current request and is invalid when completing the ' +
+  'current request would already provide the requested information or operation without a new entity, scope, ' +
+  'time, target, constraint, operation, or communication channel. Similarity alone is allowed: a different ' +
+  'grounded entity or scope is valid when the current result would not satisfy it. ' +
+  'Every goal must carry enough known parameters to be understood and attempted independently. Preserve an ' +
+  'explicit place for nearby hotel, food, or other local searches; preserve known date or time for reminders; ' +
+  'and preserve known recipient and channel for communication. ' +
+  'Downstream modules receive only the suggested goal and do not receive the rest of the context, so each suggested ' +
+  'goal itself must include necessary parameter information such as a place or time. ' +
+  'Resolve vague references such as "附近", "那里", "它", or "他" to explicit entities already present in ' +
+  'the request or trusted context. Never invent missing facts such as weather conditions, dates, addresses, ' +
+  'recipients, trip duration, or preferences. ' +
+  'Correct scope-change example: when the current request asks for Shenzhen weather and trusted context also ' +
+  'mentions Beijing, {"suggestedGoals":["帮用户查询北京天气"]} is valid because Shenzhen weather does not ' +
+  'satisfy a Beijing weather request. ' +
+  'When the user asks "帮我查询XX（某地）附近的酒店", ' +
+  '{"suggestedGoals":["帮用户查询XX附近的美食"]} is valid because it includes the required place parameter XX. ' +
+  'For the current request "帮我查询从A到B的路线", ' +
+  '{"suggestedGoals":["帮用户查询B附近的酒店","帮用户查询B附近的美食"]} is valid because the original route ' +
+  'request provides neither hotel nor food information near B.';
 const LEADER_SYSTEM_PROMPT: string = 'Return exactly one JSON object and nothing else. ' +
   'Do not include Thought, markdown, or code fences. ' + ANSWER_FIELD_RULE + ' ' + REASON_CODE_FIELD_RULE + ' ' +
-  CONTINUATION_MODE_FIELD_RULE + ' ' + REQUEST_SCOPE_CONTRACT + ' ' + FULL_DECISION_CONTRACT + ' ' +
-  BIM_FIELD_RULES;
+  CONTINUATION_MODE_FIELD_RULE + ' ' + REQUEST_SCOPE_CONTRACT + ' ' + SUGGESTED_GOALS_CONTRACT + ' ' +
+  FULL_DECISION_CONTRACT + ' ' + BIM_FIELD_RULES;
 const REPAIR_INSTRUCTION: string = 'Correction: previous decision rejected by strict schema. ' +
   'Return one corrected decision matching the schema exactly. ' + FULL_DECISION_CONTRACT;
 const BIM_MEMORY_UPDATE_REPAIR_INSTRUCTION: string =
@@ -393,11 +434,14 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
       if (error instanceof Error && error.message === SAME_ROUND_DEPENDENCY_ERROR) {
         throw error;
       }
-      if (signal === undefined || !signal()) {
+      const repairAllowed: boolean = signal !== undefined && signal();
+      if (!repairAllowed) {
         const failure: Error = error instanceof Error ? error :
           new Error('Leader decision failed strict validation.');
         throw failure;
       }
+      aiLogInfo('[AIPhone][LeaderDecisionValidation] status=rejected round=' + round.toString() +
+        ' reason=' + (error instanceof Error ? error.message : 'unknown') + ' repair=true');
       if (error instanceof Error && error.message === EXPLICIT_MAPS_SELECTION_ERROR) {
         const repaired: string = await this.completeBounded(
           prompt + '\n' + EXPLICIT_MAPS_SELECTION_REPAIR_INSTRUCTION +
@@ -718,6 +762,7 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
       original.roundAction !== repaired.roundAction ||
       original.answer !== repaired.answer ||
       !this.sameStrings(original.requestedCapabilityIds, repaired.requestedCapabilityIds) ||
+      !this.sameOptionalStrings(original.suggestedGoals, repaired.suggestedGoals) ||
       original.uiIntent.purpose !== repaired.uiIntent.purpose ||
       original.uiIntent.preferredDensity !== repaired.uiIntent.preferredDensity ||
       !this.sameStrings(original.uiIntent.requiredSections, repaired.uiIntent.requiredSections) ||
@@ -758,6 +803,7 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
       original.answer !== repaired.answer ||
       original.reasonCode !== repaired.reasonCode ||
       !this.sameStrings(original.requestedCapabilityIds, repaired.requestedCapabilityIds) ||
+      !this.sameOptionalStrings(original.suggestedGoals, repaired.suggestedGoals) ||
       original.uiIntent.purpose !== repaired.uiIntent.purpose ||
       original.uiIntent.preferredDensity !== repaired.uiIntent.preferredDensity ||
       !this.sameStrings(original.uiIntent.requiredSections, repaired.uiIntent.requiredSections) ||
@@ -840,6 +886,16 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
       }
     }
     return true;
+  }
+
+  private sameOptionalStrings(
+    original: string[] | undefined,
+    repaired: string[] | undefined
+  ): boolean {
+    if (original === undefined || repaired === undefined) {
+      return original === undefined && repaired === undefined;
+    }
+    return this.sameStrings(original, repaired);
   }
 
   private sameRepairScope(
@@ -1653,6 +1709,8 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
         '"toolId":"string","input":{},"required":true}],"uiIntent":{' +
         '"purpose":"string","preferredDensity":"string","requiredSections":["string"]},' +
         '"actionIntent":{"goal":"string","allowedActionIds":["string"]} optional,' +
+        '"suggestedGoals":["帮用户..."] required top-level array of 1 to ' +
+        MAX_LEADER_SUGGESTED_GOALS.toString() + ' strings for first-round execute; omit otherwise,' +
         '"answer":"required non-empty string for answer|clarify; omit for execute",' +
         '"bimSuggestion":{"title":"string","summary":"string","reason":"string",' +
         '"keywords":["string"]} optional,"bimContextUpdate":{"summary":"string",' +
@@ -1701,6 +1759,7 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
       OBSERVATION_REUSE_CONTRACT,
       DATA_SCOPE_CONTRACT,
       EXPLICIT_SERIAL_SEQUENCE_CONTRACT,
+      SUGGESTED_GOALS_CONTRACT,
       BIM_FIELD_RULES,
       'Never emit provider facts, action args, A2UI, credentials, or unregistered tool IDs.',
       hotelSearchPlanningContract(currentLocalDate),
@@ -1803,6 +1862,7 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
       .filter((key: string): boolean => key !== 'reasonCode' && key !== 'continuationMode')
       .filter((key: string): boolean => key !== 'bimSuggestion')
       .filter((key: string): boolean => key !== 'bimContextUpdate')
+      .filter((key: string): boolean => key !== 'suggestedGoals')
       .sort()
       .join(',');
     if (DECISION_KEYS.indexOf(decisionKeys) < 0) {
@@ -1820,6 +1880,7 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
     const rawRequestedCapabilities = values['requestedCapabilityIds'];
     const rawBimSuggestion = values['bimSuggestion'];
     const rawBimContextUpdate = values['bimContextUpdate'];
+    const rawSuggestedGoals = values['suggestedGoals'];
     if (typeof personaId !== 'string' || personaId.trim().length === 0 ||
       typeof skillId !== 'string' ||
       !this.validRoundAction(roundAction) ||
@@ -1865,9 +1926,14 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
         }
       }
     }
+    const suggestedGoals: string[] | null = rawSuggestedGoals === undefined ? null :
+      this.parseSuggestedGoals(rawSuggestedGoals);
     if ((selectedAction === 'execute' && tasks.length === 0 && actionIntent === null) ||
       (selectedAction !== 'execute' && tasks.length !== 0)) {
       throw new Error('Leader round action does not match its Data tasks.');
+    }
+    if (suggestedGoals !== null && selectedAction !== 'execute') {
+      throw new Error('Leader suggested goals are allowed only for execute decisions.');
     }
     if (continuationMode !== undefined && continuationMode !== 'complete' &&
       (selectedAction !== 'execute' || tasks.length === 0)) {
@@ -1928,6 +1994,9 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
       }
     } else if (hasBimContext && decision.roundAction !== 'execute') {
       throw new Error('Leader terminal BIM decision requires a context update.');
+    }
+    if (suggestedGoals !== null) {
+      decision.suggestedGoals = suggestedGoals;
     }
     return decision;
   }
@@ -2076,6 +2145,26 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
         throw new Error(label + ' must contain unique bounded non-empty strings.');
       }
       result.push(canonical);
+    }
+    return result;
+  }
+
+  private parseSuggestedGoals(
+    value: Object | string | number | boolean | null
+  ): string[] {
+    if (!Array.isArray(value) || value.length === 0 ||
+      value.length > MAX_LEADER_SUGGESTED_GOALS) {
+      throw new Error('Leader suggestedGoals must be a bounded non-empty string array.');
+    }
+    const raw = value as Object[];
+    const result: string[] = [];
+    for (let index = 0; index < raw.length; index++) {
+      const goal: Object = raw[index];
+      if (typeof goal !== 'string' || goal.trim().length === 0 || goal !== goal.trim() ||
+        !goal.startsWith('帮用户') || goal.length > 240 || result.indexOf(goal) >= 0) {
+        throw new Error('Leader suggestedGoals contains an invalid or duplicate goal.');
+      }
+      result.push(goal);
     }
     return result;
   }

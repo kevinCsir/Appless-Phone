@@ -3,6 +3,7 @@ import { ToolBackendType, ToolRiskLevel } from '../../aiphone/runtime/ToolDefini
 
 export const MAX_LEADER_DATA_TASKS_PER_ROUND: number = 8;
 export const MAX_LEADER_DATA_TASKS_PER_TURN: number = 24;
+export const MAX_LEADER_SUGGESTED_GOALS: number = 3;
 
 export type InputUserPayload = UserInputPayload;
 
@@ -115,6 +116,7 @@ export interface LeaderDecision {
   uiIntent: LeaderUiIntent;
   normalizationCurrentLocalDate?: string;
   normalizedActionInputText?: string;
+  suggestedGoals?: string[];
   actionIntent?: LeaderActionIntent;
   answer?: string;
   bimSuggestion?: LeaderBimSuggestion;

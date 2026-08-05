@@ -5,6 +5,7 @@ import {
   ConversationTurnMessage,
   CurrentSurfaceSummary,
   ObservationDigest,
+  SuggestedActionCandidatePayload,
   TaskErrorPayload,
   TurnResultPayload
 } from '../message/AgentMessage';
@@ -29,7 +30,8 @@ import {
   LeaderToolMetadata,
   LeaderUiTask,
   MAX_LEADER_DATA_TASKS_PER_ROUND,
-  MAX_LEADER_DATA_TASKS_PER_TURN
+  MAX_LEADER_DATA_TASKS_PER_TURN,
+  MAX_LEADER_SUGGESTED_GOALS
 } from './LeaderTypes';
 import {
   leaderInputHasEntityAuthority,
@@ -432,6 +434,15 @@ export class LeaderAgent extends MessageDrivenAgent {
       this.publishError(message, 'LEADER_PLAN_INVALID', 'Leader decision violates its exact capability contract');
       return;
     }
+    if (state.round !== 1 && decision.suggestedGoals !== undefined) {
+      this.finishTurn(state);
+      this.publishError(
+        message,
+        'LEADER_SUGGESTED_GOALS_INVALID',
+        'Leader suggestions are allowed only in the first planning round'
+      );
+      return;
+    }
     if (state.personaId.length > 0 &&
       (state.personaId !== decision.personaId || state.skillId !== decision.skillId)) {
       this.finishTurn(state);
@@ -526,6 +537,7 @@ export class LeaderAgent extends MessageDrivenAgent {
     if (hasOwnKey(decision, 'bimContextUpdate') && decision.bimContextUpdate !== undefined) {
       state.bimContextUpdate = decision.bimContextUpdate;
     }
+    this.publishSuggestedActionCandidates(message, state, decision);
     if (decision.roundAction === 'answer' || decision.roundAction === 'clarify') {
       if (state.dataTaskIds.length > 0) {
         state.pendingAnswer = decision.answer as string;
@@ -1034,6 +1046,7 @@ export class LeaderAgent extends MessageDrivenAgent {
       .filter((key: string): boolean => key !== 'normalizedActionInputText')
       .filter((key: string): boolean => key !== 'bimSuggestion')
       .filter((key: string): boolean => key !== 'bimContextUpdate')
+      .filter((key: string): boolean => key !== 'suggestedGoals')
       .sort()
       .join(',');
     if (keys !== 'dataTasks,personaId,reasonCode,requestedCapabilityIds,roundAction,skillId,uiIntent' &&
@@ -1049,6 +1062,10 @@ export class LeaderAgent extends MessageDrivenAgent {
       typeof decision.reasonCode !== 'string' || decision.reasonCode.trim().length === 0 ||
       !Array.isArray(decision.dataTasks) || !this.validUiIntent(decision.uiIntent) ||
       !this.validRequestedCapabilityIds(decision.requestedCapabilityIds)) {
+      return false;
+    }
+    if (decision.suggestedGoals !== undefined &&
+      (decision.roundAction !== 'execute' || !this.validSuggestedGoals(decision.suggestedGoals))) {
       return false;
     }
     if ((decision.roundAction === 'execute' && decision.dataTasks.length === 0 &&
@@ -1139,6 +1156,23 @@ export class LeaderAgent extends MessageDrivenAgent {
         return false;
       }
       unique.add(id);
+    }
+    return true;
+  }
+
+  private validSuggestedGoals(goals: string[]): boolean {
+    if (!Array.isArray(goals) || goals.length === 0 ||
+      goals.length > MAX_LEADER_SUGGESTED_GOALS) {
+      return false;
+    }
+    const unique: Set<string> = new Set<string>();
+    for (let index = 0; index < goals.length; index++) {
+      const goal: string = goals[index];
+      if (typeof goal !== 'string' || goal.trim().length === 0 || goal.length > 240 ||
+        goal !== goal.trim() || unique.has(goal)) {
+        return false;
+      }
+      unique.add(goal);
     }
     return true;
   }
@@ -1641,6 +1675,34 @@ export class LeaderAgent extends MessageDrivenAgent {
       taskId: uiTaskId,
       payload
     });
+  }
+
+  private publishSuggestedActionCandidates(
+    input: AgentMessage,
+    state: LeaderTurnState,
+    decision: LeaderDecision
+  ): void {
+    const goals: string[] | undefined = decision.suggestedGoals;
+    if (goals === undefined) {
+      return;
+    }
+    const taskId: string = decision.dataTasks.length > 0 ? state.uiTaskId :
+      state.inputTaskId + ':round-' + state.round.toString() + ':virtual';
+    for (let index = 0; index < goals.length; index++) {
+      const suggestedActionId: string =
+        taskId + ':suggested-action:' + (index + 1).toString();
+      const payload: SuggestedActionCandidatePayload = {
+        suggestedActionId,
+        goal: goals[index]
+      };
+      this.bus.publish({
+        type: AgentMessageType.SUGGESTED_ACTION_CANDIDATE,
+        conversationId: input.conversationId,
+        turnId: input.turnId,
+        taskId,
+        payload
+      });
+    }
   }
 
   private handleVirtualActionResult(state: LeaderTurnState, message: AgentMessage): void {
