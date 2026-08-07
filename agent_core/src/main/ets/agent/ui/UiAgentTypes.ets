@@ -6,6 +6,7 @@ export const UI_TASK_ORIGINAL_USER_INPUT_MAX_LENGTH: number = 512;
 export interface CreateUiTaskPayload {
   taskId: string;
   dataTaskIds: string[];
+  independentDataTasks?: boolean;
   personaId?: string;
   skillId: string;
   intent: string;

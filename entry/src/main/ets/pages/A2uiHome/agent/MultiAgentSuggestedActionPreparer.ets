@@ -3,6 +3,7 @@ import {
   LocalModel,
   PreparedActionDraft,
   PreparedActionDraftStep,
+  RuntimePythonToolRegistry,
   SuggestedActionPreparer,
   ToolDefinition,
   ToolInputValidationResult,
@@ -16,10 +17,17 @@ const SUGGESTED_ACTION_SYSTEM_PROMPT: string =
   'catalog. Every usable tool includes its real inputJsonSchema and field descriptions. Select only a tool listed ' +
   'in supportedPreparedToolIds, and make args strictly satisfy that tool inputJsonSchema. ' +
   'Return exactly one JSON object with exactly canImplement, reasonCode, label, and steps. ' +
-  'Set canImplement to true only when one tool in supportedPreparedToolIds can fully satisfy every constraint in ' +
-  'the goal. Never drop, weaken, or rewrite a goal constraint merely to produce a plan. For canImplement=true, ' +
-  'reasonCode must be the empty string, label must be a concise user-facing label, and steps must contain exactly ' +
-  'one object with exactly stepId, toolId, and args. stepId must be a non-empty descriptive JSON string. ' +
+  'Set canImplement to true only when one or more tools in supportedPreparedToolIds can together satisfy every ' +
+  'constraint in the goal. Prefer the most specific registered tool that directly implements the goal; when such ' +
+  'a tool exists, do not replace it with a broader web, research, social-media, or general retrieval tool. If no ' +
+  'registered tool directly satisfies every required part and constraint of the goal, return canImplement=false ' +
+  'instead of forcing an implementation through an unrelated or overly broad tool. Use the fewest tools that fully ' +
+  'implement the goal. Return multiple steps only when ' +
+  'one tool cannot fully implement the goal and each selected tool implements a distinct required part. Every step ' +
+  'must be independently executable using arguments derived only from the supplied goal; do not create dependencies ' +
+  'between steps. Never drop, weaken, or rewrite a goal constraint merely to produce a plan. For canImplement=true, ' +
+  'reasonCode must be the empty string, label must be a concise user-facing label, and steps must contain one or ' +
+  'more objects with exactly stepId, toolId, and args. Each stepId must be a unique non-empty descriptive JSON string. ' +
   'For canImplement=false, reasonCode must be one of NO_SUPPORTED_TOOL, UNSUPPORTED_CONSTRAINT, or ' +
   'UNSUPPORTED_FLOW, label must be the empty string, and steps must be an empty array. ' +
   'Use currentLocalDate only to resolve relative dates. Use schema descriptions for omitted-value defaults. ' +
@@ -53,11 +61,13 @@ export class MultiAgentSuggestedActionPreparer implements SuggestedActionPrepare
   private readonly model: LocalModel;
   private readonly tools: ToolDefinition[];
   private readonly currentLocalDate: SuggestedActionCurrentLocalDateProvider;
+  private readonly runtimePythonTools: RuntimePythonToolRegistry | null;
 
   constructor(
     model: LocalModel,
     tools: ToolDefinition[],
-    currentLocalDate?: SuggestedActionCurrentLocalDateProvider
+    currentLocalDate?: SuggestedActionCurrentLocalDateProvider,
+    runtimePythonTools?: RuntimePythonToolRegistry
   ) {
     this.model = model;
     this.tools = tools.slice();
@@ -67,6 +77,7 @@ export class MultiAgentSuggestedActionPreparer implements SuggestedActionPrepare
       const day: string = now.getDate().toString().padStart(2, '0');
       return now.getFullYear().toString() + '-' + month + '-' + day;
     } : currentLocalDate;
+    this.runtimePythonTools = runtimePythonTools === undefined ? null : runtimePythonTools;
   }
 
   async prepare(goal: string): Promise<PreparedActionDraft> {
@@ -75,16 +86,21 @@ export class MultiAgentSuggestedActionPreparer implements SuggestedActionPrepare
       tomorrow(currentLocalDate).length === 0) {
       throw new Error('Suggested action preparation input is invalid.');
     }
+    const registeredTools: ToolDefinition[] = this.supportedPreparedTools();
     const input: SuggestedActionCompilerInput = {
       goal,
       currentLocalDate,
-      registeredTools: this.tools,
-      supportedPreparedToolIds: this.supportedPreparedToolIds()
+      registeredTools,
+      supportedPreparedToolIds: registeredTools.map((tool: ToolDefinition): string => tool.toolId)
     };
     const raw: string = await this.model.complete(
       JSON.stringify(input),
       undefined,
-      SUGGESTED_ACTION_SYSTEM_PROMPT
+      SUGGESTED_ACTION_SYSTEM_PROMPT,
+      {
+        includeUsage: true,
+        requestTag: 'suggested-action-preparer'
+      }
     );
     const parsed: Object = JSON.parse(raw.trim()) as Object;
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed) ||
@@ -104,56 +120,80 @@ export class MultiAgentSuggestedActionPreparer implements SuggestedActionPrepare
     if (draft.canImplement !== true || draft.reasonCode !== '' ||
       typeof draft.label !== 'string' || draft.label.trim().length === 0 ||
       draft.label !== draft.label.trim() || draft.label.length > 80 ||
-      !Array.isArray(draft.steps) || draft.steps.length !== 1) {
+      !Array.isArray(draft.steps) || draft.steps.length < 1) {
       throw new Error('Suggested action preparer returned an invalid draft.');
     }
-    const step: PreparedActionDraftStep = draft.steps[0];
-    if (step === null || typeof step !== 'object' || Array.isArray(step) ||
-      Object.keys(step).sort().join(',') !== 'args,stepId,toolId' ||
-      typeof step.stepId !== 'string' || step.stepId.trim().length === 0 ||
-      step.stepId !== step.stepId.trim() || step.stepId.length > 80 ||
-      step.args === null || typeof step.args !== 'object' || Array.isArray(step.args)) {
-      throw new Error('Suggested action preparer returned an unsupported step.');
-    }
-    const definition: ToolDefinition | null = this.supportedTool(step.toolId);
-    if (definition === null || definition.inputJsonSchema === undefined) {
-      return this.unsupported('NO_SUPPORTED_TOOL');
-    }
-    const validation: ToolInputValidationResult =
-      validateToolInputValue(definition.inputJsonSchema, step.args);
-    if (!validation.ok) {
-      return this.unsupported('UNSUPPORTED_CONSTRAINT');
-    }
-    if (step.toolId === 'hotel.search') {
-      const hotel: HotelSearchParseResult = parseHotelSearchRequest(step.args);
-      if (!hotel.ok || hotel.value === null) {
+    const stepIds: string[] = [];
+    for (let index = 0; index < draft.steps.length; index++) {
+      const step: PreparedActionDraftStep = draft.steps[index];
+      if (step === null || typeof step !== 'object' || Array.isArray(step) ||
+        Object.keys(step).sort().join(',') !== 'args,stepId,toolId' ||
+        typeof step.stepId !== 'string' || step.stepId.trim().length === 0 ||
+        step.stepId !== step.stepId.trim() || step.stepId.length > 80 ||
+        stepIds.indexOf(step.stepId) >= 0 ||
+        step.args === null || typeof step.args !== 'object' || Array.isArray(step.args)) {
+        throw new Error('Suggested action preparer returned an unsupported step.');
+      }
+      stepIds.push(step.stepId);
+      const definition: ToolDefinition | null = this.supportedTool(step.toolId);
+      if (definition === null || definition.inputJsonSchema === undefined) {
+        return this.unsupported('NO_SUPPORTED_TOOL');
+      }
+      const validation: ToolInputValidationResult =
+        validateToolInputValue(definition.inputJsonSchema, step.args);
+      if (!validation.ok) {
         return this.unsupported('UNSUPPORTED_CONSTRAINT');
+      }
+      if (step.toolId === 'hotel.search') {
+        const hotel: HotelSearchParseResult = parseHotelSearchRequest(step.args);
+        if (!hotel.ok || hotel.value === null) {
+          return this.unsupported('UNSUPPORTED_CONSTRAINT');
+        }
       }
     }
     return draft;
   }
 
-  private supportedPreparedToolIds(): string[] {
-    const ids: string[] = [];
+  private supportedPreparedTools(): ToolDefinition[] {
+    const definitions: ToolDefinition[] = [];
     for (let index = 0; index < this.tools.length; index++) {
-      if (this.supportedTool(this.tools[index].toolId) !== null) {
-        ids.push(this.tools[index].toolId);
+      if (this.isSupportedToolDefinition(this.tools[index])) {
+        definitions.push(this.tools[index]);
       }
     }
-    return ids;
+    if (this.runtimePythonTools !== null) {
+      const runtimeDefinitions: ToolDefinition[] = this.runtimePythonTools.definitions();
+      for (let index: number = 0; index < runtimeDefinitions.length; index++) {
+        if (this.isSupportedToolDefinition(runtimeDefinitions[index]) &&
+          definitions.findIndex((definition: ToolDefinition): boolean =>
+            definition.toolId === runtimeDefinitions[index].toolId) < 0) {
+          definitions.push(runtimeDefinitions[index]);
+        }
+      }
+    }
+    return definitions;
   }
 
   private supportedTool(toolId: string): ToolDefinition | null {
     for (let index = 0; index < this.tools.length; index++) {
-      if (this.tools[index].toolId === toolId &&
-        this.tools[index].riskLevel === 'read' &&
-        this.tools[index].inputJsonSchema !== undefined &&
-        this.tools[index].backendPriority.length > 0 &&
-        this.tools[index].backendPriority.indexOf('system_intent') < 0) {
+      if (this.tools[index].toolId === toolId && this.isSupportedToolDefinition(this.tools[index])) {
         return this.tools[index];
       }
     }
+    if (this.runtimePythonTools !== null) {
+      const runtimeDefinition: ToolDefinition | null = this.runtimePythonTools.definition(toolId);
+      if (runtimeDefinition !== null && this.isSupportedToolDefinition(runtimeDefinition)) {
+        return runtimeDefinition;
+      }
+    }
     return null;
+  }
+
+  private isSupportedToolDefinition(definition: ToolDefinition): boolean {
+    return definition.riskLevel === 'read' &&
+      definition.inputJsonSchema !== undefined &&
+      definition.backendPriority.length > 0 &&
+      definition.backendPriority.indexOf('system_intent') < 0;
   }
 
   private unsupported(reasonCode: string): PreparedActionDraft {

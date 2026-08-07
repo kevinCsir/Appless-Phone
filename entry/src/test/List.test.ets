@@ -41,6 +41,7 @@ import a2uiPartialUpdatePlannerTest from './A2uiPartialUpdatePlanner.test';
 import navigationCardSnapshotTest from './NavigationCardSnapshot.test';
 import a2uiSurfaceThrottleTest from './A2uiSurfaceThrottle.test';
 import toolDefinitionRegistryTest from './ToolDefinitionRegistry.test';
+import pythonToolScaffoldTest from './PythonToolScaffold.test';
 import gmailToolNormalizerTest from './GmailToolNormalizer.test';
 import gmailToolA2uiTest from './GmailToolA2ui.test';
 import mailToolA2uiTest from './MailToolA2ui.test';
@@ -155,6 +156,7 @@ export default function testsuite() {
   navigationCardSnapshotTest();
   a2uiSurfaceThrottleTest();
   toolDefinitionRegistryTest();
+  pythonToolScaffoldTest();
   gmailToolNormalizerTest();
   gmailToolA2uiTest();
   mailToolA2uiTest();

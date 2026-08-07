@@ -16,6 +16,8 @@ import {
   LeaderPlanningContext,
   LinkedMessageBus,
   RegisteredActionExecutor,
+  PythonProgramExecutor,
+  RuntimePythonToolRegistry,
   SuggestedActionPreparer,
   SuggestedActionStatusPayload,
   TurnResultStatus,
@@ -71,6 +73,8 @@ export interface MultiAgentRuntimeOptions {
   actionCompiler?: ActionPlanCompiler;
   virtualActionResolver?: VirtualActionIntentResolver;
   suggestedActionPreparer?: SuggestedActionPreparer;
+  runtimePythonTools?: RuntimePythonToolRegistry;
+  pythonProgramExecutor?: PythonProgramExecutor;
   suggestedActionStatusObserver?: (
     message: AgentMessage,
     status: SuggestedActionStatusPayload

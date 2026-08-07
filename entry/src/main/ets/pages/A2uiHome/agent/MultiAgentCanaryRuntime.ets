@@ -34,6 +34,8 @@ import {
   MailDetail,
   MailDetailRequest,
   RegisteredActionExecutor,
+  RuntimePythonToolRegistry,
+  ShellDaemonPythonProgramExecutor,
   SurfaceActionAuthorizer,
   SuggestedActionStatusPayload,
   ToolDefinition,
@@ -58,6 +60,7 @@ import {
   mergeSurfaceIntoMultiTaskSurface,
   resolveMultiTaskSlotId,
   wrapSurfaceWithMultiTaskAction,
+  aiLogInfo,
   normalizedCalendarArgsForPrompt,
   parseA2uiJsonl,
   setJsonPointer,
@@ -74,6 +77,9 @@ import { personaPackForId } from '../../../model/PersonaStore';
 import { MultiAgentLeaderPlanner } from './MultiAgentLeaderPlanner';
 import { MultiAgentActionPlanCompiler } from './MultiAgentActionPlanCompiler';
 import { MultiAgentSuggestedActionPreparer } from './MultiAgentSuggestedActionPreparer';
+import {
+  registerDemoPythonCurrencyTool
+} from './DemoPythonCurrencyTool';
 import {
   HotelLocalDateProvider,
   normalizeHotelSearchTaskInput
@@ -125,6 +131,8 @@ const SUGGESTED_ACTION_HOST_LIMIT: number = 32;
 interface SuggestedActionHostContext {
   sourceSurface: A2uiSurfaceState;
   hostGeneration: number;
+  mergedResultCount: number;
+  expectedToolIds: string[];
 }
 
 interface CalendarReviewOutput {
@@ -1615,21 +1623,46 @@ export class MultiAgentCanaryRuntime {
       turnId: string
     ): boolean => {
       const hostGeneration = this.turnHostGenerations.get(turnId);
+      const suggestedHost = this.suggestedActionHosts.get(turnId);
+      const rawToolId = this.rawSurfaceToolId(surface);
+      const registeredToolId = registeredPageSourceToolId(surface);
+      aiLogInfo('[AIPhone][SuggestedSurfaceGate] phase=received turn=' + turnId +
+        ' surface=' + surface.surfaceId +
+        ' status=' + surface.status +
+        ' hostGeneration=' + (hostGeneration === undefined ? 'missing' : hostGeneration.toString()) +
+        ' suggested=' + (suggestedHost === undefined ? 'false' : 'true') +
+        ' rawTool=' + (rawToolId.length === 0 ? 'missing' : rawToolId) +
+        ' registeredTool=' + (registeredToolId.length === 0 ? 'missing' : registeredToolId) +
+        ' multiTask=' + (isMultiTaskSurface(surface) ? 'true' : 'false'));
       if (hostGeneration === undefined || hostGeneration <= 0) {
+        aiLogInfo('[AIPhone][SuggestedSurfaceGate] phase=drop reason=host_generation_missing turn=' +
+          turnId + ' surface=' + surface.surfaceId);
         return false;
       }
-      const suggestedHost = this.suggestedActionHosts.get(turnId);
       if (suggestedHost !== undefined && suggestedHost.hostGeneration !== hostGeneration) {
+        aiLogInfo('[AIPhone][SuggestedSurfaceGate] phase=drop reason=host_generation_mismatch turn=' +
+          turnId + ' surface=' + surface.surfaceId +
+          ' expected=' + suggestedHost.hostGeneration.toString() +
+          ' actual=' + hostGeneration.toString());
         return false;
       }
       if (suggestedHost !== undefined && surface.status !== 'ready' && surface.status !== 'error') {
+        aiLogInfo('[AIPhone][SuggestedSurfaceGate] phase=hold reason=suggested_intermediate turn=' +
+          turnId + ' surface=' + surface.surfaceId + ' status=' + surface.status);
         return true;
       }
       const nextSurface = suggestedHost === undefined ? surface :
         this.mergeSuggestedActionSurface(suggestedHost, surface);
       nextSurface.runtimeOwner = 'multi_agent';
       nextSurface.runtimeGeneration = hostGeneration;
-      return options.onSurface(nextSurface, hostGeneration);
+      const delivered = options.onSurface(nextSurface, hostGeneration);
+      aiLogInfo('[AIPhone][SuggestedSurfaceGate] phase=deliver turn=' + turnId +
+        ' inputSurface=' + surface.surfaceId +
+        ' outputSurface=' + nextSurface.surfaceId +
+        ' suggested=' + (suggestedHost === undefined ? 'false' : 'true') +
+        ' outputMultiTask=' + (isMultiTaskSurface(nextSurface) ? 'true' : 'false') +
+        ' delivered=' + (delivered ? 'true' : 'false'));
+      return delivered;
     };
     const lookup = new CanaryToolLookup();
     const catalog = new ActionCatalog(
@@ -1704,6 +1737,12 @@ export class MultiAgentCanaryRuntime {
     const initialContext = canaryPlanningContext(
       this.lastLeaderPersonaId, '', allowTrustedOperationTargets
     );
+    const runtimePythonTools = new RuntimePythonToolRegistry(
+      allToolDefinitions().map((definition: ToolDefinition): string => definition.toolId)
+    );
+    if (!registerDemoPythonCurrencyTool(runtimePythonTools)) {
+      aiLogInfo('[AIPhone][PythonTool] status=registration_failed tool=python.currency.convert.demo');
+    }
     const dataTaskInputNormalizer: LeaderDataTaskInputNormalizer = (
       input: InputUserPayload,
       task: LeaderDecisionDataTask,
@@ -1735,8 +1774,11 @@ export class MultiAgentCanaryRuntime {
       suggestedActionPreparer: new MultiAgentSuggestedActionPreparer(
         options.model,
         allToolDefinitions(),
-        options.currentLocalDate
+        options.currentLocalDate,
+        runtimePythonTools
       ),
+      runtimePythonTools,
+      pythonProgramExecutor: new ShellDaemonPythonProgramExecutor(),
       suggestedActionStatusObserver: (
         message: AgentMessage,
         status: SuggestedActionStatusPayload
@@ -1865,13 +1907,30 @@ export class MultiAgentCanaryRuntime {
       sourceSurface.runtimeOwner !== 'multi_agent' ||
       sourceSurface.runtimeGeneration !== hostGeneration ||
       !Number.isSafeInteger(hostGeneration) || hostGeneration <= 0) {
+      aiLogInfo('[AIPhone][SuggestedSurfaceGate] phase=click_rejected suggested=' +
+        suggestedActionId + ' reason=invalid_host');
+      return false;
+    }
+    const expectedToolIds = this.runtime.preparedSuggestedActionToolIds(suggestedActionId);
+    if (expectedToolIds.length === 0) {
+      aiLogInfo('[AIPhone][SuggestedSurfaceGate] phase=click_rejected suggested=' +
+        suggestedActionId + ' reason=prepared_steps_missing');
       return false;
     }
     const turnId = this.runtime.runSuggestedAction(suggestedActionId, hostGeneration);
     if (turnId.length === 0) {
+      aiLogInfo('[AIPhone][SuggestedSurfaceGate] phase=click_rejected suggested=' +
+        suggestedActionId + ' reason=run_not_published');
       return false;
     }
-    this.rememberSuggestedActionHost(turnId, sourceSurface, hostGeneration);
+    this.rememberSuggestedActionHost(turnId, sourceSurface, hostGeneration, expectedToolIds);
+    aiLogInfo('[AIPhone][SuggestedSurfaceGate] phase=click_registered suggested=' +
+      suggestedActionId + ' turn=' + turnId +
+      ' sourceSurface=' + sourceSurface.surfaceId +
+      ' sourceTool=' + (registeredPageSourceToolId(sourceSurface).length === 0 ?
+        'missing' : registeredPageSourceToolId(sourceSurface)) +
+      ' expectedTools=' + expectedToolIds.join(',') +
+      ' hostGeneration=' + hostGeneration.toString());
     return true;
   }
 
@@ -2043,14 +2102,17 @@ export class MultiAgentCanaryRuntime {
   private rememberSuggestedActionHost(
     turnId: string,
     sourceSurface: A2uiSurfaceState,
-    hostGeneration: number
+    hostGeneration: number,
+    expectedToolIds: string[]
   ): void {
     if (!this.suggestedActionHosts.has(turnId)) {
       this.suggestedActionHostOrder.push(turnId);
     }
     this.suggestedActionHosts.set(turnId, {
       sourceSurface,
-      hostGeneration
+      hostGeneration,
+      mergedResultCount: 0,
+      expectedToolIds: expectedToolIds.slice()
     });
     while (this.suggestedActionHostOrder.length > SUGGESTED_ACTION_HOST_LIMIT) {
       const removedTurnId = this.suggestedActionHostOrder[0];
@@ -2063,11 +2125,106 @@ export class MultiAgentCanaryRuntime {
     context: SuggestedActionHostContext,
     targetSurface: A2uiSurfaceState
   ): A2uiSurfaceState {
-    const targetToolId = registeredPageSourceToolId(targetSurface);
+    aiLogInfo('[AIPhone][SuggestedSurfaceMerge] phase=start targetSurface=' +
+      targetSurface.surfaceId +
+      ' rawTool=' + (this.rawSurfaceToolId(targetSurface).length === 0 ?
+        'missing' : this.rawSurfaceToolId(targetSurface)) +
+      ' registeredTool=' + (registeredPageSourceToolId(targetSurface).length === 0 ?
+        'missing' : registeredPageSourceToolId(targetSurface)) +
+      ' targetMultiTask=' + (isMultiTaskSurface(targetSurface) ? 'true' : 'false') +
+      ' mergedResultCount=' + context.mergedResultCount.toString());
+    if (isMultiTaskSurface(targetSurface)) {
+      const merged = this.mergeSuggestedActionMultiTaskSurface(context, targetSurface);
+      aiLogInfo('[AIPhone][SuggestedSurfaceMerge] phase=finish branch=target_multi_task result=' +
+        (merged === null ? 'fallback_target' : 'merged'));
+      return merged === null ? targetSurface : merged;
+    }
+    const targetToolId = this.suggestedTargetToolId(context, targetSurface);
     if (targetToolId.length === 0) {
+      aiLogInfo('[AIPhone][SuggestedSurfaceMerge] phase=finish branch=single result=fallback_target ' +
+        'reason=target_tool_unregistered rawTool=' +
+        (this.rawSurfaceToolId(targetSurface).length === 0 ?
+          'missing' : this.rawSurfaceToolId(targetSurface)));
       return targetSurface;
     }
-    let composite = context.sourceSurface;
+    if (context.mergedResultCount > 0) {
+      const current = this.currentHostSurface();
+      return current !== null &&
+        current.runtimeOwner === 'multi_agent' &&
+        current.runtimeGeneration === context.hostGeneration ? current : context.sourceSurface;
+    }
+    const current = this.currentHostSurface();
+    const sourceSurface = current !== null &&
+      current.runtimeOwner === 'multi_agent' &&
+      current.runtimeGeneration === context.hostGeneration ? current : context.sourceSurface;
+    const merged = this.mergeSuggestedActionTargetSurface(
+      sourceSurface, targetSurface, targetToolId, true
+    );
+    if (merged !== null) {
+      context.mergedResultCount = 1;
+    }
+    aiLogInfo('[AIPhone][SuggestedSurfaceMerge] phase=finish branch=single result=' +
+      (merged === null ? 'fallback_target' : 'merged') +
+      ' targetTool=' + targetToolId +
+      ' sourceTool=' + (registeredPageSourceToolId(sourceSurface).length === 0 ?
+        'missing' : registeredPageSourceToolId(sourceSurface)));
+    return merged === null ? targetSurface : merged;
+  }
+
+  private mergeSuggestedActionMultiTaskSurface(
+    context: SuggestedActionHostContext,
+    targetSurface: A2uiSurfaceState
+  ): A2uiSurfaceState | null {
+    try {
+      const model = JSON.parse(targetSurface.dataModelJson) as A2uiRuntimeDataModel;
+      if (model.multiTask === undefined || model.sections === undefined ||
+        model.multiTask.sections.length === 0) {
+        return null;
+      }
+      const current = this.currentHostSurface();
+      let composite = current !== null &&
+        current.runtimeOwner === 'multi_agent' &&
+        current.runtimeGeneration === context.hostGeneration ? current : context.sourceSurface;
+      let mergedResultCount = context.mergedResultCount;
+      for (let index = mergedResultCount; index < model.multiTask.sections.length; index++) {
+        const meta = model.multiTask.sections[index];
+        const section = model.sections[meta.slotId];
+        if (section === undefined || section.embeddedSurface === null) {
+          return null;
+        }
+        const embedded = section.embeddedSurface as A2uiSurfaceState;
+        const embeddedToolId = registeredPageSourceToolId(embedded);
+        const targetToolId = embeddedToolId.length > 0 ? embeddedToolId :
+          (toolDefinitionForToolId(meta.toolId) === null ? '' : meta.toolId);
+        if (targetToolId.length === 0 || targetToolId !== meta.toolId) {
+          return null;
+        }
+        const merged = this.mergeSuggestedActionTargetSurface(
+          composite,
+          embedded,
+          targetToolId,
+          mergedResultCount === 0
+        );
+        if (merged === null) {
+          return null;
+        }
+        composite = merged;
+        mergedResultCount++;
+      }
+      context.mergedResultCount = mergedResultCount;
+      return composite;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  private mergeSuggestedActionTargetSurface(
+    sourceSurface: A2uiSurfaceState,
+    targetSurface: A2uiSurfaceState,
+    targetToolId: string,
+    activateSlot: boolean
+  ): A2uiSurfaceState | null {
+    let composite = sourceSurface;
     let slotId = '';
     if (isMultiTaskSurface(composite)) {
       const previousSlotIds = this.multiTaskSlotIds(composite);
@@ -2082,6 +2239,11 @@ export class MultiAgentCanaryRuntime {
     } else {
       const sourceToolId = registeredPageSourceToolId(composite);
       if (sourceToolId.length === 0) {
+        aiLogInfo('[AIPhone][SuggestedSurfaceMerge] phase=target result=fallback_target ' +
+          'reason=source_tool_unregistered rawSourceTool=' +
+          (this.rawSurfaceToolId(composite).length === 0 ?
+            'missing' : this.rawSurfaceToolId(composite)) +
+          ' targetTool=' + targetToolId);
         return targetSurface;
       }
       composite = wrapSurfaceWithMultiTaskAction(composite, sourceToolId, targetToolId);
@@ -2090,13 +2252,58 @@ export class MultiAgentCanaryRuntime {
     if (slotId.length === 0) {
       slotId = resolveMultiTaskSlotId(composite, targetToolId);
     }
-    return slotId.length === 0 ? targetSurface : mergeSurfaceIntoMultiTaskSurface(
-      composite,
-      slotId,
-      targetToolId,
-      targetSurface,
-      true
+    if (slotId.length === 0) {
+      aiLogInfo('[AIPhone][SuggestedSurfaceMerge] phase=target result=null ' +
+        'reason=slot_not_found targetTool=' + targetToolId);
+      return null;
+    }
+    const merged = mergeSurfaceIntoMultiTaskSurface(
+      composite, slotId, targetToolId, targetSurface, activateSlot
     );
+    aiLogInfo('[AIPhone][SuggestedSurfaceMerge] phase=target result=' +
+      (merged === null ? 'null' : 'merged') +
+      ' targetTool=' + targetToolId +
+      ' slot=' + slotId +
+      ' activate=' + (activateSlot ? 'true' : 'false'));
+    return merged;
+  }
+
+  private rawSurfaceToolId(surface: A2uiSurfaceState): string {
+    try {
+      const model = JSON.parse(surface.dataModelJson) as A2uiRuntimeDataModel;
+      return model.summary.toolName.trim();
+    } catch (_error) {
+      return '';
+    }
+  }
+
+  private suggestedTargetToolId(
+    context: SuggestedActionHostContext,
+    surface: A2uiSurfaceState
+  ): string {
+    const surfaceToolId = registeredPageSourceToolId(surface);
+    if (surfaceToolId.length > 0) {
+      return surfaceToolId;
+    }
+    if (context.expectedToolIds.length !== 1) {
+      aiLogInfo('[AIPhone][SuggestedSurfaceMerge] phase=tool_resolve result=missing ' +
+        'reason=ambiguous_prepared_steps expectedTools=' + context.expectedToolIds.join(','));
+      return '';
+    }
+    const expectedToolId = context.expectedToolIds[0];
+    if (this.rawSurfaceToolId(surface) === expectedToolId) {
+      aiLogInfo('[AIPhone][SuggestedSurfaceMerge] phase=tool_resolve result=raw_expected_match ' +
+        'expectedTool=' + expectedToolId + ' surface=' + surface.surfaceId);
+      return expectedToolId;
+    }
+    if (toolDefinitionForToolId(expectedToolId) === null) {
+      aiLogInfo('[AIPhone][SuggestedSurfaceMerge] phase=tool_resolve result=missing ' +
+        'reason=prepared_tool_unregistered expectedTool=' + expectedToolId);
+      return '';
+    }
+    aiLogInfo('[AIPhone][SuggestedSurfaceMerge] phase=tool_resolve result=prepared_fallback ' +
+      'expectedTool=' + expectedToolId + ' surface=' + surface.surfaceId);
+    return expectedToolId;
   }
 
   private multiTaskSlotIds(surface: A2uiSurfaceState): string[] {

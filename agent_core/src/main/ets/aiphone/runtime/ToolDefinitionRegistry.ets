@@ -11,8 +11,10 @@ const HOTEL_SEARCH_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
   '{"type":"object","description":"Search hotels near a named place. When stay details are omitted, use ' +
     'tomorrow relative to currentLocalDate, one night, one adult, zero children, one room, empty currency, and ' +
     'size 0.","properties":{"originQuery":{"type":"string","minLength":1,"description":"The complete ' +
-    'natural-language goal."},"place":{"type":"string","minLength":1,"description":"The explicit place ' +
-    'near which to search."},"placeType":{"type":"string","enum":["POI"],"description":"Use POI for a ' +
+    'natural-language goal."},"place":{"type":"string","minLength":1,"description":"A concrete, ' +
+    'self-contained named place or POI. Values such as \\"附近\\", \\"这里\\", \\"当前位置\\", \\"目的地\\", or ' +
+    '\\"起点\\" are invalid; if no concrete place exists, return UNSUPPORTED_CONSTRAINT and never use a ' +
+    'default."},"placeType":{"type":"string","enum":["POI"],"description":"Use POI for a ' +
     'named destination."},"countryCode":{"type":"string","enum":["CN"],"description":"ISO country code ' +
     'for this demo."},"checkInDate":{"type":"string","minLength":10,"description":"Absolute check-in date ' +
     'in YYYY-MM-DD format."},"stayNights":{"type":"integer","minimum":1,"description":"Number of nights."},' +
@@ -29,11 +31,221 @@ const HOTEL_SEARCH_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
 const FOOD_SEARCH_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
   '{"type":"object","description":"Search food, restaurants, cafes, coffee, milk tea, drinks, menus, or ' +
     'delivery near a named place.","properties":{"query":{"type":"string","minLength":1,"description":' +
-    '"A self-contained search query preserving the requested place and food category."},"brandPreference":{' +
+    '"A self-contained food query containing a concrete named place. Vague requests such as ' +
+    '\\"查询附近的美食\\" are invalid; if no concrete place exists, return UNSUPPORTED_CONSTRAINT and never ' +
+    'use vague locations such as \\"附近\\" or \\"当前位置\\"."},"brandPreference":{' +
     '"type":"string","minLength":1,"description":"Optional preferred food or drink brand."},"brandStrict":{' +
     '"type":"boolean","description":"Whether to show only the preferred brand."},"sweetness":{"type":"string",' +
     '"minLength":1,"description":"Optional drink sweetness preference."}},"required":["query"],' +
     '"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const RIDE_ESTIMATE_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"Estimate ride distance, available vehicle options, and fares between ' +
+    'two concrete named places. This read-only tool does not create an order.","properties":{' +
+    '"origin":{"type":"string","minLength":1,"description":"A concrete, self-contained named pickup ' +
+    'place or address. Vague values such as current location, here, or nearby are invalid; if no concrete origin ' +
+    'exists, return UNSUPPORTED_CONSTRAINT."},"destination":{"type":"string","minLength":1,' +
+    '"description":"A concrete, self-contained named destination place or address. Vague values such as ' +
+    'destination, there, or nearby are invalid; if no concrete destination exists, return ' +
+    'UNSUPPORTED_CONSTRAINT."},"city":{"type":"string","minLength":1,"description":"Optional explicit ' +
+    'city name shared by the route endpoints; omit it when the goal does not provide one."}},' +
+    '"required":["origin","destination"],"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const TIME_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"Read the current device date and time. This tool takes no ' +
+    'arguments.","properties":{},"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const MEDIA_VIDEO_SEARCH_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"Search public videos on YouTube and Bilibili. This read-only tool ' +
+    'does not play, publish, or modify videos.","properties":{"query":{"type":"string","minLength":1,' +
+    '"description":"A complete video search query."},"sources":{"type":"array","items":{' +
+    '"type":"string","enum":["youtube","bilibili"]},"description":"Optional video providers; omit to ' +
+    'search both."}},"required":["query"],"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const MEDIA_AGGREGATE_SEARCH_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"Research one topic across public videos, posts, news, and ' +
+    'discussions. This read-only tool does not publish or modify content.","properties":{"query":{' +
+    '"type":"string","minLength":1,"description":"A complete topic query."},"sources":{"type":"array",' +
+    '"items":{"type":"string","enum":["youtube","bilibili","x","hackernews","reddit","zhihu"]},' +
+    '"description":"Optional public sources; omit to search all supported sources."}},"required":["query"],' +
+    '"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const WEB_RESEARCH_SEARCH_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"Search and summarize public web information. This read-only tool ' +
+    'cannot purchase, reserve, apply for, or otherwise transact.","properties":{"query":{"type":"string",' +
+    '"minLength":1,"description":"A complete public-web research query."},"domains":{"type":"array",' +
+    '"items":{"type":"string","minLength":1},"description":"Optional domains to include."},' +
+    '"maxResults":{"type":"integer","minimum":1,"maximum":10,"description":"Maximum result count."},' +
+    '"recency":{"type":"string","minLength":1,"description":"Optional provider recency filter."}},' +
+    '"required":["query"],"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const WEB_PAGE_READ_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"Read one public HTTP or HTTPS page. This read-only tool does not ' +
+    'interact with, submit, or modify the page.","properties":{"url":{"type":"string","minLength":1,' +
+    '"description":"The complete public HTTP or HTTPS page URL."},"question":{"type":"string",' +
+    '"minLength":1,"description":"Optional question to answer from this page."},"includeFullText":{' +
+    '"type":"boolean","description":"Whether to include a longer text preview."}},"required":["url"],' +
+    '"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const SHOPPING_RESEARCH_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"Compare public price information for ordinary consumer products. ' +
+    'This read-only research tool does not cover real-estate transactions and cannot buy, reserve, or pay for ' +
+    'anything.","properties":{"query":{"type":"string","minLength":1,"description":"A complete ' +
+    'consumer-product research query."},"domains":{"type":"array","items":{"type":"string",' +
+    '"minLength":1},"description":"Optional shopping domains to include."},"maxProducts":{' +
+    '"type":"integer","minimum":1,"maximum":3,"description":"Maximum product count."},"preferences":{' +
+    '"type":"array","items":{"type":"string","minLength":1},"description":"Optional product ' +
+    'preferences."}},"required":["query"],"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const SOCIAL_PUBLIC_SEARCH_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"Search public Xiaohongshu posts. This read-only tool cannot log in, ' +
+    'publish, reply, or modify content.","properties":{"query":{"type":"string","minLength":1,' +
+    '"description":"A complete public-post search query."},"platforms":{"type":"array","items":{' +
+    '"type":"string","enum":["xiaohongshu"]},"description":"Optional platform selector; only ' +
+    'xiaohongshu is supported."},"maxResults":{"type":"integer","minimum":1,"maximum":10,' +
+    '"description":"Maximum result count."},"recency":{"type":"string","minLength":1,' +
+    '"description":"Optional provider recency filter."}},"required":["query"],' +
+    '"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const TRAVEL_SEARCH_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"Search combined train and flight options between two named places. ' +
+    'This read-only tool does not reserve or purchase tickets.","properties":{"origin":{"type":"string",' +
+    '"minLength":1,"description":"Concrete departure city, station, or airport."},"destination":{' +
+    '"type":"string","minLength":1,"description":"Concrete arrival city, station, or airport."},' +
+    '"departureDate":{"type":"string","minLength":10,"description":"Absolute departure date in ' +
+    'YYYY-MM-DD format."},"departAfter":{"type":"string","minLength":5,"description":"Optional earliest ' +
+    'departure time in HH:mm format."}},"required":["origin","destination","departureDate"],' +
+    '"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const TRAIN_SEARCH_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"Search railway and high-speed-train options. This read-only tool ' +
+    'does not reserve or purchase tickets.","properties":{"originStation":{"type":"string","minLength":1,' +
+    '"description":"Concrete departure station or city."},"destinationStation":{"type":"string",' +
+    '"minLength":1,"description":"Concrete arrival station or city."},"departureDate":{"type":"string",' +
+    '"minLength":10,"description":"Absolute departure date in YYYY-MM-DD format."},"departAfter":{' +
+    '"type":"string","minLength":5,"description":"Optional earliest departure time in HH:mm format."}},' +
+    '"required":["originStation","destinationStation","departureDate"],"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const FLIGHT_SEARCH_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"Search scheduled flights between two cities on one date. This ' +
+    'read-only tool does not reserve or purchase tickets.","properties":{"originCity":{"type":"string",' +
+    '"minLength":1,"description":"Concrete departure city or airport."},"destinationCity":{' +
+    '"type":"string","minLength":1,"description":"Concrete arrival city or airport."},"departureDate":{' +
+    '"type":"string","minLength":10,"description":"Absolute departure date in YYYY-MM-DD format."},' +
+    '"flightNumber":{"type":"string","minLength":1,"description":"Optional exact flight number."},' +
+    '"wantsPrice":{"type":"boolean","description":"Whether fare information is explicitly requested."}},' +
+    '"required":["originCity","destinationCity","departureDate"],"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const MAPS_PLACE_SEARCH_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"Search Google Places for named places, addresses, or non-food POIs. ' +
+    'This read-only tool does not navigate or modify map data.","properties":{"query":{"type":"string",' +
+    '"minLength":1,"description":"A self-contained place-search query containing the concrete place, ' +
+    'address, city, or area needed to resolve the request."}},"required":["query"],' +
+    '"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const YOUTUBE_VIDEO_SEARCH_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"Search public YouTube videos. This read-only tool does not play, ' +
+    'publish, or modify videos.","properties":{"query":{"type":"string","minLength":1,' +
+    '"description":"A complete public-video search query."},"order":{"type":"string","enum":' +
+    '["relevance","date","viewCount","rating","title"],"description":"Optional YouTube result ordering."},' +
+    '"maxResults":{"type":"integer","minimum":1,"maximum":10,"description":"Maximum video count."}},' +
+    '"required":["query"],"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const X_POST_SEARCH_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"Search public posts on X or Twitter. This read-only tool does not ' +
+    'publish, reply, like, or modify posts.","properties":{"query":{"type":"string","minLength":1,' +
+    '"description":"A complete public X post search query."},"maxResults":{"type":"integer","minimum":1,' +
+    '"maximum":100,"description":"Optional maximum result count."}},"required":["query"],' +
+    '"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const SOCIAL_COMMUNITY_SEARCH_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"Search read-only public community content through SocialHub. This ' +
+    'tool never publishes or replies.","properties":{"platform":{"type":"string","enum":' +
+    '["reddit","linkedin","instagram","x"],"description":"Public community platform to search."},' +
+    '"query":{"type":"string","minLength":1,"description":"A complete public-community search query."},' +
+    '"resourceId":{"type":"string","minLength":1,"description":"Optional concrete community, post, or ' +
+    'profile identifier when supplied by the user."},"limit":{"type":"integer","minimum":1,"maximum":100,' +
+    '"description":"Optional result count."}},"required":["platform","query"],' +
+    '"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const SOCIAL_FEED_SEARCH_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"Read connected SocialHub inboxes, recent messages, feeds, and ' +
+    'connection status without sending or modifying content.","properties":{"platforms":{"type":"array",' +
+    '"items":{"type":"string","enum":["x","slack","wecom","discord","linkedin","whatsapp",' +
+    '"instagram","all"]},"description":"One or more connected platforms, or all for the complete ' +
+    'SocialHub."}},"required":["platforms"],"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const MAIL_SEARCH_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"Search configured Gmail, QQ Mail, or Outlook mailboxes. This ' +
+    'read-only tool does not draft, send, delete, or modify mail.","properties":{"providers":{"type":"array",' +
+    '"items":{"type":"string","enum":["gmail","qq","outlook"]},"description":"Mail providers to ' +
+    'search."},"query":{"type":"string","description":"Exact mailbox query; use an empty string for ' +
+    'recent mail without keyword filtering."},"pageSize":{"type":"integer","minimum":1,"maximum":10,' +
+    '"description":"Maximum thread count."},"intentSummary":{"type":"string","minLength":1,' +
+    '"description":"Optional concise display summary of the search intent."}},' +
+    '"required":["providers","query","pageSize"],"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const GMAIL_MAIL_SEARCH_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"Search the authenticated Gmail mailbox. This read-only tool does ' +
+    'not draft, send, delete, or modify mail.","properties":{"query":{"type":"string","description":' +
+    '"Exact Gmail query; use an empty string for recent mail without keyword filtering."},"pageSize":{' +
+    '"type":"integer","minimum":1,"maximum":10,"description":"Maximum Gmail thread count."}},' +
+    '"required":["query","pageSize"],"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const YOUTUBE_MINE_PLAYLISTS_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"List playlists owned by the authenticated YouTube user. This ' +
+    'read-only account query takes no business arguments.","properties":{},"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const YOUTUBE_MINE_SUBSCRIPTIONS_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"List subscriptions of the authenticated YouTube user. This ' +
+    'read-only account query takes no business arguments.","properties":{},"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const CALENDAR_EVENTS_SEARCH_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"Read Google Calendar events in an explicit RFC3339 time window. ' +
+    'This tool does not create, update, or delete events.","properties":{"query":{"type":"string",' +
+    '"description":"Event-title text only; use an empty string when filtering only by time."},"timeMin":{' +
+    '"type":"string","minLength":1,"description":"Inclusive RFC3339 window start with timezone offset."},' +
+    '"timeMax":{"type":"string","minLength":1,"description":"Exclusive RFC3339 window end with timezone ' +
+    'offset."},"timezone":{"type":"string","minLength":1,"description":"IANA timezone such as ' +
+    'Asia/Shanghai."},"calendarId":{"type":"string","minLength":1,"description":"Optional calendar ID; ' +
+    'omit to use primary."}},"required":["query","timeMin","timeMax","timezone"],' +
+    '"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const RIDE_APP_LINK_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"Generate Didi and Amap ride-handoff links between two concrete ' +
+    'named places. This read-only tool does not open the links or create an order.","properties":{' +
+    '"origin":{"type":"string","minLength":1,"description":"Concrete named pickup place or address."},' +
+    '"destination":{"type":"string","minLength":1,"description":"Concrete named destination place or ' +
+    'address."},"city":{"type":"string","minLength":1,"description":"Optional explicit city shared by ' +
+    'both endpoints."}},"required":["origin","destination"],"additionalProperties":false}'
+) as ToolInputJsonSchema;
+
+const WEB_MONITOR_LIST_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
+  '{"type":"object","description":"List the authenticated account current Firecrawl web monitors. ' +
+    'This read-only list operation takes no business arguments and does not run, pause, resume, or delete ' +
+    'monitors.","properties":{},"additionalProperties":false}'
 ) as ToolInputJsonSchema;
 
 const TOOL_DEFINITIONS: ToolDefinition[] = [
@@ -57,6 +269,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['local_adapter'],
     authModes: ['none'],
     inputSchema: 'emptyObject',
+    inputJsonSchema: TIME_INPUT_JSON_SCHEMA,
     outputSchema: 'genericToolResults',
     a2uiComponent: 'GenericToolResults',
     actions: []
@@ -371,6 +584,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['local_adapter'],
     authModes: ['provider_key'],
     inputSchema: 'mediaVideoSearchQuery',
+    inputJsonSchema: MEDIA_VIDEO_SEARCH_INPUT_JSON_SCHEMA,
     outputSchema: 'mediaVideos',
     a2uiComponent: 'GenericToolResults',
     actions: ['media.open.web']
@@ -383,6 +597,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['local_adapter'],
     authModes: ['provider_key', 'oauth', 'mcp_auth'],
     inputSchema: 'aggregateMediaSearchQuery',
+    inputJsonSchema: MEDIA_AGGREGATE_SEARCH_INPUT_JSON_SCHEMA,
     outputSchema: 'aggregateSearch',
     a2uiComponent: 'AggregateSearch',
     actions: ['media.open.web']
@@ -563,6 +778,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['local_adapter'],
     authModes: ['provider_key', 'mcp_auth'],
     inputSchema: 'rideRouteQuery',
+    inputJsonSchema: RIDE_ESTIMATE_INPUT_JSON_SCHEMA,
     outputSchema: 'genericToolResults',
     a2uiComponent: 'GenericToolResults',
     actions: ['ride.order.confirm', 'ride.open.didi', 'ride.open.amap']
@@ -623,6 +839,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['local_adapter'],
     authModes: ['provider_key'],
     inputSchema: 'webResearchQuery',
+    inputJsonSchema: WEB_RESEARCH_SEARCH_INPUT_JSON_SCHEMA,
     outputSchema: 'genericToolResults',
     a2uiComponent: 'GenericToolResults',
     actions: ['web.page.read', 'web.open.source']
@@ -635,6 +852,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['local_adapter'],
     authModes: ['provider_key'],
     inputSchema: 'webPageReadRequest',
+    inputJsonSchema: WEB_PAGE_READ_INPUT_JSON_SCHEMA,
     outputSchema: 'genericToolResults',
     a2uiComponent: 'GenericToolResults',
     actions: ['web.open.source']
@@ -647,6 +865,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['local_adapter'],
     authModes: ['provider_key'],
     inputSchema: 'shoppingResearchQuery',
+    inputJsonSchema: SHOPPING_RESEARCH_INPUT_JSON_SCHEMA,
     outputSchema: 'genericToolResults',
     a2uiComponent: 'GenericToolResults',
     actions: ['web.page.read', 'web.open.source']
@@ -659,6 +878,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['local_adapter'],
     authModes: ['provider_key'],
     inputSchema: 'socialPublicSearchQuery',
+    inputJsonSchema: SOCIAL_PUBLIC_SEARCH_INPUT_JSON_SCHEMA,
     outputSchema: 'genericToolResults',
     a2uiComponent: 'GenericToolResults',
     actions: ['web.page.read', 'web.open.source']

@@ -586,7 +586,9 @@ export class MultiAgentRuntime {
       actionExecutor,
       options.actionCompiler,
       options.virtualActionResolver,
-      options.suggestedActionPreparer
+      options.suggestedActionPreparer,
+      options.runtimePythonTools,
+      options.pythonProgramExecutor
     );
     // The observer is the fifth and final reader. All five exist before any
     // public method can publish INPUT.USER.
@@ -666,6 +668,15 @@ export class MultiAgentRuntime {
         payload
       });
     });
+  }
+
+  preparedSuggestedActionToolIds(suggestedActionId: string): string[] {
+    const record = this.action.inspectPreparedAction(suggestedActionId);
+    if (!this.active || record === null || record.status !== 'ready' ||
+      record.suggestedActionId !== suggestedActionId) {
+      return [];
+    }
+    return record.steps.map((step): string => step.toolId);
   }
 
   runSuggestedAction(suggestedActionId: string, hostGeneration: number): string {
@@ -918,9 +929,14 @@ export class MultiAgentRuntime {
     return (keys === 'dataTaskIds,expectedOutputSchema,intent,skillId,taskId' ||
       keys === 'dataTaskIds,expectedOutputSchema,intent,personaId,skillId,taskId' ||
       keys === 'dataTaskIds,expectedOutputSchema,intent,originalUserInput,skillId,taskId' ||
-      keys === 'dataTaskIds,expectedOutputSchema,intent,originalUserInput,personaId,skillId,taskId') &&
+      keys === 'dataTaskIds,expectedOutputSchema,intent,originalUserInput,personaId,skillId,taskId' ||
+      keys === 'dataTaskIds,expectedOutputSchema,independentDataTasks,intent,skillId,taskId' ||
+      keys === 'dataTaskIds,expectedOutputSchema,independentDataTasks,intent,personaId,skillId,taskId' ||
+      keys === 'dataTaskIds,expectedOutputSchema,independentDataTasks,intent,originalUserInput,skillId,taskId' ||
+      keys === 'dataTaskIds,expectedOutputSchema,independentDataTasks,intent,originalUserInput,personaId,skillId,taskId') &&
       task.taskId === message.taskId &&
       Array.isArray(task.dataTaskIds) &&
+      (task.independentDataTasks === undefined || typeof task.independentDataTasks === 'boolean') &&
       typeof task.skillId === 'string' &&
       nonempty(task.intent) &&
       (task.originalUserInput === undefined ||

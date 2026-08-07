@@ -32,6 +32,7 @@ import {
   JsonValue,
   LinkedMessageBus,
   LocalModel,
+  LocalModelCompletionOptions,
   PausedActionRun,
   PreparedActionRecord,
   RegisteredActionExecutor,
@@ -341,6 +342,7 @@ class ScriptedActionPlanCompiler implements ActionPlanCompiler {
 class ScriptedSuggestedActionModel implements LocalModel {
   readonly prompts: string[] = [];
   readonly systemPrompts: string[] = [];
+  readonly completionOptions: (LocalModelCompletionOptions | undefined)[] = [];
   private readonly output: string;
 
   constructor(output: string) {
@@ -350,10 +352,12 @@ class ScriptedSuggestedActionModel implements LocalModel {
   async complete(
     prompt: string,
     _conversation?: ConversationContext,
-    systemPrompt?: string
+    systemPrompt?: string,
+    options?: LocalModelCompletionOptions
   ): Promise<string> {
     this.prompts.push(prompt);
     this.systemPrompts.push(systemPrompt ?? '');
+    this.completionOptions.push(options);
     return this.output;
   }
 }
@@ -375,6 +379,23 @@ function suggestedFoodDraft(query: string): string {
   return '{"canImplement":true,"reasonCode":"","label":"查看附近美食","steps":[{' +
     '"stepId":"search-nearby-food","toolId":"food.search","args":{' +
     '"query":' + JSON.stringify(query) + '}}]}';
+}
+
+function suggestedHotelAndFoodDraft(goal: string): string {
+  return '{"canImplement":true,"reasonCode":"","label":"查看附近酒店和美食","steps":[{' +
+    '"stepId":"search-nearby-hotels","toolId":"hotel.search","args":{' +
+    '"originQuery":' + JSON.stringify(goal) + ',"place":"华为坂田基地",' +
+    '"placeType":"POI","countryCode":"CN","checkInDate":"2026-08-04",' +
+    '"stayNights":1,"adultCount":1,"childCount":0,"childAgeDetails":[],' +
+    '"roomCount":1,"currency":"","size":0}},' +
+    '{"stepId":"search-nearby-food","toolId":"food.search","args":{' +
+    '"query":"查询华为坂田基地附近的美食"}}]}';
+}
+
+function suggestedRideEstimateDraft(): string {
+  return '{"canImplement":true,"reasonCode":"","label":"查看路费","steps":[{' +
+    '"stepId":"estimate-ride-fare","toolId":"ride.estimate","args":{' +
+    '"origin":"华为坂田基地","destination":"深圳实验学校","city":"深圳"}}]}';
 }
 
 function suggestedHotelMissingPlaceDraft(originQuery: string): string {
@@ -821,11 +842,21 @@ export default function actionAgentTest() {
             '"stayNights":1,"adultCount":1,"childCount":0,"childAgeDetails":[],' +
             '"roomCount":1,"currency":"","size":0}'
         );
-        expect(model.prompts[0].indexOf('maps.place.search') >= 0).assertTrue();
+        expect(model.prompts[0].indexOf('maps.place.search')).assertEqual(-1);
         expect(model.prompts[0].indexOf('hotel.search') >= 0).assertTrue();
         expect(model.prompts[0].indexOf(goal) >= 0).assertTrue();
         expect(model.systemPrompts[0].indexOf('inputJsonSchema') >= 0).assertTrue();
         expect(model.prompts[0].indexOf('"required":["originQuery","place"') >= 0).assertTrue();
+        const compilerInput = JSON.parse(model.prompts[0]) as Record<string, Object | string>;
+        const registeredTools = compilerInput['registeredTools'] as ToolDefinition[];
+        expect(registeredTools.length).assertEqual(10);
+        expect(registeredTools.map((tool: ToolDefinition): string => tool.toolId).join(','))
+          .assertEqual(
+            'time,hotel.search,food.search,media.video.search,media.aggregate.search,ride.estimate,' +
+              'web.research.search,web.page.read,shopping.research,social.public.search'
+          );
+        expect(model.completionOptions[0]?.includeUsage).assertTrue();
+        expect(model.completionOptions[0]?.requestTag).assertEqual('suggested-action-preparer');
 
         (prepared.steps[0].args as Record<string, string>)['place'] = 'mutated';
         const reread = agent.inspectPreparedAction(candidate.suggestedActionId) as
@@ -963,10 +994,121 @@ export default function actionAgentTest() {
       expect(JSON.stringify(prepared.steps[0].args)).assertEqual(
         '{"query":"查询华为坂田基地附近的美食"}'
       );
-      expect(model.prompts[0].indexOf('"supportedPreparedToolIds":["hotel.search","food.search"]')).assertLarger(-1);
+      expect(model.prompts[0].indexOf(
+        '"supportedPreparedToolIds":["time","hotel.search","food.search",' +
+          '"media.video.search","media.aggregate.search","ride.estimate",' +
+          '"web.research.search","web.page.read","shopping.research",' +
+          '"social.public.search"]'
+      )).assertLarger(-1);
       expect(model.systemPrompts[0].indexOf('canImplement')).assertLarger(-1);
       agent.stop();
     });
+
+    it('prepares and registers independent hotel and food steps from one suggested goal', 0,
+      async () => {
+        const goal = '帮用户查询华为坂田基地附近的酒店和美食';
+        const model = new ScriptedSuggestedActionModel(suggestedHotelAndFoodDraft(goal));
+        const preparer = new MultiAgentSuggestedActionPreparer(
+          model,
+          suggestedActionTools(),
+          (): string => '2026-08-03'
+        );
+        const bus = new LinkedMessageBus();
+        const agent = new ActionAgent(
+          bus,
+          catalog(new ActionLookup()),
+          noOffers,
+          new RecordingRegisteredExecutor(),
+          undefined,
+          undefined,
+          preparer
+        );
+        const candidate: SuggestedActionCandidatePayload = {
+          suggestedActionId: 'route-input:round-1:virtual:suggested-action:multi',
+          goal
+        };
+        agent.start();
+
+        bus.publish(message(
+          AgentMessageType.SUGGESTED_ACTION_CANDIDATE,
+          candidate,
+          'turn-1',
+          'route-input:round-1:virtual'
+        ));
+        await settle();
+        const prepared = agent.inspectPreparedAction(candidate.suggestedActionId) as
+          PreparedActionRecord;
+
+        expect(prepared.status).assertEqual('ready');
+        expect(prepared.label).assertEqual('查看附近酒店和美食');
+        expect(prepared.steps.length).assertEqual(2);
+        expect(prepared.steps[0].stepId).assertEqual('search-nearby-hotels');
+        expect(prepared.steps[0].toolId).assertEqual('hotel.search');
+        expect(prepared.steps[0].bindings.length).assertEqual(0);
+        expect((prepared.steps[0].args as Record<string, string>)['place']).assertEqual(
+          '华为坂田基地'
+        );
+        expect(prepared.steps[1].stepId).assertEqual('search-nearby-food');
+        expect(prepared.steps[1].toolId).assertEqual('food.search');
+        expect(prepared.steps[1].bindings.length).assertEqual(0);
+        expect((prepared.steps[1].args as Record<string, string>)['query']).assertEqual(
+          '查询华为坂田基地附近的美食'
+        );
+        expect(model.systemPrompts[0].indexOf('multiple steps only when') >= 0).assertTrue();
+        expect(model.systemPrompts[0].indexOf('independently executable') >= 0).assertTrue();
+
+        (prepared.steps[1].args as Record<string, string>)['query'] = 'mutated';
+        const reread = agent.inspectPreparedAction(candidate.suggestedActionId) as
+          PreparedActionRecord;
+        expect((reread.steps[1].args as Record<string, string>)['query']).assertEqual(
+          '查询华为坂田基地附近的美食'
+        );
+        agent.stop();
+      });
+
+    it('prepares one ride estimate step from a fare goal', 0, async () => {
+      const goal = '帮用户查询华为坂田基地到深圳实验学校的路费';
+      const model = new ScriptedSuggestedActionModel(suggestedRideEstimateDraft());
+      const preparer = new MultiAgentSuggestedActionPreparer(
+        model,
+        suggestedActionTools(),
+        (): string => '2026-08-03'
+      );
+
+      const draft = await preparer.prepare(goal);
+
+      expect(draft.canImplement).assertTrue();
+      expect(draft.steps.length).assertEqual(1);
+      expect(draft.steps[0].toolId).assertEqual('ride.estimate');
+      expect(JSON.stringify(draft.steps[0].args)).assertEqual(
+        '{"origin":"华为坂田基地","destination":"深圳实验学校","city":"深圳"}'
+      );
+    });
+
+    it('keeps vague hotel and unsupported purchase refusals as valid preparer results', 0,
+      async () => {
+        const vagueModel = new ScriptedSuggestedActionModel(
+          unsupportedSuggestedDraft('UNSUPPORTED_CONSTRAINT')
+        );
+        const purchaseModel = new ScriptedSuggestedActionModel(
+          unsupportedSuggestedDraft('NO_SUPPORTED_TOOL')
+        );
+        const vague = await new MultiAgentSuggestedActionPreparer(
+          vagueModel,
+          suggestedActionTools(),
+          (): string => '2026-08-03'
+        ).prepare('帮用户查询附近的酒店');
+        const purchase = await new MultiAgentSuggestedActionPreparer(
+          purchaseModel,
+          suggestedActionTools(),
+          (): string => '2026-08-03'
+        ).prepare('帮用户购买深圳实验学校的学位房');
+
+        expect(vague.canImplement).assertFalse();
+        expect(vague.reasonCode).assertEqual('UNSUPPORTED_CONSTRAINT');
+        expect(purchase.canImplement).assertFalse();
+        expect(purchase.reasonCode).assertEqual('NO_SUPPORTED_TOOL');
+      });
 
     it('runs a prepared nearby-hotel suggestion through existing UI and Data tasks', 0,
       async () => {
@@ -1080,6 +1222,70 @@ export default function actionAgentTest() {
         expect(data.outputSchema).assertEqual('foodChoices');
         expect((data.args as Record<string, string>)['query']).assertEqual(goal);
         agent.stop();
+      });
+
+    it('runs every independent step in a prepared hotel and food suggestion', 0,
+      async () => {
+        const goal = '帮用户查询华为坂田基地附近的酒店和美食';
+        const model = new ScriptedSuggestedActionModel(suggestedHotelAndFoodDraft(goal));
+        const preparer = new MultiAgentSuggestedActionPreparer(
+          model,
+          suggestedActionTools(),
+          (): string => '2026-08-03'
+        );
+        const bus = new LinkedMessageBus();
+        const agent = new ActionAgent(
+          bus,
+          catalog(new ActionLookup()),
+          noOffers,
+          new RecordingRegisteredExecutor(),
+          undefined,
+          undefined,
+          preparer
+        );
+        const observer = bus.openReader();
+        const suggestedActionId = 'demo.nearby-hotel-food';
+        const candidate: SuggestedActionCandidatePayload = { suggestedActionId, goal };
+        agent.start();
+
+        bus.publish(message(
+          AgentMessageType.SUGGESTED_ACTION_CANDIDATE,
+          candidate,
+          'route-turn',
+          'route-task'
+        ));
+        await settle();
+        const run: SuggestedActionRunPayload = { suggestedActionId };
+        bus.publish(message(
+          AgentMessageType.SUGGESTED_ACTION_RUN,
+          run,
+          'suggested-turn',
+          suggestedActionId
+        ));
+
+        const uiMessage = await receiveType(observer, AgentMessageType.TASK_CREATE_UI);
+        const firstDataMessage = await receiveType(observer, AgentMessageType.TASK_CREATE_DATA);
+        const secondDataMessage = await receiveType(observer, AgentMessageType.TASK_CREATE_DATA);
+        const ui = uiMessage.payload as CreateUiTaskPayload;
+        const firstData = firstDataMessage.payload as CreateDataTaskPayload;
+        const secondData = secondDataMessage.payload as CreateDataTaskPayload;
+
+        expect(ui.dataTaskIds.join(',')).assertEqual(
+          suggestedActionId + ':data-1,' + suggestedActionId + ':data-2'
+        );
+        expect(ui.independentDataTasks).assertTrue();
+        expect(ui.intent).assertEqual('查看附近酒店和美食');
+        expect(ui.expectedOutputSchema).assertEqual('hotelSearchResults');
+        expect(firstData.toolId).assertEqual('hotel.search');
+        expect(firstData.outputSchema).assertEqual('hotelSearchResults');
+        expect((firstData.args as Record<string, string>)['place']).assertEqual('华为坂田基地');
+        expect(secondData.toolId).assertEqual('food.search');
+        expect(secondData.outputSchema).assertEqual('foodChoices');
+        expect((secondData.args as Record<string, string>)['query']).assertEqual(
+          '查询华为坂田基地附近的美食'
+        );
+        agent.stop();
+        observer.close();
       });
 
     it('auto-runs one exact zero-Data virtual Action without compiler or UI', 0, async () => {

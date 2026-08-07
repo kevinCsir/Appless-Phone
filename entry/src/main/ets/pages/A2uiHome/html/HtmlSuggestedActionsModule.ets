@@ -61,12 +61,21 @@ export function suggestedActionsPanelPayload(
   revision: number,
   statuses: SuggestedActionStatusPayload[]
 ): SuggestedActionsPanelPayload {
+  const items: SuggestedActionPanelItem[] = [];
+  statuses.forEach((status: SuggestedActionStatusPayload): void => {
+    if (status.status !== 'ready') {
+      return;
+    }
+    const item = panelItem(status);
+    if (item.action !== undefined) {
+      items.push(item);
+    }
+  });
   return {
     version: 1,
     surfaceId,
     revision,
-    items: statuses.map((status: SuggestedActionStatusPayload): SuggestedActionPanelItem =>
-      panelItem(status))
+    items
   };
 }
 
@@ -143,49 +152,30 @@ export const SUGGESTED_ACTIONS_CSS: string = `
   border-radius: 12px;
   font-size: 13px;
 }
-.suggested-action-item[data-status="preparing"] {
-  color: #4f5f73;
-  border-color: #cdd8e6;
-  background: #eef3f8;
-}
 .suggested-action-item[data-status="ready"] {
   color: #22613c;
   border-color: #b9dec7;
   background: #ecf8f0;
 }
-.suggested-action-item[data-status="unsupported"] {
-  color: #805814;
-  border-color: #ecd49d;
-  background: #fff7e3;
-}
-.suggested-action-item[data-status="failed"] {
-  color: #8c3434;
-  border-color: #e7b9b9;
-  background: #fff0f0;
-}
 .suggested-action-copy {
   min-width: 0;
   flex: 1;
   line-height: 1.4;
-}
-.suggested-action-state {
-  flex: 0 0 auto;
-  font-size: 11px;
-  font-weight: 700;
-  opacity: 0.78;
+  overflow-wrap: anywhere;
 }
 .suggested-action-button {
-  width: 100%;
-  min-height: 42px;
-  padding: 10px 12px;
+  flex: 0 0 auto;
+  min-width: 52px;
+  min-height: 34px;
+  padding: 7px 14px;
   border: 1px solid #abd7bc;
-  border-radius: 12px;
+  border-radius: 10px;
   color: #185b35;
   background: #e7f7ed;
   font: inherit;
   font-size: 13px;
   font-weight: 750;
-  text-align: left;
+  text-align: center;
 }
 .suggested-action-button:active {
   background: #d9f0e2;
@@ -208,12 +198,6 @@ export const SUGGESTED_ACTIONS_JS: string = `
     parent.appendChild(node);
     return node;
   }
-  function stateLabel(status) {
-    if (status === 'ready') { return '可用'; }
-    if (status === 'unsupported') { return '做不到'; }
-    if (status === 'failed') { return '失败'; }
-    return '固化中';
-  }
   function postAction(action) {
     try {
       if (window.AIPhoneHome && typeof window.AIPhoneHome.postAction === 'function') {
@@ -227,24 +211,23 @@ export const SUGGESTED_ACTIONS_JS: string = `
     if (!listHost) { return; }
     listHost.textContent = '';
     var items = state.payload ? list(state.payload.items) : [];
-    state.host.hidden = items.length === 0;
-    if (items.length === 0) {
+    var readyItems = items.filter(function (item) {
+      return text(item && item.status) === 'ready' && item && item.action &&
+        typeof item.action === 'object';
+    });
+    state.host.hidden = readyItems.length === 0;
+    if (readyItems.length === 0) {
       return;
     }
-    items.forEach(function (item) {
-      var status = text(item && item.status) || 'preparing';
-      var action = item && item.action;
-      if (status === 'ready' && action && typeof action === 'object') {
-        var button = add(listHost, 'button', 'suggested-action-button', text(action.label));
-        button.type = 'button';
-        button.setAttribute('data-suggested-action-id', text(item.suggestedActionId));
-        button.addEventListener('click', function () { postAction(action); });
-        return;
-      }
+    readyItems.forEach(function (item) {
+      var action = item.action;
       var row = add(listHost, 'div', 'suggested-action-item');
-      row.setAttribute('data-status', status);
-      add(row, 'div', 'suggested-action-copy', text(item && item.goal));
-      add(row, 'span', 'suggested-action-state', stateLabel(status));
+      row.setAttribute('data-status', 'ready');
+      add(row, 'div', 'suggested-action-copy', text(action.label));
+      var button = add(row, 'button', 'suggested-action-button', 'Go');
+      button.type = 'button';
+      button.setAttribute('data-suggested-action-id', text(item.suggestedActionId));
+      button.addEventListener('click', function () { postAction(action); });
     });
   }
   function mount(parent, surfaceId) {

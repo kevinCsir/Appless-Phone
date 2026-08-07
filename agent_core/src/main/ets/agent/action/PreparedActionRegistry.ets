@@ -61,21 +61,37 @@ function cloneObject(value: Object): Object | null {
   }
 }
 
-function validSupportedDraft(draft: PreparedActionDraft): Object | null {
+function validSupportedDraft(draft: PreparedActionDraft): PreparedActionStep[] | null {
   if (draft === null || typeof draft !== 'object' || Array.isArray(draft) ||
     Object.keys(draft).sort().join(',') !== 'canImplement,label,reasonCode,steps' ||
     draft.canImplement !== true || draft.reasonCode !== '' ||
-    !nonempty(draft.label, 80) || !Array.isArray(draft.steps) || draft.steps.length !== 1) {
+    !nonempty(draft.label, 80) || !Array.isArray(draft.steps) || draft.steps.length < 1) {
     return null;
   }
-  const step: PreparedActionDraftStep = draft.steps[0];
-  if (step === null || typeof step !== 'object' || Array.isArray(step) ||
-    Object.keys(step).sort().join(',') !== 'args,stepId,toolId' ||
-    !nonempty(step.stepId, 80) || !nonempty(step.toolId, 128) ||
-    step.args === null || typeof step.args !== 'object' || Array.isArray(step.args)) {
-    return null;
+  const stepIds: string[] = [];
+  const steps: PreparedActionStep[] = [];
+  for (let index = 0; index < draft.steps.length; index++) {
+    const step: PreparedActionDraftStep = draft.steps[index];
+    if (step === null || typeof step !== 'object' || Array.isArray(step) ||
+      Object.keys(step).sort().join(',') !== 'args,stepId,toolId' ||
+      !nonempty(step.stepId, 80) || stepIds.indexOf(step.stepId) >= 0 ||
+      !nonempty(step.toolId, 128) ||
+      step.args === null || typeof step.args !== 'object' || Array.isArray(step.args)) {
+      return null;
+    }
+    const args: Object | null = cloneObject(step.args);
+    if (args === null) {
+      return null;
+    }
+    stepIds.push(step.stepId);
+    steps.push({
+      stepId: step.stepId,
+      toolId: step.toolId,
+      args,
+      bindings: []
+    });
   }
-  return cloneObject(step.args);
+  return steps;
 }
 
 function validUnsupportedDraft(draft: PreparedActionDraft): boolean {
@@ -127,18 +143,13 @@ export class PreparedActionRegistry {
       record.reasonCode = draft.reasonCode;
       return true;
     }
-    const args: Object | null = validSupportedDraft(draft);
-    if (args === null) {
+    const steps: PreparedActionStep[] | null = validSupportedDraft(draft);
+    if (steps === null) {
       return false;
     }
     record.label = draft.label;
     record.reasonCode = '';
-    record.steps = [{
-      stepId: draft.steps[0].stepId,
-      toolId: draft.steps[0].toolId,
-      args,
-      bindings: []
-    }];
+    record.steps = steps;
     record.status = 'ready';
     return true;
   }

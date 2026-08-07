@@ -434,37 +434,67 @@ export class UiAgent extends MessageDrivenAgent {
     if (!this.isActive(key, context)) {
       return;
     }
-    let terminalCount: number = 0;
-    while (terminalCount < task.dataTaskIds.length) {
-      const pending = context.pendingDataByTaskId.get(task.dataTaskIds[terminalCount]);
-      if (pending === undefined ||
-        (pending.errorMessage === undefined &&
-          (pending.data === undefined || pending.offers === undefined ||
-            pending.offerSourceToolId !== pending.data.toolId ||
-            !pending.terminalDataReceived))) {
-        break;
+    let allTerminal: boolean = false;
+    const readyTaskIds: string[] = [];
+    if (task.independentDataTasks === true) {
+      const terminalTaskIds: string[] = [];
+      for (let index = 0; index < task.dataTaskIds.length; index++) {
+        const taskId = task.dataTaskIds[index];
+        const pending = context.pendingDataByTaskId.get(taskId);
+        if (pending !== undefined &&
+          (pending.errorMessage !== undefined ||
+            (pending.data !== undefined && pending.offers !== undefined &&
+              pending.offerSourceToolId === pending.data.toolId &&
+              pending.terminalDataReceived))) {
+          terminalTaskIds.push(taskId);
+        }
       }
-      terminalCount++;
-    }
-    const allTerminal: boolean = terminalCount === task.dataTaskIds.length;
-    let renderCount: number = terminalCount;
-    if (!allTerminal) {
-      const incompleteRound: number = this.dataTaskRound(task.dataTaskIds[terminalCount]);
-      if (incompleteRound < 1) {
-        return;
+      allTerminal = terminalTaskIds.length === task.dataTaskIds.length;
+      for (let index = 0; index < context.renderedDataTaskIds.length; index++) {
+        const taskId = context.renderedDataTaskIds[index];
+        if (terminalTaskIds.indexOf(taskId) >= 0) {
+          readyTaskIds.push(taskId);
+        }
       }
-      while (renderCount > 0 &&
-        this.dataTaskRound(task.dataTaskIds[renderCount - 1]) === incompleteRound) {
-        renderCount--;
+      for (let index = 0; index < terminalTaskIds.length; index++) {
+        if (readyTaskIds.indexOf(terminalTaskIds[index]) < 0) {
+          readyTaskIds.push(terminalTaskIds[index]);
+        }
+      }
+    } else {
+      let terminalCount: number = 0;
+      while (terminalCount < task.dataTaskIds.length) {
+        const pending = context.pendingDataByTaskId.get(task.dataTaskIds[terminalCount]);
+        if (pending === undefined ||
+          (pending.errorMessage === undefined &&
+            (pending.data === undefined || pending.offers === undefined ||
+              pending.offerSourceToolId !== pending.data.toolId ||
+              !pending.terminalDataReceived))) {
+          break;
+        }
+        terminalCount++;
+      }
+      allTerminal = terminalCount === task.dataTaskIds.length;
+      let renderCount: number = terminalCount;
+      if (!allTerminal) {
+        const incompleteRound: number = this.dataTaskRound(task.dataTaskIds[terminalCount]);
+        if (incompleteRound < 1) {
+          return;
+        }
+        while (renderCount > 0 &&
+          this.dataTaskRound(task.dataTaskIds[renderCount - 1]) === incompleteRound) {
+          renderCount--;
+        }
+      }
+      for (let index = 0; index < renderCount; index++) {
+        readyTaskIds.push(task.dataTaskIds[index]);
       }
     }
     const data: DataResult[] = [];
     const offers: ActionOffer[] = [];
     const errors: string[] = [];
-    const readyTaskIds: string[] = [];
-    for (let index = 0; index < renderCount; index++) {
-      const pending = context.pendingDataByTaskId.get(task.dataTaskIds[index]) as PendingDataEntry;
-      readyTaskIds.push(task.dataTaskIds[index]);
+    for (let index = 0; index < readyTaskIds.length; index++) {
+      const pending = context.pendingDataByTaskId.get(readyTaskIds[index]) as PendingDataEntry;
       if (pending.errorMessage !== undefined) {
         errors.push(pending.errorMessage);
         continue;
@@ -885,8 +915,10 @@ export class UiAgent extends MessageDrivenAgent {
     const intent = values['intent'];
     const originalUserInput = values['originalUserInput'];
     const expectedOutputSchema = values['expectedOutputSchema'];
+    const independentDataTasks = values['independentDataTasks'];
     if (typeof payloadTaskId !== 'string' || payloadTaskId !== taskId ||
       !Array.isArray(dataTaskIds) || !this.validDataTaskIds(dataTaskIds as Object[], taskId) ||
+      (independentDataTasks !== undefined && typeof independentDataTasks !== 'boolean') ||
       (personaId !== undefined && (typeof personaId !== 'string' || personaId.trim().length === 0)) ||
       typeof skillId !== 'string' ||
       typeof intent !== 'string' || intent.trim().length === 0 ||
@@ -906,6 +938,7 @@ export class UiAgent extends MessageDrivenAgent {
     if (current.taskId !== next.taskId ||
       current.skillId !== next.skillId ||
       current.expectedOutputSchema !== next.expectedOutputSchema ||
+      current.independentDataTasks !== next.independentDataTasks ||
       (current.originalUserInput !== undefined &&
         current.originalUserInput !== next.originalUserInput) ||
       (current.personaId !== undefined && current.personaId !== next.personaId) ||

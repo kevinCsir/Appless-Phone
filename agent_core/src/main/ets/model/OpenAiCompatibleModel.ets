@@ -3,7 +3,7 @@ import util from '@ohos.util';
 import { ChatMessage, ConversationContext } from '../agent/ConversationContext';
 import { aiLogInfo } from '../aiphone/runtime/AiphoneLogger';
 import { buildReActFormatRules, buildSkillsSection, SkillSnapshot } from '../skill/SkillSnapshot';
-import { LocalModel } from './LocalModel';
+import { LocalModel, LocalModelCompletionOptions } from './LocalModel';
 import { LlmProvider } from './LlmProvider';
 import { mergeOpenAiRequestJson } from './OpenAiRequestJson';
 
@@ -16,6 +16,17 @@ interface ChatRequest {
   messages: ChatMessage[];
   temperature: number;
   stream: boolean;
+  stream_options?: ChatStreamOptions;
+}
+
+interface ChatStreamOptions {
+  include_usage: boolean;
+}
+
+interface ChatTokenUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
 }
 
 interface ChatChoice {
@@ -24,6 +35,7 @@ interface ChatChoice {
 
 interface ChatResponse {
   choices?: ChatChoice[];
+  usage?: ChatTokenUsage | null;
 }
 
 interface ChatDelta {
@@ -36,6 +48,7 @@ interface ChatStreamChoice {
 
 interface ChatStreamResponse {
   choices?: ChatStreamChoice[];
+  usage?: ChatTokenUsage | null;
 }
 
 export class OpenAiCompatibleModel implements LocalModel {
@@ -47,7 +60,12 @@ export class OpenAiCompatibleModel implements LocalModel {
     this.skillSnapshot = skillSnapshot ?? null;
   }
 
-  async complete(prompt: string, conversation?: ConversationContext, systemPrompt?: string): Promise<string> {
+  async complete(
+    prompt: string,
+    conversation?: ConversationContext,
+    systemPrompt?: string,
+    options?: LocalModelCompletionOptions
+  ): Promise<string> {
     if (!this.provider.isConfigured()) {
       throw new Error('LLM provider is not configured.');
     }
@@ -55,7 +73,7 @@ export class OpenAiCompatibleModel implements LocalModel {
     let lastMessage = '';
     for (let attempt = 0; attempt < MODEL_MAX_ATTEMPTS; attempt++) {
       try {
-        return await this.completeOnce(prompt, conversation, systemPrompt);
+        return await this.completeOnce(prompt, conversation, systemPrompt, options);
       } catch (error) {
         lastMessage = this.describeThrown(error);
         if (attempt + 1 >= MODEL_MAX_ATTEMPTS || !this.isRetryableTransportError(lastMessage)) {
@@ -69,7 +87,8 @@ export class OpenAiCompatibleModel implements LocalModel {
   private async completeOnce(
     prompt: string,
     conversation?: ConversationContext,
-    systemPrompt?: string
+    systemPrompt?: string,
+    options?: LocalModelCompletionOptions
   ): Promise<string> {
     const httpRequest = http.createHttp();
     const decoder = util.TextDecoder.create('utf-8');
@@ -110,7 +129,7 @@ export class OpenAiCompatibleModel implements LocalModel {
           'Content-Type': 'application/json; charset=utf-8',
           'Accept': 'text/event-stream'
         },
-        extraData: this.buildRequestJson(prompt, conversation, systemPrompt),
+        extraData: this.buildRequestJson(prompt, conversation, systemPrompt, options),
         connectTimeout: MODEL_CONNECT_TIMEOUT_MS,
         readTimeout: MODEL_READ_TIMEOUT_MS
       });
@@ -122,7 +141,7 @@ export class OpenAiCompatibleModel implements LocalModel {
         throw new Error(`LLM request failed with HTTP ${statusCode}: ${rawResponse}`);
       }
 
-      return this.parseContent(rawResponse);
+      return this.parseContent(rawResponse, options);
     } catch (error) {
       throw new Error(this.describeThrown(error));
     } finally {
@@ -163,7 +182,8 @@ export class OpenAiCompatibleModel implements LocalModel {
   private buildRequest(
     prompt: string,
     conversation?: ConversationContext,
-    systemPrompt?: string
+    systemPrompt?: string,
+    options?: LocalModelCompletionOptions
   ): ChatRequest {
     const messages: ChatMessage[] = [
       {
@@ -184,12 +204,16 @@ export class OpenAiCompatibleModel implements LocalModel {
       content: prompt
     });
 
-    return {
+    const request: ChatRequest = {
       model: this.provider.model,
       messages,
       temperature: 0.2,
       stream: true
     };
+    if (options !== undefined && options.includeUsage === true) {
+      request.stream_options = { include_usage: true };
+    }
+    return request;
   }
 
   private systemPrompt(): string {
@@ -206,16 +230,17 @@ export class OpenAiCompatibleModel implements LocalModel {
   private buildRequestJson(
     prompt: string,
     conversation?: ConversationContext,
-    systemPrompt?: string
+    systemPrompt?: string,
+    options?: LocalModelCompletionOptions
   ): string {
-    const baseJson = JSON.stringify(this.buildRequest(prompt, conversation, systemPrompt));
+    const baseJson = JSON.stringify(this.buildRequest(prompt, conversation, systemPrompt, options));
     return mergeOpenAiRequestJson(baseJson, this.provider.customParametersJson);
   }
 
-  private parseContent(body: string): string {
+  private parseContent(body: string, options?: LocalModelCompletionOptions): string {
     const trimmed = body.trim();
     if (trimmed.startsWith('{')) {
-      return this.parseJsonContent(trimmed);
+      return this.parseJsonContent(trimmed, options);
     }
 
     let content = '';
@@ -230,6 +255,7 @@ export class OpenAiCompatibleModel implements LocalModel {
         continue;
       }
       const event = JSON.parse(payload) as ChatStreamResponse;
+      this.logTokenUsage(event.usage, options);
       const choices = event.choices;
       if (choices === undefined || choices.length === 0 || choices[0].delta === undefined) {
         continue;
@@ -245,8 +271,9 @@ export class OpenAiCompatibleModel implements LocalModel {
     return content.trim();
   }
 
-  private parseJsonContent(body: string): string {
+  private parseJsonContent(body: string, options?: LocalModelCompletionOptions): string {
     const json = JSON.parse(body) as ChatResponse;
+    this.logTokenUsage(json.usage, options);
     const choices = json.choices;
     if (choices === undefined || choices.length === 0) {
       throw new Error('No choices returned.');
@@ -257,5 +284,25 @@ export class OpenAiCompatibleModel implements LocalModel {
       throw new Error('No message content returned.');
     }
     return message.content.trim();
+  }
+
+  private logTokenUsage(
+    usage?: ChatTokenUsage | null,
+    options?: LocalModelCompletionOptions
+  ): void {
+    if (usage === undefined || usage === null ||
+      options === undefined || options.includeUsage !== true) {
+      return;
+    }
+    const promptTokens: number = usage.prompt_tokens ?? -1;
+    const completionTokens: number = usage.completion_tokens ?? -1;
+    const totalTokens: number = usage.total_tokens ?? -1;
+    const requestTag: string = options.requestTag ?? 'unspecified';
+    aiLogInfo(
+      '[AIPhone][ModelTokenUsage] tag=' + requestTag +
+      ' promptTokens=' + promptTokens.toString() +
+      ' completionTokens=' + completionTokens.toString() +
+      ' totalTokens=' + totalTokens.toString()
+    );
   }
 }

@@ -68,6 +68,8 @@ export { ActionPlanRunner } from './src/main/ets/agent/action/ActionPlanRunner';
 export { ActionAgent } from './src/main/ets/agent/action/ActionAgent';
 export * from './src/main/ets/agent/action/ActionAgentTypes';
 export * from './src/main/ets/agent/action/PreparedActionRegistry';
+export * from './src/main/ets/agent/action/PythonProgramExecutor';
+export * from './src/main/ets/agent/action/RuntimePythonToolRegistry';
 export { clearStoredConversation, loadConversation, saveConversation } from './src/main/ets/agent/ConversationStore';
 export { AgentEvent, AgentEventKind } from './src/main/ets/agent/AgentEvent';
 export { AgentTool } from './src/main/ets/agent/AgentTool';
@@ -90,7 +92,7 @@ export {
   createConfiguredLoopToolRegistry,
   createLoopToolRegistry
 } from './src/main/ets/agent/ToolRegistry';
-export { LocalModel } from './src/main/ets/model/LocalModel';
+export { LocalModel, LocalModelCompletionOptions } from './src/main/ets/model/LocalModel';
 export { LlmProvider } from './src/main/ets/model/LlmProvider';
 export { ScriptedLocalModel } from './src/main/ets/model/ScriptedLocalModel';
 export { ScriptedA2uiModel, buildTaskCardComponents } from './src/main/ets/a2ui/ScriptedA2uiModel';

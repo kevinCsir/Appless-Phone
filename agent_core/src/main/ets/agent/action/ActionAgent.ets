@@ -5,9 +5,10 @@ import {
   AgentMessageType,
   SuggestedActionCandidatePayload,
   SuggestedActionStatusPayload,
-  SuggestedActionRunPayload
+  SuggestedActionRunPayload,
+  TaskErrorPayload
 } from '../message/AgentMessage';
-import { DataResult } from '../message/DataResult';
+import { DataResult, DataSource } from '../message/DataResult';
 import { LinkedMessageBus } from '../message/LinkedMessageBus';
 import { CreateUiTaskPayload, UiRenderResultPayload } from '../ui/UiAgentTypes';
 import { ActionCatalog } from './ActionCatalog';
@@ -52,12 +53,26 @@ import {
 } from './ActionPlanTypes';
 import { cloneJsonValue } from './JsonPointer';
 import { aiLogInfo } from '../../aiphone/runtime/AiphoneLogger';
+import { A2uiLabelValueData } from '../../aiphone/runtime/A2uiTypes';
+import {
+  DynamicGenericToolResult,
+  GenericStructuredData
+} from '../../aiphone/runtime/DynamicToolTypes';
+import { validateToolInputValue } from '../../aiphone/runtime/ToolInputJsonSchema';
 import {
   PreparedActionDraft,
   PreparedActionRecord,
   PreparedActionRegistry,
   SuggestedActionPreparer
 } from './PreparedActionRegistry';
+import {
+  PythonExecutionResult,
+  PythonProgramExecutor
+} from './PythonProgramExecutor';
+import {
+  RuntimePythonToolRegistration,
+  RuntimePythonToolRegistry
+} from './RuntimePythonToolRegistry';
 
 const WORKFLOW_RUN_ACTION_ID: string = 'workflow.run';
 const LIVE_RUN_LIMIT: number = 128;
@@ -295,6 +310,8 @@ export class ActionAgent extends MessageDrivenAgent implements ActionStepExecuto
   private readonly compiler: ActionPlanCompiler | null;
   private readonly virtualResolver: VirtualActionIntentResolver | null;
   private readonly suggestedActionPreparer: SuggestedActionPreparer | null;
+  private readonly runtimePythonTools: RuntimePythonToolRegistry | null;
+  private readonly pythonProgramExecutor: PythonProgramExecutor | null;
   private readonly preparedActions: PreparedActionRegistry = new PreparedActionRegistry();
   private readonly runner: ActionPlanRunner;
   private readonly readyRuns: Map<string, StoredActionRun> =
@@ -331,7 +348,9 @@ export class ActionAgent extends MessageDrivenAgent implements ActionStepExecuto
     executor: RegisteredActionExecutor,
     compiler?: ActionPlanCompiler,
     virtualResolver?: VirtualActionIntentResolver,
-    suggestedActionPreparer?: SuggestedActionPreparer
+    suggestedActionPreparer?: SuggestedActionPreparer,
+    runtimePythonTools?: RuntimePythonToolRegistry,
+    pythonProgramExecutor?: PythonProgramExecutor
   ) {
     super(bus);
     this.bus = bus;
@@ -342,6 +361,8 @@ export class ActionAgent extends MessageDrivenAgent implements ActionStepExecuto
     this.virtualResolver = virtualResolver === undefined ? null : virtualResolver;
     this.suggestedActionPreparer = suggestedActionPreparer === undefined ?
       null : suggestedActionPreparer;
+    this.runtimePythonTools = runtimePythonTools === undefined ? null : runtimePythonTools;
+    this.pythonProgramExecutor = pythonProgramExecutor === undefined ? null : pythonProgramExecutor;
     this.runner = new ActionPlanRunner(catalog, this);
   }
 
@@ -1944,6 +1965,9 @@ export class ActionAgent extends MessageDrivenAgent implements ActionStepExecuto
             const prepared: PreparedActionRecord | null =
               this.preparedActions.inspect(candidate.suggestedActionId);
             this.publishSuggestedActionStatus(candidate.suggestedActionId);
+            if (prepared !== null) {
+              this.logSuggestedActionArtifact(prepared);
+            }
             if (prepared !== null && prepared.status === 'ready' && prepared.steps.length === 1) {
               aiLogInfo('[AIPhone][SuggestedAction] status=ready id=' + candidate.suggestedActionId +
                 ' tool=' + prepared.steps[0].toolId +
@@ -1968,6 +1992,24 @@ export class ActionAgent extends MessageDrivenAgent implements ActionStepExecuto
       this.publishSuggestedActionStatus(candidate.suggestedActionId);
       aiLogInfo('[AIPhone][SuggestedAction] status=failed id=' + candidate.suggestedActionId +
         ' elapsedMs=' + (Date.now() - startedAt).toString());
+    }
+  }
+
+  private logSuggestedActionArtifact(prepared: PreparedActionRecord): void {
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(prepared);
+    } catch (_error) {
+      aiLogInfo('[AIPhone][SuggestedActionArtifact] id=' + prepared.suggestedActionId +
+        ' serialization=failed');
+      return;
+    }
+    const chunkChars: number = 2200;
+    const partCount: number = Math.max(1, Math.ceil(serialized.length / chunkChars));
+    for (let index: number = 0; index < partCount; index++) {
+      aiLogInfo('[AIPhone][SuggestedActionArtifact] id=' + prepared.suggestedActionId +
+        ' part=' + (index + 1).toString() + '/' + partCount.toString() +
+        ' data=' + serialized.substring(index * chunkChars, (index + 1) * chunkChars));
     }
   }
 
@@ -2006,39 +2048,60 @@ export class ActionAgent extends MessageDrivenAgent implements ActionStepExecuto
       this.preparedActions.inspect(run.suggestedActionId);
     if (record === null || record.status !== 'ready' ||
       record.suggestedActionId !== run.suggestedActionId ||
-      record.conversationId !== message.conversationId || record.steps.length !== 1) {
+      record.conversationId !== message.conversationId || record.steps.length < 1) {
       return;
     }
-    const step = record.steps[0];
-    const registered = this.catalog.validateRegisteredAction(step.toolId);
-    const definition = registered.definition;
-    if (!registered.ok || definition === null || definition.riskLevel !== 'read' ||
-      definition.backendPriority.indexOf('system_intent') >= 0 ||
-      definition.outputSchema.trim().length === 0) {
+    const pythonRegistration: RuntimePythonToolRegistration | null =
+      this.runtimePythonTools === null || record.steps.length !== 1 ? null :
+        this.runtimePythonTools.registration(record.steps[0].toolId);
+    if (pythonRegistration !== null) {
+      this.runPythonSuggestedAction(message, record, pythonRegistration);
       return;
     }
-    const dataTaskId: string = message.taskId + ':data';
+    if (this.containsRuntimePythonStep(record)) {
+      aiLogInfo('[AIPhone][SuggestedAction][Python] status=rejected reason=mixed_or_multi_python id=' +
+        run.suggestedActionId);
+      return;
+    }
+    const dataTaskIds: string[] = [];
+    const dataTasks: CreateDataTaskPayload[] = [];
+    for (let index = 0; index < record.steps.length; index++) {
+      const step = record.steps[index];
+      const registered = this.catalog.validateRegisteredAction(step.toolId);
+      const definition = registered.definition;
+      if (!registered.ok || definition === null || definition.riskLevel !== 'read' ||
+        definition.backendPriority.indexOf('system_intent') >= 0 ||
+        definition.outputSchema.trim().length === 0) {
+        return;
+      }
+      const dataTaskId: string = message.taskId + ':data-' + (index + 1).toString();
+      dataTaskIds.push(dataTaskId);
+      dataTasks.push({
+        taskId: dataTaskId,
+        roundId: message.turnId,
+        skillId: '',
+        goal: record.goal,
+        allowedToolIds: [step.toolId],
+        toolId: step.toolId,
+        outputSchema: definition.outputSchema,
+        args: step.args,
+        required: true
+      });
+    }
     const uiTaskId: string = message.taskId + ':ui';
     const ui: CreateUiTaskPayload = {
       taskId: uiTaskId,
-      dataTaskIds: [dataTaskId],
+      dataTaskIds,
       skillId: '',
       intent: record.label,
-      expectedOutputSchema: definition.outputSchema
+      expectedOutputSchema: dataTasks[0].outputSchema
     };
-    const data: CreateDataTaskPayload = {
-      taskId: dataTaskId,
-      roundId: message.turnId,
-      skillId: '',
-      goal: record.goal,
-      allowedToolIds: [step.toolId],
-      toolId: step.toolId,
-      outputSchema: definition.outputSchema,
-      args: step.args,
-      required: true
-    };
+    if (dataTasks.length > 1) {
+      ui.independentDataTasks = true;
+    }
     aiLogInfo('[AIPhone][SuggestedAction] status=running id=' +
-      run.suggestedActionId + ' tool=' + step.toolId);
+      run.suggestedActionId + ' steps=' + record.steps.length.toString() +
+      ' tools=' + record.steps.map((step): string => step.toolId).join(','));
     this.bus.publish({
       type: AgentMessageType.TASK_CREATE_UI,
       conversationId: message.conversationId,
@@ -2046,12 +2109,160 @@ export class ActionAgent extends MessageDrivenAgent implements ActionStepExecuto
       taskId: uiTaskId,
       payload: ui
     });
+    for (let index = 0; index < dataTasks.length; index++) {
+      this.bus.publish({
+        type: AgentMessageType.TASK_CREATE_DATA,
+        conversationId: message.conversationId,
+        turnId: message.turnId,
+        taskId: dataTasks[index].taskId,
+        payload: dataTasks[index]
+      });
+    }
+  }
+
+  private containsRuntimePythonStep(record: PreparedActionRecord): boolean {
+    if (this.runtimePythonTools === null) {
+      return false;
+    }
+    for (let index: number = 0; index < record.steps.length; index++) {
+      if (this.runtimePythonTools.registration(record.steps[index].toolId) !== null) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private runPythonSuggestedAction(
+    message: AgentMessage,
+    record: PreparedActionRecord,
+    registration: RuntimePythonToolRegistration
+  ): void {
+    const executor: PythonProgramExecutor | null = this.pythonProgramExecutor;
+    const inputSchema = registration.definition.inputJsonSchema;
+    if (executor === null || inputSchema === undefined ||
+      !validateToolInputValue(inputSchema, record.steps[0].args as JsonValue).ok) {
+      aiLogInfo('[AIPhone][SuggestedAction][Python] status=rejected reason=invalid_runtime id=' +
+        record.suggestedActionId);
+      return;
+    }
+    const dataTaskId: string = message.taskId + ':data-1';
+    const uiTaskId: string = message.taskId + ':ui';
+    const ui: CreateUiTaskPayload = {
+      taskId: uiTaskId,
+      dataTaskIds: [dataTaskId],
+      skillId: '',
+      intent: record.label,
+      expectedOutputSchema: registration.definition.outputSchema
+    };
+    aiLogInfo('[AIPhone][SuggestedAction][Python] status=running id=' +
+      record.suggestedActionId + ' tool=' + registration.definition.toolId +
+      ' args=' + JSON.stringify(record.steps[0].args));
     this.bus.publish({
-      type: AgentMessageType.TASK_CREATE_DATA,
+      type: AgentMessageType.TASK_CREATE_UI,
+      conversationId: message.conversationId,
+      turnId: message.turnId,
+      taskId: uiTaskId,
+      payload: ui
+    });
+    const startedAt: number = Date.now();
+    executor.execute({
+      source: registration.source,
+      input: record.steps[0].args
+    }).then((result: PythonExecutionResult): void => {
+      if (!this.active || this.canceledTurns.has(this.turnKey(
+        message.conversationId, message.turnId
+      ))) {
+        return;
+      }
+      if (!result.ok || result.result === null || typeof result.result !== 'object' ||
+        Array.isArray(result.result)) {
+        const errorMessage: string = result.error === null ?
+          'Python tool returned an invalid structured result.' : result.error.message;
+        aiLogInfo('[AIPhone][SuggestedAction][Python] status=failed id=' +
+          record.suggestedActionId + ' elapsedMs=' + (Date.now() - startedAt).toString() +
+          ' error=' + errorMessage);
+        this.publishPythonTaskError(message, dataTaskId, errorMessage);
+        return;
+      }
+      const rawPreview: string = JSON.stringify(result.result);
+      const rows: A2uiLabelValueData[] = [];
+      const keys: string[] = Object.keys(result.result);
+      for (let index: number = 0; index < keys.length; index++) {
+        const value = (result.result as Record<string, Object | string | number | boolean | null>)[keys[index]];
+        const row: A2uiLabelValueData = {
+          label: keys[index],
+          value: typeof value === 'string' ? value : JSON.stringify(value)
+        };
+        rows.push(row);
+      }
+      const source: DataSource = {
+        provider: 'runtime_python',
+        backend: 'local_adapter',
+        operation: registration.definition.toolId,
+        fetchedAt: new Date().toISOString()
+      };
+      const genericResult: DynamicGenericToolResult = {
+        sourceTag: 'Python',
+        toolName: registration.definition.toolId,
+        title: record.label,
+        status: 'success',
+        summary: record.label + ': ' + rawPreview,
+        rows,
+        rawPreview
+      };
+      const genericData: GenericStructuredData = {
+        results: [genericResult]
+      };
+      const data: DataResult = {
+        toolId: registration.definition.toolId,
+        outputSchema: registration.definition.outputSchema,
+        status: 'success',
+        sources: [source],
+        data: genericData,
+        warnings: []
+      };
+      const offers: ActionOffersReadyPayload = {
+        dataTaskId,
+        sourceToolId: registration.definition.toolId,
+        offers: []
+      };
+      aiLogInfo('[AIPhone][SuggestedAction][Python] status=success id=' +
+        record.suggestedActionId + ' elapsedMs=' + (Date.now() - startedAt).toString() +
+        ' result=' + rawPreview);
+      this.bus.publish({
+        type: AgentMessageType.TASK_RESULT_DATA,
+        conversationId: message.conversationId,
+        turnId: message.turnId,
+        taskId: dataTaskId,
+        payload: data
+      });
+      this.bus.publish({
+        type: AgentMessageType.ACTION_OFFERS_READY,
+        conversationId: message.conversationId,
+        turnId: message.turnId,
+        taskId: dataTaskId,
+        payload: offers
+      });
+    }).catch((_error: Object): void => {
+      this.publishPythonTaskError(message, dataTaskId, 'Python tool execution failed.');
+    });
+  }
+
+  private publishPythonTaskError(
+    message: AgentMessage,
+    dataTaskId: string,
+    detail: string
+  ): void {
+    const error: TaskErrorPayload = {
+      code: 'PYTHON_TOOL_EXECUTION_FAILED',
+      message: detail
+    };
+    this.bus.publish({
+      type: AgentMessageType.TASK_ERROR,
       conversationId: message.conversationId,
       turnId: message.turnId,
       taskId: dataTaskId,
-      payload: data
+      payload: error
     });
   }
 
@@ -2118,6 +2329,7 @@ export class ActionAgent extends MessageDrivenAgent implements ActionStepExecuto
         payload.outputs = outcome.outputs;
       }
     }
+
     this.bus.publish({
       type: AgentMessageType.ACTION_RESULT,
       conversationId: stored.context.conversationId,

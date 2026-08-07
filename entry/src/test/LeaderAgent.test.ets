@@ -994,7 +994,13 @@ export default function leaderAgentTest() {
           '查询从深圳实验学校到华为坂田基地的路线'
         ));
         await receive(observer);
-        const candidateMessage = await receive(observer);
+        const candidateMessages: AgentMessage[] = [
+          await receive(observer),
+          await receive(observer),
+          await receive(observer),
+          await receive(observer)
+        ];
+        const candidateMessage = candidateMessages[0];
         const candidate = candidateMessage.payload as SuggestedActionCandidatePayload;
         const dataMessage = await receive(observer);
 
@@ -1005,6 +1011,14 @@ export default function leaderAgentTest() {
         expect(Object.keys(candidate).sort().join(',')).assertEqual(
           'goal,suggestedActionId'
         );
+        expect((candidateMessages[1].payload as SuggestedActionCandidatePayload).goal)
+          .assertEqual('帮用户计算114元的路费转化成美金是多少钱');
+        expect((candidateMessages[2].payload as SuggestedActionCandidatePayload).goal)
+          .assertEqual('帮用户查询华为坂田基地附近的食宿');
+        expect((candidateMessages[3].payload as SuggestedActionCandidatePayload).goal)
+          .assertEqual('查询华为坂田基地附近的资讯');
+        expect((candidateMessages[3].payload as SuggestedActionCandidatePayload).suggestedActionId)
+          .assertEqual('route-input:ui:suggested-action:4');
         expect(dataMessage.type).assertEqual(AgentMessageType.TASK_CREATE_DATA);
         expect((dataMessage.payload as CreateDataTaskPayload).toolId).assertEqual('hotel.search');
 
@@ -1859,7 +1873,7 @@ export default function leaderAgentTest() {
       );
 
       expect(requests.length).assertEqual(1);
-      expect(candidates.length).assertEqual(1);
+      expect(candidates.length).assertEqual(4);
       expect(beforeMarker.filter(
         (message: AgentMessage): boolean => message.type === AgentMessageType.TASK_CREATE_DATA ||
           message.type === AgentMessageType.TASK_CREATE_UI
@@ -1871,6 +1885,12 @@ export default function leaderAgentTest() {
       expect(candidate.suggestedActionId).assertEqual(
         request.uiTaskId + ':suggested-action:1'
       );
+      expect((candidates[1].payload as SuggestedActionCandidatePayload).goal)
+        .assertEqual('帮用户计算114元的路费转化成美金是多少钱');
+      expect((candidates[2].payload as SuggestedActionCandidatePayload).goal)
+        .assertEqual('帮用户查询华为坂田基地附近的食宿');
+      expect((candidates[3].payload as SuggestedActionCandidatePayload).goal)
+        .assertEqual('查询华为坂田基地附近的资讯');
       expect(request.uiTaskId).assertEqual('input-1:round-1:virtual');
       expect(request.dataTaskIds.length).assertEqual(0);
       expect(request.goal).assertEqual('Remember the explicit user statement');

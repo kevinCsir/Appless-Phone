@@ -72,6 +72,33 @@ function firecrawlDefinitions(definitions: ToolDefinition[]): ToolDefinition[] {
 
 export default function toolDefinitionRegistryTest() {
   describe('toolDefinitionRegistry', () => {
+    it('exposes exactly ten read-only schemas for suggested-action preparation', 0, () => {
+      const schemaToolIds = allToolDefinitions().filter((definition: ToolDefinition): boolean =>
+        definition.riskLevel === 'read' && definition.inputJsonSchema !== undefined &&
+          definition.backendPriority.length > 0 &&
+          definition.backendPriority.indexOf('system_intent') < 0
+      ).map((definition: ToolDefinition): string => definition.toolId);
+
+      expect(schemaToolIds.join(',')).assertEqual(
+        'time,hotel.search,food.search,media.video.search,media.aggregate.search,ride.estimate,' +
+          'web.research.search,web.page.read,shopping.research,social.public.search'
+      );
+      expect(validateToolInputValue(
+        (toolDefinitionForToolId('time') as ToolDefinition).inputJsonSchema as ToolInputJsonSchema,
+        new Object()
+      ).ok).assertTrue();
+      expect(validateToolInputValue(
+        (toolDefinitionForToolId('media.video.search') as ToolDefinition)
+          .inputJsonSchema as ToolInputJsonSchema,
+        JSON.parse('{"query":"Qwen Max","sources":["youtube","bilibili"]}') as Object
+      ).ok).assertTrue();
+      expect(validateToolInputValue(
+        (toolDefinitionForToolId('shopping.research') as ToolDefinition)
+          .inputJsonSchema as ToolInputJsonSchema,
+        JSON.parse('{"query":"consumer laptop","maxProducts":3}') as Object
+      ).ok).assertTrue();
+    });
+
     it('recognizes existing local adapters and Gmail tools through one registry', 0, () => {
       expect(isKnownDomainToolId('travel.search')).assertTrue();
       expect(isKnownDomainToolId('food.search')).assertTrue();
@@ -254,6 +281,18 @@ export default function toolDefinitionRegistryTest() {
       ) as Object).ok).assertTrue();
       expect(validateToolInputValue(foodSchema, JSON.parse(
         '{"query":"Huawei Bantian Base nearby food","unknown":true}'
+      ) as Object).code).assertEqual('TOOL_INPUT_ADDITIONAL_PROPERTY');
+      const ride = toolDefinitionForToolId('ride.estimate') as ToolDefinition;
+      const rideSchema = ride.inputJsonSchema as ToolInputJsonSchema;
+      expect(ride.inputSchema).assertEqual('rideRouteQuery');
+      expect(validateToolInputValue(rideSchema, JSON.parse(
+        '{"origin":"Huawei Bantian Base","destination":"Shenzhen Experimental School","city":"Shenzhen"}'
+      ) as Object).ok).assertTrue();
+      expect(validateToolInputValue(rideSchema, JSON.parse(
+        '{"origin":"Huawei Bantian Base"}'
+      ) as Object).code).assertEqual('TOOL_INPUT_REQUIRED_PROPERTY_MISSING');
+      expect(validateToolInputValue(rideSchema, JSON.parse(
+        '{"origin":"Huawei Bantian Base","destination":"Shenzhen Experimental School","mode":"taxi"}'
       ) as Object).code).assertEqual('TOOL_INPUT_ADDITIONAL_PROPERTY');
       expect(detail.domain).assertEqual('hotel');
       expect(detail.riskLevel).assertEqual('read');

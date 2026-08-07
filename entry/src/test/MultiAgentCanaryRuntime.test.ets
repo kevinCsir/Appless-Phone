@@ -270,6 +270,23 @@ function suggestedFoodDraft(query: string): string {
     '"stepId":"search-nearby-food","toolId":"food.search","args":{' +
     '"query":' + JSON.stringify(query) + '}}]}';
 }
+
+function suggestedAggregateSearchDraft(query: string): string {
+  return '{"canImplement":true,"reasonCode":"","label":"搜索相关资讯","steps":[{' +
+    '"stepId":"search-related-media","toolId":"media.aggregate.search","args":{' +
+    '"query":' + JSON.stringify(query) + '}}]}';
+}
+
+function suggestedHotelAndFoodDraft(goal: string): string {
+  return '{"canImplement":true,"reasonCode":"","label":"查看附近酒店和美食","steps":[{' +
+    '"stepId":"search-nearby-hotels","toolId":"hotel.search","args":{' +
+    '"originQuery":' + JSON.stringify(goal) + ',"place":"华为坂田基地",' +
+    '"placeType":"POI","countryCode":"CN","checkInDate":"2026-07-22",' +
+    '"stayNights":1,"adultCount":1,"childCount":0,"childAgeDetails":[],' +
+    '"roomCount":1,"currency":"","size":0}},' +
+    '{"stepId":"search-nearby-food","toolId":"food.search","args":{' +
+    '"query":"查询华为坂田基地附近的美食"}}]}';
+}
 const CALENDAR_CREATE_DECISION: string = '{"personaId":"work_companion","skillId":"",' +
   '"requestedCapabilityIds":["calendar.event.create"],"roundAction":"execute","continuationMode":"complete","dataTasks":[],' +
   '"uiIntent":{"purpose":"calendar.event.create","preferredDensity":"comfortable",' +
@@ -634,6 +651,45 @@ class CanaryHotelExecutor implements DataTaskExecutor {
   }
 }
 
+class CanaryHotelAndFoodExecutor extends CanaryHotelExecutor {
+  async execute(task: CreateDataTaskPayload): Promise<DataResult> {
+    if (task.toolId === 'food.search') {
+      this.calls.push(task.toolId);
+      this.tasks.push(task);
+      return canaryStructuredResult(task.toolId, task.outputSchema);
+    }
+    return super.execute(task);
+  }
+}
+
+class DeferredHotelAndFoodExecutor extends CanaryHotelAndFoodExecutor {
+  readonly started: string[] = [];
+  readonly bothStarted: TestGate = new TestGate();
+  private readonly hotelRelease: TestGate = new TestGate();
+  private readonly foodRelease: TestGate = new TestGate();
+
+  async execute(task: CreateDataTaskPayload): Promise<DataResult> {
+    this.started.push(task.toolId);
+    if (this.started.length === 2) {
+      this.bothStarted.open();
+    }
+    if (task.toolId === 'hotel.search') {
+      await this.hotelRelease.promise;
+    } else if (task.toolId === 'food.search') {
+      await this.foodRelease.promise;
+    }
+    return super.execute(task);
+  }
+
+  releaseHotel(): void {
+    this.hotelRelease.open();
+  }
+
+  releaseFood(): void {
+    this.foodRelease.open();
+  }
+}
+
 class TwoToolExecutor implements DataTaskExecutor {
   readonly calls: string[] = [];
 
@@ -747,6 +803,20 @@ class RecordingGenericExecutor implements DataTaskExecutor {
   async execute(task: CreateDataTaskPayload): Promise<DataResult> {
     this.tasks.push(task);
     return canaryStructuredResult(task.toolId, task.outputSchema);
+  }
+}
+
+class AggregateSearchExecutor implements DataTaskExecutor {
+  async execute(task: CreateDataTaskPayload): Promise<DataResult> {
+    return {
+      toolId: task.toolId,
+      outputSchema: task.outputSchema,
+      status: 'success',
+      sources: [],
+      data: JSON.parse('{"query":"华为坂田基地","videos":[],"posts":[],' +
+        '"sourceStatuses":[],"summary":"真实聚合结果"}') as Object,
+      warnings: []
+    };
   }
 }
 
@@ -1702,6 +1772,213 @@ export default function multiAgentCanaryRuntimeTest() {
       expect(executor.tasks[0].outputSchema).assertEqual('foodChoices');
       runtime.dispose();
     });
+
+    it('uses the prepared single-step tool identity when the result surface omits it', 0,
+      async () => {
+        const goal = '帮用户搜索华为坂田基地相关资讯';
+        const suggestedActionId = 'demo.related-media';
+        const bus = new TrackingBus();
+        const rendered: A2uiSurfaceState[] = [];
+        const suggestedButton: A2uiAction = {
+          id: 'suggested-action.demo.run',
+          label: '搜索相关资讯',
+          prompt: suggestedActionId,
+          variant: 'secondary',
+          kind: 'client',
+          args: JSON.parse('{"suggestedActionId":"demo.related-media"}') as Object
+        };
+        let currentHost = pageSurface('maps.route.open', suggestedButton, 21);
+        const options = canaryOptions(
+          new QueueModel([suggestedAggregateSearchDraft('华为坂田基地')]),
+          new AggregateSearchExecutor(),
+          new RecordingOpener(),
+          rendered,
+          [],
+          bus
+        );
+        options.onSurface = (surface: A2uiSurfaceState): boolean => {
+          rendered.push(surface);
+          currentHost = surface;
+          return true;
+        };
+        options.currentHostSurface = (): A2uiSurfaceState | null => currentHost;
+        options.currentHostGeneration = (): number => currentHost.runtimeGeneration === undefined ?
+          0 : currentHost.runtimeGeneration;
+        options.currentPageSnapshot = (): RegisteredPageSnapshot | null => pageSnapshot(currentHost, 21);
+        const runtime = new MultiAgentCanaryRuntime(options);
+        const candidate: SuggestedActionCandidatePayload = { suggestedActionId, goal };
+        bus.publish({
+          type: AgentMessageType.SUGGESTED_ACTION_CANDIDATE,
+          conversationId: 'canary-test',
+          turnId: 'route-turn',
+          taskId: 'route-ui',
+          payload: candidate
+        });
+        await flush();
+
+        expect(runtime.runSuggestedAction(suggestedActionId)).assertTrue();
+        await flush(24);
+        const result = rendered[rendered.length - 1];
+        const model = JSON.parse(result.dataModelJson) as
+          Record<string, Object | string | number | boolean | null | undefined>;
+        const board = model['multiTask'] as MultiTaskBoardData;
+        expect(isMultiTaskSurface(result)).assertTrue();
+        expect(board.sections.length).assertEqual(2);
+        expect(board.sections[0].toolId).assertEqual('maps.route.open');
+        expect(board.sections[1].toolId).assertEqual('media.aggregate.search');
+        expect(board.activeSectionId).assertEqual('slot_1');
+        runtime.dispose();
+      });
+
+    it('hosts prepared hotel and food results beside the route in one flat MultiTask surface', 0,
+      async () => {
+        const goal = '帮用户查询华为坂田基地附近的酒店和美食';
+        const suggestedActionId = 'demo.nearby-hotel-food';
+        const bus = new TrackingBus();
+        const executor = new CanaryHotelAndFoodExecutor();
+        const rendered: A2uiSurfaceState[] = [];
+        const suggestedButton: A2uiAction = {
+          id: 'suggested-action.demo.run',
+          label: '查看附近酒店和美食',
+          prompt: suggestedActionId,
+          variant: 'secondary',
+          kind: 'client',
+          args: JSON.parse('{"suggestedActionId":"demo.nearby-hotel-food"}') as Object
+        };
+        let currentHost = pageSurface('maps.route.open', suggestedButton, 19);
+        const options = canaryOptions(
+          new QueueModel([suggestedHotelAndFoodDraft(goal)]),
+          executor,
+          new RecordingOpener(),
+          rendered,
+          [],
+          bus
+        );
+        options.onSurface = (surface: A2uiSurfaceState): boolean => {
+          rendered.push(surface);
+          currentHost = surface;
+          return true;
+        };
+        options.currentHostSurface = (): A2uiSurfaceState | null => currentHost;
+        options.currentHostGeneration = (): number => currentHost.runtimeGeneration === undefined ?
+          0 : currentHost.runtimeGeneration;
+        options.currentPageSnapshot = (): RegisteredPageSnapshot | null => pageSnapshot(currentHost, 19);
+        const runtime = new MultiAgentCanaryRuntime(options);
+        const candidate: SuggestedActionCandidatePayload = { suggestedActionId, goal };
+        bus.publish({
+          type: AgentMessageType.SUGGESTED_ACTION_CANDIDATE,
+          conversationId: 'canary-test',
+          turnId: 'route-turn',
+          taskId: 'route-ui',
+          payload: candidate
+        });
+        await flush();
+
+        expect(runtime.runSuggestedAction(suggestedActionId)).assertTrue();
+        await flush(36);
+        const result = rendered[rendered.length - 1];
+        const model = JSON.parse(result.dataModelJson) as
+          Record<string, Object | string | number | boolean | null | undefined>;
+        const board = model['multiTask'] as MultiTaskBoardData;
+        expect(isMultiTaskSurface(result)).assertTrue();
+        expect(board.sections.length).assertEqual(3);
+        expect(board.sections[0].toolId).assertEqual('maps.route.open');
+        expect(board.sections[1].toolId).assertEqual('hotel.search');
+        expect(board.sections[2].toolId).assertEqual('food.search');
+        expect(board.activeSectionId).assertEqual('slot_1');
+        expect(executor.calls.join(',')).assertEqual('hotel.search,food.search');
+        expect(executor.tasks.length).assertEqual(2);
+        runtime.dispose();
+      });
+
+    it('activates only the first independent result and preserves the current tab', 0,
+      async () => {
+        const goal = 'prepare nearby hotels and food';
+        const suggestedActionId = 'demo.incremental-hotel-food';
+        const bus = new TrackingBus();
+        const executor = new DeferredHotelAndFoodExecutor();
+        const rendered: A2uiSurfaceState[] = [];
+        const suggestedButton: A2uiAction = {
+          id: 'suggested-action.demo.run',
+          label: 'nearby hotels and food',
+          prompt: suggestedActionId,
+          variant: 'secondary',
+          kind: 'client',
+          args: JSON.parse('{"suggestedActionId":"demo.incremental-hotel-food"}') as Object
+        };
+        let currentHost = pageSurface('maps.route.open', suggestedButton, 20);
+        const options = canaryOptions(
+          new QueueModel([suggestedHotelAndFoodDraft(goal)]),
+          executor,
+          new RecordingOpener(),
+          rendered,
+          [],
+          bus
+        );
+        options.onSurface = (surface: A2uiSurfaceState): boolean => {
+          rendered.push(surface);
+          currentHost = surface;
+          return true;
+        };
+        options.currentHostSurface = (): A2uiSurfaceState | null => currentHost;
+        options.currentHostGeneration = (): number => currentHost.runtimeGeneration === undefined ?
+          0 : currentHost.runtimeGeneration;
+        options.currentPageSnapshot = (): RegisteredPageSnapshot | null => pageSnapshot(currentHost, 20);
+        const runtime = new MultiAgentCanaryRuntime(options);
+        const candidate: SuggestedActionCandidatePayload = { suggestedActionId, goal };
+        bus.publish({
+          type: AgentMessageType.SUGGESTED_ACTION_CANDIDATE,
+          conversationId: 'canary-test',
+          turnId: 'route-turn',
+          taskId: 'route-ui',
+          payload: candidate
+        });
+        await flush();
+
+        expect(runtime.runSuggestedAction(suggestedActionId)).assertTrue();
+        await executor.bothStarted.promise;
+        executor.releaseHotel();
+        await flush(24);
+
+        expect(rendered.length).assertEqual(1);
+        const firstModel = JSON.parse(rendered[0].dataModelJson) as
+          Record<string, Object | string | number | boolean | null | undefined>;
+        const firstBoard = firstModel['multiTask'] as MultiTaskBoardData;
+        expect(firstBoard.sections.length).assertEqual(2);
+        expect(firstBoard.sections[0].toolId).assertEqual('maps.route.open');
+        expect(firstBoard.sections[1].toolId).assertEqual('hotel.search');
+        expect(firstBoard.activeSectionId).assertEqual('slot_1');
+
+        firstBoard.activeSectionId = 'slot_0';
+        firstModel['multiTask'] = firstBoard as Object;
+        currentHost = {
+          surfaceId: currentHost.surfaceId,
+          rootId: currentHost.rootId,
+          title: currentHost.title,
+          intent: currentHost.intent,
+          status: currentHost.status,
+          components: currentHost.components,
+          dataModelJson: JSON.stringify(firstModel),
+          error: currentHost.error,
+          sequence: currentHost.sequence + 1,
+          runtimeOwner: currentHost.runtimeOwner,
+          runtimeGeneration: currentHost.runtimeGeneration
+        };
+        executor.releaseFood();
+        await flush(24);
+
+        expect(rendered.length).assertEqual(2);
+        const finalModel = JSON.parse(rendered[1].dataModelJson) as
+          Record<string, Object | string | number | boolean | null | undefined>;
+        const finalBoard = finalModel['multiTask'] as MultiTaskBoardData;
+        expect(finalBoard.sections.length).assertEqual(3);
+        expect(finalBoard.sections[0].toolId).assertEqual('maps.route.open');
+        expect(finalBoard.sections[1].toolId).assertEqual('hotel.search');
+        expect(finalBoard.sections[2].toolId).assertEqual('food.search');
+        expect(finalBoard.activeSectionId).assertEqual('slot_0');
+        expect(executor.calls.join(',')).assertEqual('hotel.search,food.search');
+        runtime.dispose();
+      });
 
     it('executes time from the device clock without calling an external provider', 0, async () => {
       const model = new QueueModel([TIME_DECISION, TIME_DONE_DECISION]);
