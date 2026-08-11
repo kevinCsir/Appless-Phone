@@ -32,6 +32,9 @@ export const PYTHON_TOOL_CONTRACT_SYSTEM_PROMPT: string =
   'Set canGenerate=true only when the capability can be implemented as a deterministic, standalone, read-only ' +
   'Python program using only its structured input and the Python standard library. It must not require network ' +
   'access, current external data, files, device APIs, user interaction, another tool\'s output, or side effects. ' +
+  'The current system time is available through the Python standard library and is not considered external data. ' +
+  'When a generated tool depends on the current time, state this explicitly in implementationDescription, for ' +
+  'example: read the current time and convert it to the requested timezone. ' +
   'Otherwise, return canGenerate=false. Return exactly one JSON object with exactly these fields: canGenerate, ' +
   'reasonCode, contract. For a successful result, canGenerate must be true, reasonCode must be the empty string, ' +
   'and contract must contain exactly domain, intent, inputJsonSchema, outputJsonSchema, and ' +

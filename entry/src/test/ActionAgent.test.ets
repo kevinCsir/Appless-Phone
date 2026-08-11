@@ -846,6 +846,9 @@ export default function actionAgentTest() {
         expect(model.prompts[0].indexOf('hotel.search') >= 0).assertTrue();
         expect(model.prompts[0].indexOf(goal) >= 0).assertTrue();
         expect(model.systemPrompts[0].indexOf('inputJsonSchema') >= 0).assertTrue();
+        expect(model.systemPrompts[0].indexOf('3 to 5 Chinese characters') >= 0).assertTrue();
+        expect(model.systemPrompts[0].indexOf('Return raw JSON only') >= 0).assertTrue();
+        expect(model.systemPrompts[0].indexOf('```json') >= 0).assertTrue();
         expect(model.prompts[0].indexOf('"required":["originQuery","place"') >= 0).assertTrue();
         const compilerInput = JSON.parse(model.prompts[0]) as Record<string, Object | string>;
         const registeredTools = compilerInput['registeredTools'] as ToolDefinition[];
@@ -860,6 +863,7 @@ export default function actionAgentTest() {
           );
         expect(model.completionOptions[0]?.includeUsage).assertTrue();
         expect(model.completionOptions[0]?.requestTag).assertEqual('suggested-action-preparer');
+        expect(model.completionOptions[0]?.responseFormat).assertEqual('json_object');
 
         (prepared.steps[0].args as Record<string, string>)['place'] = 'mutated';
         const reread = agent.inspectPreparedAction(candidate.suggestedActionId) as

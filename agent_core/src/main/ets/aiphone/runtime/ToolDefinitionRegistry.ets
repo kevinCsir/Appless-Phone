@@ -55,7 +55,8 @@ const RIDE_ESTIMATE_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
 
 const TIME_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(
   '{"type":"object","description":"Read the current device date and time. This tool takes no ' +
-    'arguments.","properties":{},"additionalProperties":false}'
+    'arguments and cannot query the local time of another region or timezone.","properties":{},' +
+    '"additionalProperties":false}'
 ) as ToolInputJsonSchema;
 
 const MEDIA_VIDEO_SEARCH_INPUT_JSON_SCHEMA: ToolInputJsonSchema = JSON.parse(

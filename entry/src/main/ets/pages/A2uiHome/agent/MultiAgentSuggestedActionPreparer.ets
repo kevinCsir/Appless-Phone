@@ -35,11 +35,13 @@ const SUGGESTED_ACTION_SYSTEM_PROMPT: string =
   'one tool cannot fully implement the goal and each selected tool implements a distinct required part. Every step ' +
   'must be independently executable using arguments derived only from the supplied goal; do not create dependencies ' +
   'between steps. Never drop, weaken, or rewrite a goal constraint merely to produce a plan. For canImplement=true, ' +
-  'reasonCode must be the empty string, label must be a concise user-facing label, and steps must contain one or ' +
+  'reasonCode must be the empty string, label must be a Chinese action title containing 3 to 5 Chinese characters ' +
+  '(for example, 查询酒店, 查询美食, 查路费, or 查询资讯), and steps must contain one or ' +
   'more objects with exactly stepId, toolId, and args. Each stepId must be a unique non-empty descriptive JSON string. ' +
   'For canImplement=false, reasonCode must be one of NO_SUPPORTED_TOOL, UNSUPPORTED_CONSTRAINT, or ' +
   'UNSUPPORTED_FLOW, label must be the empty string, and steps must be an empty array. ' +
   'Use currentLocalDate only to resolve relative dates. Use schema descriptions for omitted-value defaults. ' +
+  'Return raw JSON only; never wrap it in a Markdown code block such as ```json ... ```. ' +
   'Do not add bindings, sources, explanations, markdown, or fields absent from the selected inputJsonSchema.';
 
 export type SuggestedActionCurrentLocalDateProvider = () => string;
@@ -135,7 +137,8 @@ export class MultiAgentSuggestedActionPreparer implements SuggestedActionPrepare
       SUGGESTED_ACTION_SYSTEM_PROMPT,
       {
         includeUsage: true,
-        requestTag: 'suggested-action-preparer'
+        requestTag: 'suggested-action-preparer',
+        responseFormat: 'json_object'
       }
     );
     const parsed: Object = JSON.parse(raw.trim()) as Object;
@@ -200,9 +203,6 @@ export class MultiAgentSuggestedActionPreparer implements SuggestedActionPrepare
     if (registry === null || contractGenerator === null || codeGenerator === null) {
       return false;
     }
-    if (onStarted !== undefined) {
-      onStarted();
-    }
     try {
       const contractResult: PythonToolContractGenerationResult =
         await contractGenerator.generate(goal);
@@ -213,6 +213,9 @@ export class MultiAgentSuggestedActionPreparer implements SuggestedActionPrepare
         return false;
       }
       const scaffold: PythonToolScaffold = generatePythonToolScaffold(contract);
+      if (onStarted !== undefined) {
+        onStarted();
+      }
       const codeResult: PythonToolCodeGenerationResult =
         await codeGenerator.generate(contract, scaffold);
       if (!codeResult.canGenerate) {

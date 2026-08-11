@@ -110,89 +110,57 @@ export function suggestedActionsPanelAllowsAction(
 
 export const SUGGESTED_ACTIONS_CSS: string = `
 .suggested-actions-panel {
-  margin-top: 14px;
-  padding: 13px;
-  border: 1px solid rgba(116, 91, 255, 0.20);
-  border-radius: 16px;
-  background: linear-gradient(145deg, rgba(247, 245, 255, 0.96), rgba(255, 255, 255, 0.92));
-  box-shadow: 0 10px 28px rgba(69, 51, 140, 0.08);
-}
-.suggested-actions-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-  color: #493f68;
-  font-size: 13px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-}
-.suggested-actions-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 24px;
-  height: 20px;
-  padding: 0 7px;
-  border-radius: 999px;
-  color: #fff;
-  background: #7258d8;
-  font-size: 10px;
-  letter-spacing: 0.08em;
+  margin-top: 12px;
 }
 .suggested-actions-list {
-  display: grid;
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
-.suggested-action-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  min-height: 42px;
-  padding: 9px 10px;
-  border: 1px solid transparent;
-  border-radius: 12px;
-  font-size: 13px;
-}
-.suggested-action-item[data-status="ready"] {
-  color: #22613c;
-  border-color: #b9dec7;
-  background: #ecf8f0;
-}
-.suggested-action-item[data-status="generating-code"] {
-  color: #73510c;
-  border-color: #ead293;
-  background: #fff8df;
-}
-.suggested-action-copy {
-  min-width: 0;
-  flex: 1;
-  line-height: 1.4;
-  overflow-wrap: anywhere;
-}
 .suggested-action-button {
-  flex: 0 0 auto;
-  min-width: 52px;
-  min-height: 34px;
-  padding: 7px 14px;
-  border: 1px solid #abd7bc;
-  border-radius: 10px;
-  color: #185b35;
-  background: #e7f7ed;
+  position: relative;
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 40px;
+  padding: 6px 13px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--kind-accent, var(--accent));
+  background: var(--kind-soft, var(--accent-soft));
   font: inherit;
-  font-size: 13px;
-  font-weight: 750;
-  text-align: center;
+  box-shadow: none;
 }
 .suggested-action-button:active {
-  background: #d9f0e2;
+  transform: scale(0.98);
 }
-.suggested-action-generating {
-  flex: 0 0 auto;
-  color: #95680b;
-  font-size: 12px;
-  font-weight: 750;
+.suggested-action-button[data-status="generating-code"] {
+  border-color: rgba(91, 71, 178, 0.24);
+  color: #5b47b2;
+  background: rgba(116, 91, 214, 0.12);
+}
+.suggested-action-button:disabled {
+  cursor: default;
+  opacity: 1;
+}
+.suggested-action-title {
+  max-width: 100%;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+.suggested-action-meta {
+  position: absolute;
+  right: 10px;
+  bottom: 2px;
+  font-size: 7px;
+  font-weight: 650;
+  line-height: 1;
+  opacity: 0.72;
   white-space: nowrap;
 }
 `;
@@ -238,19 +206,21 @@ export const SUGGESTED_ACTIONS_JS: string = `
     }
     visibleItems.forEach(function (item) {
       if (text(item.status) === 'preparing') {
-        var generatingRow = add(listHost, 'div', 'suggested-action-item');
-        generatingRow.setAttribute('data-status', 'generating-code');
-        add(generatingRow, 'div', 'suggested-action-copy', text(item.goal));
-        add(generatingRow, 'div', 'suggested-action-generating', '代码动态生成中');
+        var generatingButton = add(listHost, 'button', 'suggested-action-button');
+        generatingButton.type = 'button';
+        generatingButton.disabled = true;
+        generatingButton.setAttribute('data-status', 'generating-code');
+        add(generatingButton, 'span', 'suggested-action-title', text(item.goal));
+        add(generatingButton, 'span', 'suggested-action-meta', '代码动态生成中');
         return;
       }
       var action = item.action;
-      var row = add(listHost, 'div', 'suggested-action-item');
-      row.setAttribute('data-status', 'ready');
-      add(row, 'div', 'suggested-action-copy', text(action.label));
-      var button = add(row, 'button', 'suggested-action-button', 'Go');
+      var button = add(listHost, 'button', 'suggested-action-button');
       button.type = 'button';
+      button.setAttribute('data-status', 'ready');
       button.setAttribute('data-suggested-action-id', text(item.suggestedActionId));
+      add(button, 'span', 'suggested-action-title', text(action.label));
+      add(button, 'span', 'suggested-action-meta', 'ai-suggest');
       button.addEventListener('click', function () { postAction(action); });
     });
   }
@@ -264,9 +234,6 @@ export const SUGGESTED_ACTIONS_JS: string = `
     }
     var panel = add(parent, 'section', 'suggested-actions-panel');
     panel.id = 'suggested-actions-panel';
-    var header = add(panel, 'div', 'suggested-actions-header');
-    add(header, 'span', 'suggested-actions-badge', 'AI');
-    add(header, 'span', '', 'suggest');
     add(panel, 'div', 'suggested-actions-list');
     state.host = panel;
     render();

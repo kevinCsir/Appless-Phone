@@ -419,6 +419,11 @@ export class LeaderAgent extends MessageDrivenAgent {
     decision: LeaderDecision,
     trustedCurrentLocalDate: string
   ): void {
+    if (decision.suggestedGoals !== undefined &&
+      (state.round !== 1 || decision.roundAction !== 'execute' ||
+        !this.validSuggestedGoals(decision.suggestedGoals))) {
+      decision.suggestedGoals = undefined;
+    }
     if (Array.isArray(decision.dataTasks) &&
       decision.dataTasks.length > MAX_LEADER_DATA_TASKS_PER_ROUND) {
       this.finishTurn(state);
@@ -432,15 +437,6 @@ export class LeaderAgent extends MessageDrivenAgent {
     if (!this.validDecision(decision, trustedCurrentLocalDate)) {
       this.finishTurn(state);
       this.publishError(message, 'LEADER_PLAN_INVALID', 'Leader decision violates its exact capability contract');
-      return;
-    }
-    if (state.round !== 1 && decision.suggestedGoals !== undefined) {
-      this.finishTurn(state);
-      this.publishError(
-        message,
-        'LEADER_SUGGESTED_GOALS_INVALID',
-        'Leader suggestions are allowed only in the first planning round'
-      );
       return;
     }
     if (state.personaId.length > 0 &&
@@ -1682,16 +1678,11 @@ export class LeaderAgent extends MessageDrivenAgent {
     state: LeaderTurnState,
     decision: LeaderDecision
   ): void {
-    // Temporary video demo: publish only fixed goals and ignore Leader suggestions.
-    const goals: string[] = [
-      '帮用户查询华为坂田基地附近的食宿',
-      '帮用户查询华为坂田基地的相关资讯',
-      '帮用户把30摄氏度气温转化为华氏度',
-      '帮用户查询从深圳实验学校到华为坂田基地的路费'
-    ];
-    if (state.round !== 1 || decision.roundAction !== 'execute') {
+    if (state.round !== 1 || decision.roundAction !== 'execute' ||
+      decision.suggestedGoals === undefined) {
       return;
     }
+    const goals: string[] = decision.suggestedGoals;
     const taskId: string = decision.dataTasks.length > 0 ? state.uiTaskId :
       state.inputTaskId + ':round-' + state.round.toString() + ':virtual';
     for (let index = 0; index < goals.length; index++) {

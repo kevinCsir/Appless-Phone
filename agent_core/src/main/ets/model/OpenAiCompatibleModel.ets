@@ -17,10 +17,15 @@ interface ChatRequest {
   temperature: number;
   stream: boolean;
   stream_options?: ChatStreamOptions;
+  response_format?: ChatResponseFormat;
 }
 
 interface ChatStreamOptions {
   include_usage: boolean;
+}
+
+interface ChatResponseFormat {
+  type: 'json_object';
 }
 
 interface ChatTokenUsage {
@@ -121,7 +126,7 @@ export class OpenAiCompatibleModel implements LocalModel {
       aiLogInfo(
         '[AIPhone][ModelRequestStart] model=' + requestModel +
         ' endpoint=' + endpoint +
-        ' stream=true'
+        ' stream=true responseFormat=' + (options?.responseFormat ?? 'text')
       );
       const statusCode = await httpRequest.requestInStream(endpoint, {
         method: http.RequestMethod.POST,
@@ -213,6 +218,9 @@ export class OpenAiCompatibleModel implements LocalModel {
     };
     if (options !== undefined && options.includeUsage === true) {
       request.stream_options = { include_usage: true };
+    }
+    if (options?.responseFormat !== undefined) {
+      request.response_format = { type: options.responseFormat };
     }
     return request;
   }

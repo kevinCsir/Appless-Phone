@@ -2298,11 +2298,16 @@ export default function htmlHomeRendererTest() {
       expect(html.indexOf("addSuggestedActions(detailHost)")).assertLarger(-1);
       expect(html.indexOf('__aiphoneApplySuggestedActions')).assertLarger(-1);
       expect(html.indexOf('suggested-actions-panel')).assertLarger(-1);
-      expect(html.indexOf("add(header, 'span', '', 'suggest')")).assertLarger(-1);
+      expect(html.indexOf("add(header, 'span', '', 'suggest')")).assertEqual(-1);
       expect(html.indexOf('state.host.hidden = visibleItems.length === 0')).assertLarger(-1);
-      expect(html.indexOf("add(row, 'div', 'suggested-action-copy', text(action.label))")).assertLarger(-1);
-      expect(html.indexOf("add(row, 'button', 'suggested-action-button', 'Go')")).assertLarger(-1);
+      expect(html.indexOf("add(button, 'span', 'suggested-action-title', text(action.label))")).assertLarger(-1);
+      expect(html.indexOf("add(button, 'span', 'suggested-action-meta', 'ai-suggest')")).assertLarger(-1);
       expect(html.indexOf('代码动态生成中')).assertLarger(-1);
+      expect(html.indexOf("background: var(--kind-soft, var(--accent-soft))")).assertLarger(-1);
+      expect(html.indexOf('min-height: 40px')).assertLarger(-1);
+      expect(html.indexOf('text-align: center')).assertLarger(-1);
+      expect(html.indexOf('font-size: 7px')).assertLarger(-1);
+      expect(html.indexOf('bottom: 2px')).assertLarger(-1);
       expect(html.indexOf('正在准备 suggest')).assertEqual(-1);
       expect(html.indexOf('在 App 内查看路线')).assertEqual(-1);
     });
@@ -2314,7 +2319,7 @@ export default function htmlHomeRendererTest() {
           goal: '查询附近酒店',
           status: 'ready',
           reasonCode: '',
-          label: '查看附近酒店'
+          label: '查询酒店'
         },
         {
           suggestedActionId: 'suggest-2',
@@ -2340,7 +2345,7 @@ export default function htmlHomeRendererTest() {
       ];
       const payload = suggestedActionsPanelPayload('route-surface', 4, statuses);
       expect(payload.items.length).assertEqual(2);
-      expect(payload.items[0].action?.label).assertEqual('查看附近酒店');
+      expect(payload.items[0].action?.label).assertEqual('查询酒店');
       expect(payload.items[1].goal).assertEqual('转换温度单位');
       expect(payload.items[1].action === undefined).assertTrue();
       const action = payload.items[0].action as A2uiAction;

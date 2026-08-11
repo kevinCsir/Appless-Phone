@@ -106,7 +106,7 @@ const REQUEST_SCOPE_CONTRACT: string =
 const SUGGESTED_GOALS_CONTRACT: string =
   'suggestedGoals predicts plausible next user intentions from the current request and trusted context. ' +
   'It is a top-level field of LeaderDecision, beside dataTasks and actionIntent. Every first-round execute ' +
-  'decision must include suggestedGoals as a JSON array of 1 to ' +
+  'decision must include suggestedGoals as a JSON array of 3 to ' +
   MAX_LEADER_SUGGESTED_GOALS.toString() + ' unique strings. Each string must be a standalone natural-language ' +
   'goal written in Chinese from a third-person perspective and must start with "帮用户". ' +
   'Do not omit suggestedGoals from a first-round execute decision. Omit it for answer or clarify decisions and ' +
@@ -114,6 +114,12 @@ const SUGGESTED_GOALS_CONTRACT: string =
   'Suggested goals may be exploratory and may be emitted whenever they are related to the current request. ' +
   'They do not need to be strongly related or limited to content explicitly present in the context, but they ' +
   'must never be fully contained by the user\'s original request. ' +
+  'Suggestions may expand around a concrete entity in the user\'s request and seek other information related to ' +
+  'that entity. Example goal forms include "帮用户查询XX附近的酒店", "帮用户查询XX的相关资讯", ' +
+  '"帮用户查询XX的天气", and "帮用户在网络上搜索XX的相关信息"; keep the concrete entity explicit in the goal. ' +
+  'When the user requests a route across regions, suggestions may include querying the current local time at the ' +
+  'destination. For the current request "帮用户查询从天安门到莫斯科红场的路线", a valid example is ' +
+  '{"suggestedGoals":["帮用户查询莫斯科的当前时间"]}. ' +
   'Suggestions are not part of the current request scope: never add them to requestedCapabilityIds, dataTasks, ' +
   'or actionIntent. Downstream modules decide implementability, so do not ' +
   'restrict suggestions to available tools and do not mention tool IDs, agents, schemas, or implementation steps. ' +
@@ -133,10 +139,7 @@ const SUGGESTED_GOALS_CONTRACT: string =
   'mentions Beijing, {"suggestedGoals":["帮用户查询北京天气"]} is valid because Shenzhen weather does not ' +
   'satisfy a Beijing weather request. ' +
   'When the user asks "帮我查询XX（某地）附近的酒店", ' +
-  '{"suggestedGoals":["帮用户查询XX附近的美食"]} is valid because it includes the required place parameter XX. ' +
-  'For the current request "帮我查询从A到B的路线", ' +
-  '{"suggestedGoals":["帮用户查询B附近的酒店","帮用户查询B附近的美食"]} is valid because the original route ' +
-  'request provides neither hotel nor food information near B.';
+  '{"suggestedGoals":["帮用户查询XX附近的美食"]} is valid because it includes the required place parameter XX.';
 const LEADER_SYSTEM_PROMPT: string = 'Return exactly one JSON object and nothing else. ' +
   'Do not include Thought, markdown, or code fences. ' + ANSWER_FIELD_RULE + ' ' + REASON_CODE_FIELD_RULE + ' ' +
   CONTINUATION_MODE_FIELD_RULE + ' ' + REQUEST_SCOPE_CONTRACT + ' ' + SUGGESTED_GOALS_CONTRACT + ' ' +
@@ -647,6 +650,10 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
         const repairedScope: LeaderRepairScope | null = this.repairScope(repaired);
         const repairedDecision: LeaderDecision = this.parseDecision(repaired, context, input.text);
         this.normalizeModelContinuationDecision(repairedDecision);
+        if (rejectedDecision !== null) {
+          repairedDecision.suggestedGoals = rejectedDecision.suggestedGoals === undefined ?
+            undefined : rejectedDecision.suggestedGoals.slice();
+        }
         const acceptedBimStateOnlyRepair: boolean = bimStateOnlyRepair &&
           rejectedDecision !== null &&
           this.bimStateOnlyRepair(rejectedDecision, repairedDecision);
@@ -1712,7 +1719,7 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
         '"toolId":"string","input":{},"required":true}],"uiIntent":{' +
         '"purpose":"string","preferredDensity":"string","requiredSections":["string"]},' +
         '"actionIntent":{"goal":"string","allowedActionIds":["string"]} optional,' +
-        '"suggestedGoals":["帮用户..."] required top-level array of 1 to ' +
+        '"suggestedGoals":["帮用户..."] required top-level array of 3 to ' +
         MAX_LEADER_SUGGESTED_GOALS.toString() + ' strings for first-round execute; omit otherwise,' +
         '"answer":"required non-empty string for answer|clarify; omit for execute",' +
         '"bimSuggestion":{"title":"string","summary":"string","reason":"string",' +
@@ -1929,14 +1936,21 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
         }
       }
     }
-    const suggestedGoals: string[] | null = rawSuggestedGoals === undefined ? null :
-      this.parseSuggestedGoals(rawSuggestedGoals);
+    let suggestedGoals: string[] | null = null;
+    if (rawSuggestedGoals !== undefined) {
+      try {
+        suggestedGoals = this.parseSuggestedGoals(rawSuggestedGoals);
+      } catch (_error) {
+        aiLogInfo('[AIPhone][LeaderSuggestedGoalsDropped] reason=invalid_format');
+      }
+    }
     if ((selectedAction === 'execute' && tasks.length === 0 && actionIntent === null) ||
       (selectedAction !== 'execute' && tasks.length !== 0)) {
       throw new Error('Leader round action does not match its Data tasks.');
     }
     if (suggestedGoals !== null && selectedAction !== 'execute') {
-      throw new Error('Leader suggested goals are allowed only for execute decisions.');
+      suggestedGoals = null;
+      aiLogInfo('[AIPhone][LeaderSuggestedGoalsDropped] reason=non_execute_decision');
     }
     if (continuationMode !== undefined && continuationMode !== 'complete' &&
       (selectedAction !== 'execute' || tasks.length === 0)) {
@@ -2228,6 +2242,16 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
       misplacedGoal = goal;
     }
     if (misplacedIndex < 0 || rawRequested.indexOf(misplacedId) < 0) {
+      return;
+    }
+    if (rawAction === undefined && tasks.length === 1 && rawRequested.length === 1 &&
+      rawRequested[0] === misplacedId && values['continuationMode'] === 'complete') {
+      values['dataTasks'] = [];
+      values['actionIntent'] = {
+        goal: misplacedGoal,
+        allowedActionIds: [misplacedId]
+      } as LeaderActionIntent;
+      aiLogInfo('[AIPhone][LeaderActionOwnedTaskNormalized] tool=' + misplacedId);
       return;
     }
     if (rawAction === undefined && values['continuationMode'] !== 'sequence') {

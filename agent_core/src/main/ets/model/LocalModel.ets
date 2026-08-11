@@ -4,6 +4,7 @@ export interface LocalModelCompletionOptions {
   includeUsage?: boolean;
   requestTag?: string;
   modelOverride?: string;
+  responseFormat?: 'json_object';
 }
 
 export interface LocalModel {

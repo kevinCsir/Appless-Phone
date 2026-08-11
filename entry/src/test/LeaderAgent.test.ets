@@ -994,37 +994,46 @@ export default function leaderAgentTest() {
           '查询从深圳实验学校到华为坂田基地的路线'
         ));
         await receive(observer);
-        const candidateMessages: AgentMessage[] = [
-          await receive(observer),
-          await receive(observer),
-          await receive(observer),
-          await receive(observer)
-        ];
-        const candidateMessage = candidateMessages[0];
+        const candidateMessage = await receive(observer);
         const candidate = candidateMessage.payload as SuggestedActionCandidatePayload;
         const dataMessage = await receive(observer);
 
         expect(candidateMessage.type).assertEqual(AgentMessageType.SUGGESTED_ACTION_CANDIDATE);
         expect(candidateMessage.taskId).assertEqual('route-input:ui');
         expect(candidate.suggestedActionId).assertEqual('route-input:ui:suggested-action:1');
-        expect(candidate.goal).assertEqual('帮用户查询华为坂田基地附近的食宿');
+        expect(candidate.goal).assertEqual('查询华为坂田基地附近的酒店');
         expect(Object.keys(candidate).sort().join(',')).assertEqual(
           'goal,suggestedActionId'
         );
-        expect((candidateMessages[1].payload as SuggestedActionCandidatePayload).goal)
-          .assertEqual('帮用户查询华为坂田基地的相关资讯');
-        expect((candidateMessages[2].payload as SuggestedActionCandidatePayload).goal)
-          .assertEqual('帮用户把30摄氏度气温转化为华氏度');
-        expect((candidateMessages[3].payload as SuggestedActionCandidatePayload).goal)
-          .assertEqual('帮用户查询从深圳实验学校到华为坂田基地的路费');
-        expect((candidateMessages[3].payload as SuggestedActionCandidatePayload).suggestedActionId)
-          .assertEqual('route-input:ui:suggested-action:4');
         expect(dataMessage.type).assertEqual(AgentMessageType.TASK_CREATE_DATA);
         expect((dataMessage.payload as CreateDataTaskPayload).toolId).assertEqual('hotel.search');
 
         leader.stop();
         observer.close();
       });
+
+    it('ignores invalid first-round suggested goals without rejecting the main plan', 0, async () => {
+      const bus = new LinkedMessageBus();
+      const decision = semanticDecision([semanticDataTask('route-source')]);
+      decision.suggestedGoals = ['查询附近的酒店'];
+      const leader = new LeaderAgent(
+        bus,
+        new RoundScriptedPlanner([decision]),
+        semanticPlanningContext()
+      );
+      const observer = bus.openReader();
+      leader.start();
+      try {
+        bus.publish(inputMessage());
+        expect((await receive(observer)).type).assertEqual(AgentMessageType.INPUT_USER);
+        const dataMessage = await receive(observer);
+
+        expect(dataMessage.type).assertEqual(AgentMessageType.TASK_CREATE_DATA);
+      } finally {
+        leader.stop();
+        observer.close();
+      }
+    });
 
     it('rejects a hybrid semantic and legacy result before publishing tasks', 0, async () => {
       const bus = new LinkedMessageBus();
@@ -1873,7 +1882,7 @@ export default function leaderAgentTest() {
       );
 
       expect(requests.length).assertEqual(1);
-      expect(candidates.length).assertEqual(4);
+      expect(candidates.length).assertEqual(1);
       expect(beforeMarker.filter(
         (message: AgentMessage): boolean => message.type === AgentMessageType.TASK_CREATE_DATA ||
           message.type === AgentMessageType.TASK_CREATE_UI
@@ -1885,13 +1894,7 @@ export default function leaderAgentTest() {
       expect(candidate.suggestedActionId).assertEqual(
         request.uiTaskId + ':suggested-action:1'
       );
-      expect(candidate.goal).assertEqual('帮用户查询华为坂田基地附近的食宿');
-      expect((candidates[1].payload as SuggestedActionCandidatePayload).goal)
-        .assertEqual('帮用户查询华为坂田基地的相关资讯');
-      expect((candidates[2].payload as SuggestedActionCandidatePayload).goal)
-        .assertEqual('帮用户把30摄氏度气温转化为华氏度');
-      expect((candidates[3].payload as SuggestedActionCandidatePayload).goal)
-        .assertEqual('帮用户查询从深圳实验学校到华为坂田基地的路费');
+      expect(candidate.goal).assertEqual('查询附近的酒店');
       expect(request.uiTaskId).assertEqual('input-1:round-1:virtual');
       expect(request.dataTaskIds.length).assertEqual(0);
       expect(request.goal).assertEqual('Remember the explicit user statement');
@@ -2138,6 +2141,36 @@ export default function leaderAgentTest() {
 
       leader.stop();
       observer.close();
+    });
+
+    it('ignores suggested goals emitted after the first planning round', 0, async () => {
+      const bus = new LinkedMessageBus();
+      const first = semanticDecision([semanticDataTask('place')]);
+      first.skillId = 'travel-planning';
+      first.reasonCode = 'dependency_requires_next_round';
+      const second = semanticDecision([], 'answer');
+      second.skillId = 'travel-planning';
+      second.suggestedGoals = ['帮用户查询目的地附近的酒店'];
+      const leader = new LeaderAgent(
+        bus,
+        new RoundScriptedPlanner([first, second]),
+        semanticPlanningContext()
+      );
+      const observer = bus.openReader();
+      leader.start();
+      try {
+        bus.publish(inputMessage());
+        await receive(observer);
+        const task = await receive(observer);
+        bus.publish(dataResultMessage(task));
+        expect((await receive(observer)).type).assertEqual(AgentMessageType.TASK_RESULT_DATA);
+        const terminal = await receive(observer);
+
+        expect(terminal.type).assertEqual(AgentMessageType.TURN_RESULT);
+      } finally {
+        leader.stop();
+        observer.close();
+      }
     });
 
     it('rejects changing persona or skill after the first round of one turn', 0, async () => {

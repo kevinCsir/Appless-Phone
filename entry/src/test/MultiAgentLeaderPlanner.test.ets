@@ -972,6 +972,13 @@ function actionAsDataDecision(actionId: string): string {
     '"preferredDensity":"comfortable","requiredSections":[]}}';
 }
 
+function sequencedActionAsDataDecision(actionId: string): string {
+  return actionAsDataDecision(actionId).replace(
+    '"continuationMode":"complete"',
+    '"continuationMode":"sequence"'
+  );
+}
+
 function hotelDetailDualRoleDecision(): string {
   return '{"personaId":"travel_companion","skillId":"",' +
     '"requestedCapabilityIds":["hotel.detail"],"roundAction":"execute","continuationMode":"complete",' +
@@ -3766,7 +3773,7 @@ export default function multiAgentLeaderPlannerTest() {
       }
     });
 
-    it('repairs exactly one Action-owned capability from Data into Action intent', 0,
+    it('normalizes exactly one Action-owned capability from Data into Action intent', 0,
       async () => {
       const actionIds: string[] = [
         'memory.update',
@@ -3790,15 +3797,16 @@ export default function multiAgentLeaderPlannerTest() {
           (): boolean => true
         );
 
-        expect(model.prompts.length).assertEqual(2);
+        expect(model.prompts.length).assertEqual(1);
         expect(decision.dataTasks.length).assertEqual(0);
         expect(decision.actionIntent!.allowedActionIds[0]).assertEqual(actionId);
+        expect(decision.actionIntent!.goal).assertEqual('perform requested action');
       }
     });
 
     it('gives Action ownership repair its one permitted Data-to-Action move', 0, async () => {
       const model = new QueueLocalModel([
-        actionAsDataDecision('memory.update'),
+        sequencedActionAsDataDecision('memory.update'),
         actionDecision('memory.update')
       ]);
       await new MultiAgentLeaderPlanner(model).plan(
@@ -3828,7 +3836,7 @@ export default function multiAgentLeaderPlannerTest() {
 
     it('includes the rejected Action-owned decision without private observations in its repair prompt', 0,
       async () => {
-      const rejected: string = actionAsDataDecision('worldcup.open');
+      const rejected: string = sequencedActionAsDataDecision('worldcup.open');
       const model = new QueueLocalModel([
         rejected,
         actionDecision('worldcup.open')
@@ -3863,7 +3871,7 @@ export default function multiAgentLeaderPlannerTest() {
       );
 
       expect(await repairFails(
-        actionAsDataDecision('memory.update'),
+        sequencedActionAsDataDecision('memory.update'),
         changedUi,
         actionOwnerContext()
       )).assertTrue();
@@ -4093,16 +4101,18 @@ export default function multiAgentLeaderPlannerTest() {
         expect(decision.actionIntent!.allowedActionIds.join(',')).assertEqual('maps.route.open');
         expect(model.systemPrompts[0].indexOf('suggestedGoals') >= 0).assertTrue();
         expect(model.systemPrompts[0].indexOf('Every first-round execute decision must include') >= 0).assertTrue();
-        expect(model.systemPrompts[0].indexOf('1 to 3 unique strings') >= 0).assertTrue();
+        expect(model.systemPrompts[0].indexOf('3 to 5 unique strings') >= 0).assertTrue();
         expect(model.systemPrompts[0].indexOf('completing the current request would already provide') >= 0)
           .assertTrue();
         expect(model.systemPrompts[0].indexOf('帮用户查询北京天气') >= 0).assertTrue();
         expect(model.systemPrompts[0].indexOf('公交路线') < 0).assertTrue();
         expect(model.systemPrompts[0].indexOf('帮用户查询附近的美食') < 0).assertTrue();
-        expect(model.systemPrompts[0].indexOf('帮用户查询B附近的酒店') >= 0).assertTrue();
-        expect(model.systemPrompts[0].indexOf('帮用户查询B附近的美食') >= 0).assertTrue();
-        expect(model.prompts[0].indexOf('帮用户查询B附近的酒店') < 0).assertTrue();
-        expect(model.prompts[0].indexOf('帮用户查询B附近的美食') < 0).assertTrue();
+        expect(model.systemPrompts[0].indexOf('帮用户查询XX附近的酒店') >= 0).assertTrue();
+        expect(model.systemPrompts[0].indexOf('帮用户查询XX的相关资讯') >= 0).assertTrue();
+        expect(model.systemPrompts[0].indexOf('帮用户查询XX的天气') >= 0).assertTrue();
+        expect(model.systemPrompts[0].indexOf('帮用户在网络上搜索XX的相关信息') >= 0).assertTrue();
+        expect(model.systemPrompts[0].indexOf('帮我查询从A到B的路线') < 0).assertTrue();
+        expect(model.prompts[0].indexOf('帮用户查询XX的相关资讯') >= 0).assertTrue();
         expect(model.prompts[0].indexOf('suggestedGoals') >= 0).assertTrue();
       });
 
@@ -4120,7 +4130,7 @@ export default function multiAgentLeaderPlannerTest() {
         expect(decision.suggestedGoals === undefined).assertTrue();
       });
 
-    it('does not inject a nearby-hotel goal after Data-to-Action ownership repair', 0,
+    it('does not inject a nearby-hotel goal after Data-to-Action ownership normalization', 0,
       async () => {
         const model = new QueueLocalModel([
           actionAsDataDecision('maps.route.open'),
@@ -4134,11 +4144,11 @@ export default function multiAgentLeaderPlannerTest() {
           (): boolean => true
         );
 
-        expect(model.prompts.length).assertEqual(2);
+        expect(model.prompts.length).assertEqual(1);
         expect(decision.suggestedGoals === undefined).assertTrue();
       });
 
-    it('accepts up to three suggested goals and rejects malformed, duplicate, oversized, and later-round goals',
+    it('accepts up to five suggested goals and drops malformed, duplicate, and oversized goals',
       0, async () => {
       const valid = routeDecisionWithNearbyHotelSuggestion();
       const three = valid.replace(
@@ -4157,24 +4167,37 @@ export default function multiAgentLeaderPlannerTest() {
         '"suggestedGoals":["帮用户查询华为坂田基地附近的酒店",' +
           '"帮用户查询华为坂田基地附近的酒店"]'
       );
-      const four = three.replace(
+      const five = three.replace(
         '"帮用户查询从华为坂田基地返回深圳实验学校的路线"]',
         '"帮用户查询从华为坂田基地返回深圳实验学校的路线",' +
-          '"帮用户查询华为坂田基地附近的咖啡店"]'
+          '"帮用户查询华为坂田基地附近的咖啡店",' +
+          '"帮用户查询华为坂田基地的相关资讯"]'
+      );
+      const six = five.replace(
+        '"帮用户查询华为坂田基地的相关资讯"]',
+        '"帮用户查询华为坂田基地的相关资讯",' +
+          '"帮用户查询华为坂田基地的天气"]'
       );
 
-      const accepted = await new MultiAgentLeaderPlanner(new QueueLocalModel([three])).plan(
+      const accepted = await new MultiAgentLeaderPlanner(new QueueLocalModel([five])).plan(
         inputMessage(),
         { text: '查询从深圳实验学校到华为坂田基地的驾车路线' },
         actionOwnerContext(),
         1
       );
-      expect(accepted.suggestedGoals!.length).assertEqual(3);
-      expect(await fails(empty)).assertTrue();
-      expect(await fails(wrongPerspective)).assertTrue();
-      expect(await fails(duplicate)).assertTrue();
-      expect(await fails(four)).assertTrue();
-      expect(await failsAtRound(valid, 2)).assertTrue();
+      expect(accepted.suggestedGoals!.length).assertEqual(5);
+      const dropped: string[] = [empty, wrongPerspective, duplicate, six];
+      for (let index = 0; index < dropped.length; index++) {
+        const decision = await new MultiAgentLeaderPlanner(new QueueLocalModel([dropped[index]])).plan(
+          inputMessage(),
+          { text: 'open the requested driving route' },
+          actionOwnerContext(),
+          1
+        );
+        expect(decision.suggestedGoals === undefined).assertTrue();
+        expect(decision.dataTasks.length).assertEqual(0);
+        expect(decision.actionIntent!.allowedActionIds[0]).assertEqual('maps.route.open');
+      }
     });
   });
 }

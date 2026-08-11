@@ -160,6 +160,28 @@ class FallbackPythonGenerationModel implements LocalModel {
   }
 }
 
+class UnsupportedPythonContractFallbackModel implements LocalModel {
+  complete(
+    _prompt: string,
+    _conversation?: ConversationContext,
+    _systemPrompt?: string,
+    options?: LocalModelCompletionOptions
+  ): Promise<string> {
+    const requestTag: string = options?.requestTag ?? '';
+    if (requestTag === 'suggested-action-preparer') {
+      return Promise.resolve(
+        '{"canImplement":false,"reasonCode":"NO_SUPPORTED_TOOL","label":"","steps":[]}'
+      );
+    }
+    if (requestTag === 'python-tool-contract-generator') {
+      return Promise.resolve(
+        '{"canGenerate":false,"reasonCode":"UNSUPPORTED_BY_PYTHON","contract":null}'
+      );
+    }
+    return Promise.reject(new Error('Unexpected model request tag.'));
+  }
+}
+
 class RecordingPythonShellTransport implements PythonShellCommandTransport {
   command: string = '';
   output: string;
@@ -284,11 +306,16 @@ export default function pythonToolScaffoldTest() {
           registry
         );
 
+        let codeGenerationStarted: number = 0;
         const prepared = await preparer.prepare(
-          'Convert 26 degrees Celsius to Fahrenheit'
+          'Convert 26 degrees Celsius to Fahrenheit',
+          (): void => {
+            codeGenerationStarted++;
+          }
         );
 
         expect(prepared.canImplement).assertTrue();
+        expect(codeGenerationStarted).assertEqual(1);
         expect(prepared.steps.length).assertEqual(1);
         expect(prepared.steps[0].toolId.indexOf('python.generated.')).assertEqual(0);
         expect(JSON.stringify(prepared.steps[0].args)).assertEqual(
@@ -308,6 +335,26 @@ export default function pythonToolScaffoldTest() {
         expect(registration.source.indexOf('def func(') === 0).assertTrue();
         expect(registration.source.indexOf('def main(input):') >= 0).assertTrue();
         expect(model.preparerPrompts[1].indexOf('def func(')).assertEqual(-1);
+      });
+
+    it('does not announce code generation when Python contract generation is unsupported', 0,
+      async () => {
+        let codeGenerationStarted: number = 0;
+        const prepared = await new MultiAgentSuggestedActionPreparer(
+          new UnsupportedPythonContractFallbackModel(),
+          [],
+          (): string => '2026-08-11',
+          new RuntimePythonToolRegistry()
+        ).prepare(
+          'Plan a walking route that requires an unavailable provider',
+          (): void => {
+            codeGenerationStarted++;
+          }
+        );
+
+        expect(prepared.canImplement).assertFalse();
+        expect(prepared.reasonCode).assertEqual('NO_SUPPORTED_TOOL');
+        expect(codeGenerationStarted).assertEqual(0);
       });
 
     it('uses the contract generator model without changing the shared model default', 0, async () => {

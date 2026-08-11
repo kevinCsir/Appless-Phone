@@ -34,7 +34,8 @@ export const PYTHON_TOOL_CODE_SYSTEM_PROMPT: string =
   'Implement implementationDescription using only the function parameters and the Python standard library. Do not ' +
   'access the network, filesystem, device APIs, environment variables, global state, or external services. If a ' +
   'standard-library import is necessary, place it inside the function; avoid imports when the behavior can be ' +
-  'implemented directly.\n\n' +
+  'implemented directly. Reading the current system time through the Python standard library is allowed when ' +
+  'implementationDescription explicitly requires it.\n\n' +
   'The function name, parameter names, and parameter order must match requiredFunctionSignature exactly.\n\n' +
   'The function return value must satisfy outputJsonSchema and match outputPropertyOrder. If outputPropertyOrder ' +
   'contains one property, return that property\'s value directly. If it contains multiple properties, return their ' +
