@@ -19,7 +19,7 @@ export interface PreparedActionDraft {
 }
 
 export interface SuggestedActionPreparer {
-  prepare(goal: string): Promise<PreparedActionDraft>;
+  prepare(goal: string, onPythonGenerationStarted?: () => void): Promise<PreparedActionDraft>;
 }
 
 export interface PreparedActionStep {

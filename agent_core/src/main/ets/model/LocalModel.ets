@@ -3,6 +3,7 @@ import { ConversationContext } from '../agent/ConversationContext';
 export interface LocalModelCompletionOptions {
   includeUsage?: boolean;
   requestTag?: string;
+  modelOverride?: string;
 }
 
 export interface LocalModel {

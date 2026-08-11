@@ -1007,16 +1007,16 @@ export default function leaderAgentTest() {
         expect(candidateMessage.type).assertEqual(AgentMessageType.SUGGESTED_ACTION_CANDIDATE);
         expect(candidateMessage.taskId).assertEqual('route-input:ui');
         expect(candidate.suggestedActionId).assertEqual('route-input:ui:suggested-action:1');
-        expect(candidate.goal).assertEqual('查询华为坂田基地附近的酒店');
+        expect(candidate.goal).assertEqual('帮用户查询华为坂田基地附近的食宿');
         expect(Object.keys(candidate).sort().join(',')).assertEqual(
           'goal,suggestedActionId'
         );
         expect((candidateMessages[1].payload as SuggestedActionCandidatePayload).goal)
-          .assertEqual('帮用户计算114元的路费转化成美金是多少钱');
+          .assertEqual('帮用户查询华为坂田基地的相关资讯');
         expect((candidateMessages[2].payload as SuggestedActionCandidatePayload).goal)
-          .assertEqual('帮用户查询华为坂田基地附近的食宿');
+          .assertEqual('帮用户把30摄氏度气温转化为华氏度');
         expect((candidateMessages[3].payload as SuggestedActionCandidatePayload).goal)
-          .assertEqual('查询华为坂田基地附近的资讯');
+          .assertEqual('帮用户查询从深圳实验学校到华为坂田基地的路费');
         expect((candidateMessages[3].payload as SuggestedActionCandidatePayload).suggestedActionId)
           .assertEqual('route-input:ui:suggested-action:4');
         expect(dataMessage.type).assertEqual(AgentMessageType.TASK_CREATE_DATA);
@@ -1885,12 +1885,13 @@ export default function leaderAgentTest() {
       expect(candidate.suggestedActionId).assertEqual(
         request.uiTaskId + ':suggested-action:1'
       );
+      expect(candidate.goal).assertEqual('帮用户查询华为坂田基地附近的食宿');
       expect((candidates[1].payload as SuggestedActionCandidatePayload).goal)
-        .assertEqual('帮用户计算114元的路费转化成美金是多少钱');
+        .assertEqual('帮用户查询华为坂田基地的相关资讯');
       expect((candidates[2].payload as SuggestedActionCandidatePayload).goal)
-        .assertEqual('帮用户查询华为坂田基地附近的食宿');
+        .assertEqual('帮用户把30摄氏度气温转化为华氏度');
       expect((candidates[3].payload as SuggestedActionCandidatePayload).goal)
-        .assertEqual('查询华为坂田基地附近的资讯');
+        .assertEqual('帮用户查询从深圳实验学校到华为坂田基地的路费');
       expect(request.uiTaskId).assertEqual('input-1:round-1:virtual');
       expect(request.dataTaskIds.length).assertEqual(0);
       expect(request.goal).assertEqual('Remember the explicit user statement');

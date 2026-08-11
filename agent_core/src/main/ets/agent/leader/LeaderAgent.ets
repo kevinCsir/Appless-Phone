@@ -1682,24 +1682,13 @@ export class LeaderAgent extends MessageDrivenAgent {
     state: LeaderTurnState,
     decision: LeaderDecision
   ): void {
-    // Temporary device demo: keep real Leader suggestions and append fixed coverage goals.
-    const goals: string[] = [];
-    const leaderGoals: string[] = decision.suggestedGoals ?? [];
-    const demoGoals: string[] = [
-      '帮用户计算114元的路费转化成美金是多少钱',
+    // Temporary video demo: publish only fixed goals and ignore Leader suggestions.
+    const goals: string[] = [
       '帮用户查询华为坂田基地附近的食宿',
-      '查询华为坂田基地附近的资讯'
+      '帮用户查询华为坂田基地的相关资讯',
+      '帮用户把30摄氏度气温转化为华氏度',
+      '帮用户查询从深圳实验学校到华为坂田基地的路费'
     ];
-    for (let index: number = 0; index < leaderGoals.length; index++) {
-      if (goals.indexOf(leaderGoals[index]) < 0) {
-        goals.push(leaderGoals[index]);
-      }
-    }
-    for (let index: number = 0; index < demoGoals.length; index++) {
-      if (goals.indexOf(demoGoals[index]) < 0) {
-        goals.push(demoGoals[index]);
-      }
-    }
     if (state.round !== 1 || decision.roundAction !== 'execute') {
       return;
     }

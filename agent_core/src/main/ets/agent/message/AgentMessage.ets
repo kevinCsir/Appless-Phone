@@ -105,6 +105,9 @@ export interface SuggestedActionCandidatePayload {
 
 export type SuggestedActionPreparationStatus = 'preparing' | 'ready' | 'unsupported' | 'failed';
 
+export const SUGGESTED_ACTION_REASON_PYTHON_CODE_GENERATING: string =
+  'PYTHON_CODE_GENERATING';
+
 export interface SuggestedActionStatusPayload {
   suggestedActionId: string;
   goal: string;

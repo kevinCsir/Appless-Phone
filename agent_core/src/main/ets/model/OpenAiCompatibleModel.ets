@@ -117,8 +117,9 @@ export class OpenAiCompatibleModel implements LocalModel {
     });
     try {
       const endpoint = this.provider.chatCompletionsUrl();
+      const requestModel: string = options?.modelOverride ?? this.provider.model;
       aiLogInfo(
-        '[AIPhone][ModelRequestStart] model=' + this.provider.model +
+        '[AIPhone][ModelRequestStart] model=' + requestModel +
         ' endpoint=' + endpoint +
         ' stream=true'
       );
@@ -205,7 +206,7 @@ export class OpenAiCompatibleModel implements LocalModel {
     });
 
     const request: ChatRequest = {
-      model: this.provider.model,
+      model: options?.modelOverride ?? this.provider.model,
       messages,
       temperature: 0.2,
       stream: true

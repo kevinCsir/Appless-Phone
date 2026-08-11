@@ -257,6 +257,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['local_adapter'],
     authModes: ['none'],
     inputSchema: 'travelSearchQuery',
+    inputJsonSchema: TRAVEL_SEARCH_INPUT_JSON_SCHEMA,
     outputSchema: 'travelOptions',
     a2uiComponent: 'TravelOptions',
     actions: []
@@ -282,6 +283,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['local_adapter'],
     authModes: ['none'],
     inputSchema: 'travelTrainSearchQuery',
+    inputJsonSchema: TRAIN_SEARCH_INPUT_JSON_SCHEMA,
     outputSchema: 'trains',
     a2uiComponent: 'TrainOptions',
     actions: []
@@ -294,6 +296,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['local_adapter'],
     authModes: ['provider_key'],
     inputSchema: 'travelFlightSearchQuery',
+    inputJsonSchema: FLIGHT_SEARCH_INPUT_JSON_SCHEMA,
     outputSchema: 'flights',
     a2uiComponent: 'FlightBoard',
     actions: []
@@ -404,6 +407,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['local_adapter'],
     authModes: ['oauth', 'provider_key'],
     inputSchema: 'socialFeedSearchQuery',
+    inputJsonSchema: SOCIAL_FEED_SEARCH_INPUT_JSON_SCHEMA,
     outputSchema: 'socialHubFeed',
     a2uiComponent: 'SocialHub',
     actions: ['social.reply.draft']
@@ -416,6 +420,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['local_adapter'],
     authModes: ['oauth', 'provider_key'],
     inputSchema: 'socialCommunitySearchQuery',
+    inputJsonSchema: SOCIAL_COMMUNITY_SEARCH_INPUT_JSON_SCHEMA,
     outputSchema: 'socialHubFeed',
     a2uiComponent: 'SocialHub',
     actions: []
@@ -452,6 +457,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['local_adapter'],
     authModes: ['oauth', 'provider_key'],
     inputSchema: 'xPostSearchQuery',
+    inputJsonSchema: X_POST_SEARCH_INPUT_JSON_SCHEMA,
     outputSchema: 'genericToolResults',
     a2uiComponent: 'GenericToolResults',
     actions: []
@@ -464,6 +470,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['oauth_api', 'imap', 'workspace_mcp'],
     authModes: ['oauth', 'imap_auth', 'mcp_auth'],
     inputSchema: 'mailSearchQuery',
+    inputJsonSchema: MAIL_SEARCH_INPUT_JSON_SCHEMA,
     outputSchema: 'mailThreads',
     a2uiComponent: 'GenericToolResults',
     actions: ['mail.thread.read', 'mail.draft.create']
@@ -500,6 +507,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['oauth_api', 'workspace_mcp', 'web_session'],
     authModes: ['oauth', 'mcp_auth', 'web_session'],
     inputSchema: 'mailSearchQuery',
+    inputJsonSchema: GMAIL_MAIL_SEARCH_INPUT_JSON_SCHEMA,
     outputSchema: 'mailThreads',
     a2uiComponent: 'GenericToolResults',
     actions: ['gmail.authorize', 'gmail.thread.read', 'gmail.draft.create', 'gmail.open.web']
@@ -572,6 +580,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['local_adapter'],
     authModes: ['provider_key'],
     inputSchema: 'youtubeVideoSearchQuery',
+    inputJsonSchema: YOUTUBE_VIDEO_SEARCH_INPUT_JSON_SCHEMA,
     outputSchema: 'youtubeVideos',
     a2uiComponent: 'GenericToolResults',
     actions: ['youtube.open.web']
@@ -634,6 +643,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['oauth_api', 'web_session'],
     authModes: ['oauth', 'web_session'],
     inputSchema: 'youtubeMinePlaylistsQuery',
+    inputJsonSchema: YOUTUBE_MINE_PLAYLISTS_INPUT_JSON_SCHEMA,
     outputSchema: 'youtubePlaylists',
     a2uiComponent: 'GenericToolResults',
     actions: ['youtube.authorize', 'youtube.open.web']
@@ -646,6 +656,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['oauth_api', 'web_session'],
     authModes: ['oauth', 'web_session'],
     inputSchema: 'youtubeMineSubscriptionsQuery',
+    inputJsonSchema: YOUTUBE_MINE_SUBSCRIPTIONS_INPUT_JSON_SCHEMA,
     outputSchema: 'youtubeSubscriptions',
     a2uiComponent: 'GenericToolResults',
     actions: ['youtube.authorize', 'youtube.open.web']
@@ -658,6 +669,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['oauth_api'],
     authModes: ['oauth'],
     inputSchema: 'calendarEventsSearchQuery',
+    inputJsonSchema: CALENDAR_EVENTS_SEARCH_INPUT_JSON_SCHEMA,
     outputSchema: 'calendarEvents',
     a2uiComponent: 'GenericToolResults',
     actions: ['calendar.authorize', 'calendar.event.update', 'calendar.event.delete']
@@ -730,6 +742,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['local_adapter'],
     authModes: ['provider_key'],
     inputSchema: 'mapsPlaceSearchQuery',
+    inputJsonSchema: MAPS_PLACE_SEARCH_INPUT_JSON_SCHEMA,
     outputSchema: 'places',
     a2uiComponent: 'GenericToolResults',
     actions: []
@@ -791,6 +804,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['local_adapter'],
     authModes: ['provider_key', 'mcp_auth'],
     inputSchema: 'rideRouteQuery',
+    inputJsonSchema: RIDE_APP_LINK_INPUT_JSON_SCHEMA,
     outputSchema: 'genericToolResults',
     a2uiComponent: 'GenericToolResults',
     actions: ['ride.open.didi', 'ride.open.amap']
@@ -903,6 +917,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     backendPriority: ['local_adapter'],
     authModes: ['provider_key'],
     inputSchema: 'webMonitorListQuery',
+    inputJsonSchema: WEB_MONITOR_LIST_INPUT_JSON_SCHEMA,
     outputSchema: 'genericToolResults',
     a2uiComponent: 'GenericToolResults',
     actions: ['web.monitor.detail', 'web.monitor.checks', 'web.monitor.run', 'web.monitor.pause', 'web.monitor.resume', 'web.monitor.delete']

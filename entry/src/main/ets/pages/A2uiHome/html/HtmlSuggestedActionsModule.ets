@@ -1,5 +1,6 @@
 import {
   A2uiAction,
+  SUGGESTED_ACTION_REASON_PYTHON_CODE_GENERATING,
   SuggestedActionStatusPayload
 } from '@loop/agent-core';
 
@@ -63,11 +64,13 @@ export function suggestedActionsPanelPayload(
 ): SuggestedActionsPanelPayload {
   const items: SuggestedActionPanelItem[] = [];
   statuses.forEach((status: SuggestedActionStatusPayload): void => {
-    if (status.status !== 'ready') {
+    const isGeneratingCode: boolean = status.status === 'preparing' &&
+      status.reasonCode === SUGGESTED_ACTION_REASON_PYTHON_CODE_GENERATING;
+    if (status.status !== 'ready' && !isGeneratingCode) {
       return;
     }
     const item = panelItem(status);
-    if (item.action !== undefined) {
+    if (isGeneratingCode || item.action !== undefined) {
       items.push(item);
     }
   });
@@ -157,6 +160,11 @@ export const SUGGESTED_ACTIONS_CSS: string = `
   border-color: #b9dec7;
   background: #ecf8f0;
 }
+.suggested-action-item[data-status="generating-code"] {
+  color: #73510c;
+  border-color: #ead293;
+  background: #fff8df;
+}
 .suggested-action-copy {
   min-width: 0;
   flex: 1;
@@ -179,6 +187,13 @@ export const SUGGESTED_ACTIONS_CSS: string = `
 }
 .suggested-action-button:active {
   background: #d9f0e2;
+}
+.suggested-action-generating {
+  flex: 0 0 auto;
+  color: #95680b;
+  font-size: 12px;
+  font-weight: 750;
+  white-space: nowrap;
 }
 `;
 
@@ -211,15 +226,24 @@ export const SUGGESTED_ACTIONS_JS: string = `
     if (!listHost) { return; }
     listHost.textContent = '';
     var items = state.payload ? list(state.payload.items) : [];
-    var readyItems = items.filter(function (item) {
-      return text(item && item.status) === 'ready' && item && item.action &&
-        typeof item.action === 'object';
+    var visibleItems = items.filter(function (item) {
+      var status = text(item && item.status);
+      return (status === 'ready' && item && item.action && typeof item.action === 'object') ||
+        (status === 'preparing' && text(item && item.reasonCode) ===
+          'PYTHON_CODE_GENERATING');
     });
-    state.host.hidden = readyItems.length === 0;
-    if (readyItems.length === 0) {
+    state.host.hidden = visibleItems.length === 0;
+    if (visibleItems.length === 0) {
       return;
     }
-    readyItems.forEach(function (item) {
+    visibleItems.forEach(function (item) {
+      if (text(item.status) === 'preparing') {
+        var generatingRow = add(listHost, 'div', 'suggested-action-item');
+        generatingRow.setAttribute('data-status', 'generating-code');
+        add(generatingRow, 'div', 'suggested-action-copy', text(item.goal));
+        add(generatingRow, 'div', 'suggested-action-generating', '代码动态生成中');
+        return;
+      }
       var action = item.action;
       var row = add(listHost, 'div', 'suggested-action-item');
       row.setAttribute('data-status', 'ready');

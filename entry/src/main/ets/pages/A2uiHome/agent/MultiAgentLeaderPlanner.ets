@@ -1162,7 +1162,10 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
       messages.pop();
     }
     const conversation = messages.length === 0 ? undefined : ConversationContext.fromMessages(messages);
-    return this.model.complete(prompt, conversation, LEADER_SYSTEM_PROMPT);
+    return this.model.complete(prompt, conversation, LEADER_SYSTEM_PROMPT, {
+      includeUsage: true,
+      requestTag: 'multi-agent-leader'
+    });
   }
 
   private rejectOverlappingVideoTools(decision: LeaderDecision): void {

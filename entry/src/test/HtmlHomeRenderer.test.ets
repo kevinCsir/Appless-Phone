@@ -2299,14 +2299,15 @@ export default function htmlHomeRendererTest() {
       expect(html.indexOf('__aiphoneApplySuggestedActions')).assertLarger(-1);
       expect(html.indexOf('suggested-actions-panel')).assertLarger(-1);
       expect(html.indexOf("add(header, 'span', '', 'suggest')")).assertLarger(-1);
-      expect(html.indexOf('state.host.hidden = readyItems.length === 0')).assertLarger(-1);
+      expect(html.indexOf('state.host.hidden = visibleItems.length === 0')).assertLarger(-1);
       expect(html.indexOf("add(row, 'div', 'suggested-action-copy', text(action.label))")).assertLarger(-1);
       expect(html.indexOf("add(row, 'button', 'suggested-action-button', 'Go')")).assertLarger(-1);
+      expect(html.indexOf('代码动态生成中')).assertLarger(-1);
       expect(html.indexOf('正在准备 suggest')).assertEqual(-1);
       expect(html.indexOf('在 App 内查看路线')).assertEqual(-1);
     });
 
-    it('builds one suggest payload containing only ready statuses', 0, () => {
+    it('builds one suggest payload containing ready and Python-generating statuses', 0, () => {
       const statuses: SuggestedActionStatusPayload[] = [
         {
           suggestedActionId: 'suggest-1',
@@ -2328,11 +2329,20 @@ export default function htmlHomeRendererTest() {
           status: 'failed',
           reasonCode: '',
           label: ''
+        },
+        {
+          suggestedActionId: 'suggest-4',
+          goal: '转换温度单位',
+          status: 'preparing',
+          reasonCode: 'PYTHON_CODE_GENERATING',
+          label: ''
         }
       ];
       const payload = suggestedActionsPanelPayload('route-surface', 4, statuses);
-      expect(payload.items.length).assertEqual(1);
+      expect(payload.items.length).assertEqual(2);
       expect(payload.items[0].action?.label).assertEqual('查看附近酒店');
+      expect(payload.items[1].goal).assertEqual('转换温度单位');
+      expect(payload.items[1].action === undefined).assertTrue();
       const action = payload.items[0].action as A2uiAction;
       expect(suggestedActionsPanelAllowsAction(
         JSON.stringify(payload), action, 'route-surface'

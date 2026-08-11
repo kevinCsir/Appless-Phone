@@ -849,11 +849,14 @@ export default function actionAgentTest() {
         expect(model.prompts[0].indexOf('"required":["originQuery","place"') >= 0).assertTrue();
         const compilerInput = JSON.parse(model.prompts[0]) as Record<string, Object | string>;
         const registeredTools = compilerInput['registeredTools'] as ToolDefinition[];
-        expect(registeredTools.length).assertEqual(10);
+        expect(registeredTools.length).assertEqual(25);
         expect(registeredTools.map((tool: ToolDefinition): string => tool.toolId).join(','))
           .assertEqual(
-            'time,hotel.search,food.search,media.video.search,media.aggregate.search,ride.estimate,' +
-              'web.research.search,web.page.read,shopping.research,social.public.search'
+            'travel.search,time,train.search,flight.search,hotel.search,food.search,social.feed.search,' +
+              'social.community.search,x.post.search,mail.search,gmail.mail.search,youtube.video.search,' +
+              'media.video.search,media.aggregate.search,youtube.mine.playlists,youtube.mine.subscriptions,' +
+              'calendar.events.search,maps.place.search,ride.estimate,ride.app.link,web.research.search,' +
+              'web.page.read,shopping.research,social.public.search,web.monitor.list'
           );
         expect(model.completionOptions[0]?.includeUsage).assertTrue();
         expect(model.completionOptions[0]?.requestTag).assertEqual('suggested-action-preparer');

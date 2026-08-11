@@ -72,7 +72,7 @@ function firecrawlDefinitions(definitions: ToolDefinition[]): ToolDefinition[] {
 
 export default function toolDefinitionRegistryTest() {
   describe('toolDefinitionRegistry', () => {
-    it('exposes exactly ten read-only schemas for suggested-action preparation', 0, () => {
+    it('exposes exactly twenty-five read-only schemas for suggested-action preparation', 0, () => {
       const schemaToolIds = allToolDefinitions().filter((definition: ToolDefinition): boolean =>
         definition.riskLevel === 'read' && definition.inputJsonSchema !== undefined &&
           definition.backendPriority.length > 0 &&
@@ -80,8 +80,11 @@ export default function toolDefinitionRegistryTest() {
       ).map((definition: ToolDefinition): string => definition.toolId);
 
       expect(schemaToolIds.join(',')).assertEqual(
-        'time,hotel.search,food.search,media.video.search,media.aggregate.search,ride.estimate,' +
-          'web.research.search,web.page.read,shopping.research,social.public.search'
+        'travel.search,time,train.search,flight.search,hotel.search,food.search,social.feed.search,' +
+          'social.community.search,x.post.search,mail.search,gmail.mail.search,youtube.video.search,' +
+          'media.video.search,media.aggregate.search,youtube.mine.playlists,youtube.mine.subscriptions,' +
+          'calendar.events.search,maps.place.search,ride.estimate,ride.app.link,web.research.search,' +
+          'web.page.read,shopping.research,social.public.search,web.monitor.list'
       );
       expect(validateToolInputValue(
         (toolDefinitionForToolId('time') as ToolDefinition).inputJsonSchema as ToolInputJsonSchema,

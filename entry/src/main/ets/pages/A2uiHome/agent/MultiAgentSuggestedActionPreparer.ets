@@ -1,8 +1,17 @@
 import {
+  aiLogInfo,
+  generatePythonToolScaffold,
+  GeneratedPythonToolContract,
   HotelSearchParseResult,
   LocalModel,
   PreparedActionDraft,
   PreparedActionDraftStep,
+  PythonToolCodeGenerationResult,
+  PythonToolCodeGenerator,
+  PythonToolContractGenerationResult,
+  PythonToolContractGenerator,
+  PythonToolScaffold,
+  registerGeneratedPythonTool,
   RuntimePythonToolRegistry,
   SuggestedActionPreparer,
   ToolDefinition,
@@ -62,6 +71,8 @@ export class MultiAgentSuggestedActionPreparer implements SuggestedActionPrepare
   private readonly tools: ToolDefinition[];
   private readonly currentLocalDate: SuggestedActionCurrentLocalDateProvider;
   private readonly runtimePythonTools: RuntimePythonToolRegistry | null;
+  private readonly pythonContractGenerator: PythonToolContractGenerator | null;
+  private readonly pythonCodeGenerator: PythonToolCodeGenerator | null;
 
   constructor(
     model: LocalModel,
@@ -78,14 +89,39 @@ export class MultiAgentSuggestedActionPreparer implements SuggestedActionPrepare
       return now.getFullYear().toString() + '-' + month + '-' + day;
     } : currentLocalDate;
     this.runtimePythonTools = runtimePythonTools === undefined ? null : runtimePythonTools;
+    this.pythonContractGenerator = this.runtimePythonTools === null ?
+      null : new PythonToolContractGenerator(model);
+    this.pythonCodeGenerator = this.runtimePythonTools === null ?
+      null : new PythonToolCodeGenerator(model);
   }
 
-  async prepare(goal: string): Promise<PreparedActionDraft> {
+  async prepare(
+    goal: string,
+    onPythonGenerationStarted?: () => void
+  ): Promise<PreparedActionDraft> {
     const currentLocalDate: string = this.currentLocalDate();
     if (goal.trim().length === 0 || goal !== goal.trim() || goal.length > 240 ||
       tomorrow(currentLocalDate).length === 0) {
       throw new Error('Suggested action preparation input is invalid.');
     }
+    const initial: PreparedActionDraft = await this.prepareOnce(goal, currentLocalDate);
+    if (initial.canImplement) {
+      return initial;
+    }
+    const registered: boolean = await this.generateAndRegisterPythonTool(
+      goal,
+      onPythonGenerationStarted
+    );
+    if (!registered) {
+      return initial;
+    }
+    return this.prepareOnce(goal, currentLocalDate);
+  }
+
+  private async prepareOnce(
+    goal: string,
+    currentLocalDate: string
+  ): Promise<PreparedActionDraft> {
     const registeredTools: ToolDefinition[] = this.supportedPreparedTools();
     const input: SuggestedActionCompilerInput = {
       goal,
@@ -152,6 +188,51 @@ export class MultiAgentSuggestedActionPreparer implements SuggestedActionPrepare
       }
     }
     return draft;
+  }
+
+  private async generateAndRegisterPythonTool(
+    goal: string,
+    onStarted?: () => void
+  ): Promise<boolean> {
+    const registry: RuntimePythonToolRegistry | null = this.runtimePythonTools;
+    const contractGenerator: PythonToolContractGenerator | null = this.pythonContractGenerator;
+    const codeGenerator: PythonToolCodeGenerator | null = this.pythonCodeGenerator;
+    if (registry === null || contractGenerator === null || codeGenerator === null) {
+      return false;
+    }
+    if (onStarted !== undefined) {
+      onStarted();
+    }
+    try {
+      const contractResult: PythonToolContractGenerationResult =
+        await contractGenerator.generate(goal);
+      const contract: GeneratedPythonToolContract | null = contractResult.contract;
+      if (!contractResult.canGenerate || contract === null) {
+        aiLogInfo('[AIPhone][SuggestedAction][PythonGeneration] status=unsupported reason=' +
+          contractResult.reasonCode);
+        return false;
+      }
+      const scaffold: PythonToolScaffold = generatePythonToolScaffold(contract);
+      const codeResult: PythonToolCodeGenerationResult =
+        await codeGenerator.generate(contract, scaffold);
+      if (!codeResult.canGenerate) {
+        aiLogInfo('[AIPhone][SuggestedAction][PythonGeneration] status=failed phase=code reason=' +
+          codeResult.reasonCode);
+        return false;
+      }
+      if (!registerGeneratedPythonTool(registry, contract, codeResult)) {
+        aiLogInfo('[AIPhone][SuggestedAction][PythonGeneration] status=failed phase=registration tool=' +
+          contract.definition.toolId);
+        return false;
+      }
+      aiLogInfo('[AIPhone][SuggestedAction][PythonGeneration] status=registered tool=' +
+        contract.definition.toolId);
+      return true;
+    } catch (error) {
+      aiLogInfo('[AIPhone][SuggestedAction][PythonGeneration] status=failed phase=pipeline error=' +
+        `${error}`);
+      return false;
+    }
   }
 
   private supportedPreparedTools(): ToolDefinition[] {

@@ -9,6 +9,7 @@ import {
   LeaderDecisionDataTask,
   LeaderPlanningContext,
   LocalModel,
+  LocalModelCompletionOptions,
   ObservationDigest,
   ToolDefinition,
   actionAgentToolDefinitions
@@ -467,6 +468,7 @@ class QueueLocalModel implements LocalModel {
   prompts: string[] = [];
   systemPrompts: string[] = [];
   conversations: string[][] = [];
+  completionOptions: (LocalModelCompletionOptions | undefined)[] = [];
   private readonly outputs: string[];
 
   constructor(outputs: string[]) {
@@ -476,12 +478,14 @@ class QueueLocalModel implements LocalModel {
   async complete(
     prompt: string,
     conversation?: ConversationContext,
-    systemPrompt?: string
+    systemPrompt?: string,
+    options?: LocalModelCompletionOptions
   ): Promise<string> {
     this.prompts.push(prompt);
     this.systemPrompts.push(systemPrompt ?? '');
     this.conversations.push(conversation === undefined ? [] :
       conversation.toChatMessages().map((message) => message.role + ':' + message.content));
+    this.completionOptions.push(options);
     if (this.outputs.length === 0) {
       throw new Error('No scripted Leader output');
     }
@@ -1444,6 +1448,18 @@ export default function multiAgentLeaderPlannerTest() {
       expect(redundantModel.prompts.length).assertEqual(1);
       expect(redundant.bimSuggestion === undefined).assertTrue();
       expect(redundant.bimContextUpdate?.summary).assertEqual('东京旅行，机票待确认');
+    });
+
+    it('requests token usage for every Leader model call', 0, async () => {
+      const model = new QueueLocalModel([LIVE_ANSWER_WITHOUT_REASON_CODE]);
+
+      await new MultiAgentLeaderPlanner(model).plan(
+        inputMessage(), { text: 'hello' }, planningContext(), 1
+      );
+
+      expect(model.completionOptions.length).assertEqual(1);
+      expect(model.completionOptions[0]?.includeUsage).assertTrue();
+      expect(model.completionOptions[0]?.requestTag).assertEqual('multi-agent-leader');
     });
 
     it('rejects an oversized registered tool catalog before calling the model', 0, async () => {

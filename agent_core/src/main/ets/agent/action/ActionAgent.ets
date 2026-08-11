@@ -4,6 +4,7 @@ import {
   AgentMessage,
   AgentMessageType,
   SuggestedActionCandidatePayload,
+  SUGGESTED_ACTION_REASON_PYTHON_CODE_GENERATING,
   SuggestedActionStatusPayload,
   SuggestedActionRunPayload,
   TaskErrorPayload
@@ -1950,7 +1951,19 @@ export class ActionAgent extends MessageDrivenAgent implements ActionStepExecuto
     aiLogInfo('[AIPhone][SuggestedAction] status=preparing id=' +
       candidate.suggestedActionId + ' goalChars=' + candidate.goal.length.toString());
     try {
-      preparer.prepare(candidate.goal)
+      preparer.prepare(candidate.goal, (): void => {
+        if (!this.active || this.generation !== generation ||
+          this.canceledTurns.has(this.turnKey(message.conversationId, message.turnId))) {
+          return;
+        }
+        this.publishSuggestedActionStatus(
+          candidate.suggestedActionId,
+          SUGGESTED_ACTION_REASON_PYTHON_CODE_GENERATING
+        );
+        aiLogInfo('[AIPhone][SuggestedAction] status=preparing phase=python_code_generation id=' +
+          candidate.suggestedActionId +
+          ' elapsedMs=' + (Date.now() - startedAt).toString());
+      })
         .then((draft: PreparedActionDraft) => {
           if (!this.active || this.generation !== generation ||
             this.canceledTurns.has(this.turnKey(message.conversationId, message.turnId))) {
@@ -2013,7 +2026,10 @@ export class ActionAgent extends MessageDrivenAgent implements ActionStepExecuto
     }
   }
 
-  private publishSuggestedActionStatus(suggestedActionId: string): void {
+  private publishSuggestedActionStatus(
+    suggestedActionId: string,
+    reasonCodeOverride?: string
+  ): void {
     const record: PreparedActionRecord | null = this.preparedActions.inspect(suggestedActionId);
     if (record === null) {
       return;
@@ -2022,7 +2038,7 @@ export class ActionAgent extends MessageDrivenAgent implements ActionStepExecuto
       suggestedActionId: record.suggestedActionId,
       goal: record.goal,
       status: record.status,
-      reasonCode: record.reasonCode,
+      reasonCode: reasonCodeOverride === undefined ? record.reasonCode : reasonCodeOverride,
       label: record.label
     };
     this.bus.publish({
