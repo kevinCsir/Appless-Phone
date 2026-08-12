@@ -3926,12 +3926,18 @@ export default function multiAgentLeaderPlannerTest() {
       async () => {
         const context = actionOwnerContext();
         expect(await repairFails(
-          actionAsDataDecision('payment.send'),
+          actionAsDataDecision('payment.send').replace(
+            '"continuationMode":"complete"',
+            '"continuationMode":"dependency"'
+          ),
           actionDecision('calendar.event.create'),
           context
         )).assertTrue();
         expect(await repairFails(
-          actionAsDataDecision('payment.send'),
+          actionAsDataDecision('payment.send').replace(
+            '"continuationMode":"complete"',
+            '"continuationMode":"dependency"'
+          ),
           actionDecision('memory.update'),
           context
         )).assertTrue();

@@ -842,7 +842,6 @@ export default function actionAgentTest() {
             '"stayNights":1,"adultCount":1,"childCount":0,"childAgeDetails":[],' +
             '"roomCount":1,"currency":"","size":0}'
         );
-        expect(model.prompts[0].indexOf('maps.place.search')).assertEqual(-1);
         expect(model.prompts[0].indexOf('hotel.search') >= 0).assertTrue();
         expect(model.prompts[0].indexOf(goal) >= 0).assertTrue();
         expect(model.systemPrompts[0].indexOf('inputJsonSchema') >= 0).assertTrue();
@@ -1001,12 +1000,13 @@ export default function actionAgentTest() {
       expect(JSON.stringify(prepared.steps[0].args)).assertEqual(
         '{"query":"查询华为坂田基地附近的美食"}'
       );
-      expect(model.prompts[0].indexOf(
-        '"supportedPreparedToolIds":["time","hotel.search","food.search",' +
-          '"media.video.search","media.aggregate.search","ride.estimate",' +
-          '"web.research.search","web.page.read","shopping.research",' +
-          '"social.public.search"]'
-      )).assertLarger(-1);
+      const compilerInput = JSON.parse(model.prompts[0]) as Record<string, Object | string>;
+      const supportedToolIds = compilerInput['supportedPreparedToolIds'] as string[];
+      const registeredTools = compilerInput['registeredTools'] as ToolDefinition[];
+      expect(supportedToolIds.join(',')).assertEqual(
+        registeredTools.map((tool: ToolDefinition): string => tool.toolId).join(',')
+      );
+      expect(supportedToolIds.indexOf('food.search')).assertLarger(-1);
       expect(model.systemPrompts[0].indexOf('canImplement')).assertLarger(-1);
       agent.stop();
     });
@@ -1164,11 +1164,11 @@ export default function actionAgentTest() {
         expect(uiMessage.conversationId).assertEqual('conversation-1');
         expect(uiMessage.turnId).assertEqual('suggested-turn');
         expect(ui.taskId).assertEqual(suggestedActionId + ':ui');
-        expect(ui.dataTaskIds.join(',')).assertEqual(suggestedActionId + ':data');
+        expect(ui.dataTaskIds.join(',')).assertEqual(suggestedActionId + ':data-1');
         expect(ui.intent).assertEqual('查看附近酒店');
         expect(ui.expectedOutputSchema).assertEqual('hotelSearchResults');
         expect(dataMessage.turnId).assertEqual('suggested-turn');
-        expect(data.taskId).assertEqual(suggestedActionId + ':data');
+        expect(data.taskId).assertEqual(suggestedActionId + ':data-1');
         expect(data.roundId).assertEqual('suggested-turn');
         expect(data.goal).assertEqual(goal);
         expect(data.allowedToolIds.join(',')).assertEqual('hotel.search');

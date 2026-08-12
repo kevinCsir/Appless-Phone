@@ -1015,7 +1015,7 @@ export default function leaderAgentTest() {
     it('ignores invalid first-round suggested goals without rejecting the main plan', 0, async () => {
       const bus = new LinkedMessageBus();
       const decision = semanticDecision([semanticDataTask('route-source')]);
-      decision.suggestedGoals = ['查询附近的酒店'];
+      decision.suggestedGoals = ['查询附近的酒店', '查询附近的酒店'];
       const leader = new LeaderAgent(
         bus,
         new RoundScriptedPlanner([decision]),
@@ -2164,6 +2164,20 @@ export default function leaderAgentTest() {
         const task = await receive(observer);
         bus.publish(dataResultMessage(task));
         expect((await receive(observer)).type).assertEqual(AgentMessageType.TASK_RESULT_DATA);
+        const uiTask = await receive(observer);
+
+        expect(uiTask.type).assertEqual(AgentMessageType.TASK_CREATE_UI);
+        bus.publish({
+          type: AgentMessageType.TASK_RESULT_UI,
+          conversationId: uiTask.conversationId,
+          turnId: uiTask.turnId,
+          taskId: uiTask.taskId,
+          payload: {
+            surfaceId: 'surface-later-round-suggestion',
+            state: 'result'
+          } as UiRenderResultPayload
+        });
+        expect((await receive(observer)).type).assertEqual(AgentMessageType.TASK_RESULT_UI);
         const terminal = await receive(observer);
 
         expect(terminal.type).assertEqual(AgentMessageType.TURN_RESULT);
