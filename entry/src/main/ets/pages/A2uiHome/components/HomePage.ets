@@ -23,6 +23,7 @@ import { HistoryPanelView } from './HistoryPanelView';
 import { HtmlHomeSurfaceView } from './HtmlHomeSurfaceView';
 import { A2uiSurfaceView } from './A2uiSurfaceView';
 import { CheckoutWebKind, CheckoutWebOverlay } from './CheckoutWebOverlay';
+import { DeepSearchPanel } from './DeepSearchPanel';
 import {
   emptyTrainPresaleTrip,
   TrainPresalePanel,
@@ -43,7 +44,6 @@ import {
   A2UI_HOME_SECTION_GAP
 } from '../style/A2uiHomeLayout';
 import {
-  A2UI_MOTION_CURVE,
   A2UI_MOTION_MOVE_CURVE,
   A2UI_MOTION_NORMAL_MS
 } from '../style/A2uiHomeMotion';
@@ -65,6 +65,10 @@ const A2UI_VOICE_PULSE_STEPS: number = 12;
 
 export function shouldShowHomeChrome(waterfallFullscreen: boolean): boolean {
   return !waterfallFullscreen;
+}
+
+export function shouldShowDailyBriefReturn(surface: A2uiSurfaceState): boolean {
+  return surface.intent !== 'daily-brief' && surface.surfaceId.startsWith('daily-brief-');
 }
 
 export type BimRememberState = 'ready' | 'saving' | 'saved' | 'error';
@@ -109,6 +113,10 @@ export struct HomePage {
   @Prop bimRememberState: BimRememberState = 'ready';
   @Prop bimRememberError: string = '';
   @Prop reduceMotion: boolean = false;
+  @Prop showDeepSearch: boolean = false;
+  @Prop deepSearchQuery: string = '';
+  @Prop deepSearchSettingsJson: string = '';
+  @Prop deepSearchContextJson: string = '';
   @State sendSpinnerRotation: number = 0;
   @State voicePulseTick: number = 0;
   @State waterfallFullscreen: boolean = false;
@@ -117,11 +125,12 @@ export struct HomePage {
   private previousKeyboardAvoidMode: KeyboardAvoidMode = KeyboardAvoidMode.OFFSET;
   onToggleHistory: () => void = () => {};
   onOpenConfig: () => void = () => {};
-  onOpenSocialHub: () => void = () => {};
+  onOpenPublicPersona: () => void = () => {};
   onSendPrompt: () => void = () => {};
   onStartVoiceInput: () => void = () => {};
   onStopVoiceInput: () => void = () => {};
   onResetSession: () => void = () => {};
+  onCloseDeepSearch: () => void = () => {};
   onCloseCheckoutWeb: (taskId: string) => void = (_taskId: string): void => {};
   onCheckoutWebReturn: (url: string) => void = (_url: string): void => {};
   onTrainPresaleConfirm: (submission: TrainPresalePanelSubmission) => void =
@@ -130,6 +139,7 @@ export struct HomePage {
   onCancelTrainPresaleTask: () => void = () => {};
   onOpenBim: () => void = () => {};
   onRememberBim: () => void = () => {};
+  onReturnDailyBrief: () => void = () => {};
   onAction: (action: A2uiAction) => void = (_action: A2uiAction) => {};
 
   aboutToAppear(): void {
@@ -416,15 +426,12 @@ export struct HomePage {
             .margin({ left: A2UI_HEADER_BUTTON_GAP })
 
           A2uiButtonView({
-            icon: $r('app.media.icon_social'),
-            hasIcon: true,
+            symbol: $r('sys.symbol.person'),
+            hasSymbol: true,
             shape: 'circle',
             circleSize: A2UI_HEADER_BUTTON_SIZE,
             iconSize: A2UI_HEADER_BUTTON_ICON_SIZE,
             tone: 'secondary',
-            active: this.currentSurface.intent === 'social',
-            customBackgroundColor: this.currentSurface.intent === 'social' ? COLOR_ACCENT_SOFT : '',
-            customBorderColor: this.currentSurface.intent === 'social' ? COLOR_ACCENT : '',
             isEnabled: !this.isBusy
           })
             .enabled(!this.isBusy)
@@ -432,8 +439,9 @@ export struct HomePage {
               if (this.isBusy) {
                 return;
               }
-              this.onOpenSocialHub();
+              this.onOpenPublicPersona();
             })
+            .accessibilityText('我的画像')
             .margin({ left: A2UI_HEADER_BUTTON_GAP })
 
           A2uiButtonView({
@@ -471,7 +479,16 @@ export struct HomePage {
         .animation({ duration: A2UI_MOTION_NORMAL_MS, curve: A2UI_MOTION_MOVE_CURVE })
       }
 
-      if (this.showTrainPresalePanel) {
+      if (this.showDeepSearch) {
+        DeepSearchPanel({
+          query: this.deepSearchQuery,
+          settingsJson: this.deepSearchSettingsJson,
+          contextJson: this.deepSearchContextJson,
+          onClose: this.onCloseDeepSearch
+        })
+          .layoutWeight(1)
+          .margin({ top: A2UI_HOME_SECTION_GAP })
+      } else if (this.showTrainPresalePanel) {
         TrainPresalePanel({
           trip: this.trainPresaleTrip,
           task: this.trainPresaleTask,
@@ -508,24 +525,46 @@ export struct HomePage {
         .layoutWeight(1)
         .margin({ top: this.surfaceTopGap() })
       } else {
-        HtmlHomeSurfaceView({
-          html: this.htmlHomeHtml,
-          multiTaskPayloadJson: this.multiTaskPayloadJson,
-          multiTaskPayloadTick: this.multiTaskPayloadTick,
-          waterfallPayloadJson: this.waterfallPayloadJson,
-          waterfallPayloadTick: this.waterfallPayloadTick,
-          mailDetailEventJson: this.mailDetailEventJson,
-          mailReplyEventJson: this.mailReplyEventJson,
-          mailCalendarEventJson: this.mailCalendarEventJson,
-          isBusy: this.isBusy,
-          renderTick: this.surfaceRenderTick,
-          luckinInlinePatchJson: this.luckinInlinePatchJson,
-          luckinInlinePatchTick: this.luckinInlinePatchTick,
-          onAction: this.onAction,
-          onWaterfallFullscreenChange: (active: boolean): void => {
-            this.waterfallFullscreen = active;
+        Column() {
+          if (shouldShowDailyBriefReturn(this.currentSurface)) {
+            Row() {
+              A2uiButtonView({
+                label: '‹ 返回日报',
+                tone: 'secondary',
+                isEnabled: !this.isBusy
+              })
+                .enabled(!this.isBusy)
+                .onClick(() => {
+                  if (!this.isBusy) {
+                    this.onReturnDailyBrief();
+                  }
+                })
+            }
+            .width('100%')
+            .height(50)
+            .alignItems(VerticalAlign.Center)
           }
-        })
+
+          HtmlHomeSurfaceView({
+            html: this.htmlHomeHtml,
+            multiTaskPayloadJson: this.multiTaskPayloadJson,
+            multiTaskPayloadTick: this.multiTaskPayloadTick,
+            waterfallPayloadJson: this.waterfallPayloadJson,
+            waterfallPayloadTick: this.waterfallPayloadTick,
+            mailDetailEventJson: this.mailDetailEventJson,
+            mailReplyEventJson: this.mailReplyEventJson,
+            mailCalendarEventJson: this.mailCalendarEventJson,
+            isBusy: this.isBusy,
+            renderTick: this.surfaceRenderTick,
+            luckinInlinePatchJson: this.luckinInlinePatchJson,
+            luckinInlinePatchTick: this.luckinInlinePatchTick,
+            onAction: this.onAction,
+            onWaterfallFullscreenChange: (active: boolean): void => {
+              this.waterfallFullscreen = active;
+            }
+          })
+          .layoutWeight(1)
+        }
         .layoutWeight(1)
         .margin({ top: this.waterfallFullscreen ? 0 : this.surfaceTopGap() })
       }

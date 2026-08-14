@@ -78,9 +78,12 @@ import {
   HotelVisibility,
   MonotonicHotelIds
 } from '../main/ets/pages/A2uiHome/agent/MultiAgentHotelSupport';
-import { BimRouteDecision, BimTurnGate } from '../main/ets/pages/A2uiHome/bim/BimRuntime';
 
 const SEARCH_TEXT: string = '帮我找深圳酒店';
+function bimSnapshotPrompt(query: string): string {
+  return '[BIM_SNAPSHOTS]\n## 展会计划\n- bimId: bim-expo\n- version: 1\n' +
+    '- lifecycle: active\n\n展会行程待跟进。\n[/BIM_SNAPSHOTS]\n\n' + query;
+}
 const SEARCH_INPUT: string = '{"originQuery":"帮我找深圳酒店","place":"深圳",' +
   '"placeType":"CITY","countryCode":"CN","checkInDate":"2026-08-15",' +
   '"stayNights":2,"adultCount":2,"childCount":0,"childAgeDetails":[],' +
@@ -1119,8 +1122,9 @@ function canaryOptions(
       surfaces.push(surface);
       return true;
     },
-    onMemoryUpdate: (update: PersonaMemoryUpdateRequest): void => {
+    onMemoryUpdate: (update: PersonaMemoryUpdateRequest): boolean => {
       updates.push(update);
+      return true;
     },
     dataPlanner: new PassthroughDataPlanner(),
     dataExecutor: executor,
@@ -1327,7 +1331,7 @@ function currentGmailReplySurface(sequence: number): A2uiSurfaceState {
     rawPreview: ''
   };
   const parsed = parseA2uiJsonl(
-    gmailThreadResultsA2ui('gmail-reply-surface', 'gmail.thread.read', [result])
+    gmailThreadResultsA2ui('gmail-reply-surface', 'gmail.mail.search', [result])
   );
   const store = new A2uiSurfaceStore();
   parsed.envelopes.forEach((envelope) => store.apply(envelope));
@@ -1446,7 +1450,7 @@ export default function multiAgentCanaryRuntimeTest() {
       expect(legacyComponents[4].catalogFieldsJson === undefined).assertTrue();
     });
 
-    it('keeps the existing runtime behavior when turnGate is undefined', 0, async () => {
+    it('keeps the existing runtime behavior', 0, async () => {
       const options = canaryOptions(
         new QueueModel([ANSWER_DECISION]),
         new CanaryHotelExecutor(),
@@ -1454,50 +1458,12 @@ export default function multiAgentCanaryRuntimeTest() {
         [],
         []
       );
-      options.turnGate = undefined;
       const runtime = new MultiAgentCanaryRuntime(options);
 
       const outcome = await runtime.submit('你好', { text: '' }) as MultiAgentSettledOutcome;
 
       expect(outcome.status).assertEqual('success');
       expect(outcome.message).assertEqual('你好');
-      runtime.dispose();
-    });
-
-    it('binds the host generation before Leader can publish matched BIM work', 0, async () => {
-      const model = new QueueModel([HOTEL_DECISION]);
-      const executor = new CanaryHotelExecutor();
-      const bus = new TrackingBus();
-      const gate: BimTurnGate = new BimTurnGate();
-      const decision: BimRouteDecision = {
-        status: 'matched',
-        primaryBimId: 'bim-trip',
-        secondaryBimIds: [],
-        reason: 'matched'
-      };
-      gate.begin(41, Promise.resolve(decision));
-      const options = canaryOptions(
-        model,
-        executor,
-        new RecordingOpener(),
-        [],
-        [],
-        bus
-      );
-      options.turnGate = gate;
-      const runtime = new MultiAgentCanaryRuntime(options);
-
-      const outcome = await runtime.submit(SEARCH_TEXT, { text: '' }, 41) as MultiAgentSettledOutcome;
-      const errors = bus.messages.filter((message: AgentMessage): boolean =>
-        message.type === AgentMessageType.TASK_ERROR
-      );
-
-      expect(outcome.status).assertEqual('error');
-      expect(model.prompts.length).assertEqual(1);
-      expect(executor.calls.length).assertEqual(0);
-      expect(bus.count(AgentMessageType.TASK_CREATE_DATA)).assertEqual(0);
-      expect(errors.length).assertEqual(1);
-      expect((errors[0].payload as TaskErrorPayload).message).assertEqual('BIM_MAIN_TURN_NOT_ADMITTED');
       runtime.dispose();
     });
 
@@ -2132,9 +2098,7 @@ export default function multiAgentCanaryRuntimeTest() {
         [],
         []
       ));
-      const bimPrompt = '[BIM_CONTEXT]\nContinue the primary matter.\n' +
-        '{"primary":{"id":"bim-trip","title":"东京旅行","contextJson":"{}",' +
-        '"appliedSurfaceDigest":{}},"secondary":[],"query":"' + SEARCH_TEXT + '"}';
+      const bimPrompt = bimSnapshotPrompt(SEARCH_TEXT);
 
       const outcome = await runtime.submit(
         bimPrompt, { text: SEARCH_TEXT }
@@ -2168,9 +2132,7 @@ export default function multiAgentCanaryRuntimeTest() {
       };
       const runtime = new MultiAgentCanaryRuntime(options);
       const originalQuery = '帮我查去展会的机票';
-      const bimPrompt = '[BIM_CONTEXT]\nContinue the primary matter.\n' +
-        '{"primary":{"id":"bim-expo","title":"展会计划","contextJson":"{}",' +
-        '"appliedSurfaceDigest":{}},"secondary":[],"query":"' + originalQuery + '"}';
+      const bimPrompt = bimSnapshotPrompt(originalQuery);
 
       const outcome = await runtime.submit(bimPrompt, { text: originalQuery }) as MultiAgentSettledOutcome;
 
@@ -2203,9 +2165,7 @@ export default function multiAgentCanaryRuntimeTest() {
       };
       const runtime = new MultiAgentCanaryRuntime(options);
       const originalQuery = F01_QUERY;
-      const bimPrompt = '[BIM_CONTEXT]\nContinue the primary matter.\n' +
-        '{"primary":{"id":"bim-trip","title":"东京旅行","contextJson":"{}",' +
-        '"appliedSurfaceDigest":{}},"secondary":[],"query":"' + originalQuery + '"}';
+      const bimPrompt = bimSnapshotPrompt(originalQuery);
 
       const outcome = await runtime.submit(
         bimPrompt, { text: originalQuery }
@@ -2239,9 +2199,7 @@ export default function multiAgentCanaryRuntimeTest() {
       };
       const runtime = new MultiAgentCanaryRuntime(options);
       const originalQuery = '帮我查从深圳出发去展会的机票';
-      const bimPrompt = '[BIM_CONTEXT]\nContinue the primary matter.\n' +
-        '{"primary":{"id":"bim-expo","title":"展会计划","contextJson":"{}",' +
-        '"appliedSurfaceDigest":{}},"secondary":[],"query":"' + originalQuery + '"}';
+      const bimPrompt = bimSnapshotPrompt(originalQuery);
 
       const outcome = await runtime.submit(
         bimPrompt, { text: originalQuery }
@@ -2276,9 +2234,7 @@ export default function multiAgentCanaryRuntimeTest() {
       };
       const runtime = new MultiAgentCanaryRuntime(options);
       const originalQuery = '帮我查去展会的高铁';
-      const bimPrompt = '[BIM_CONTEXT]\nContinue the primary matter.\n' +
-        '{"primary":{"id":"bim-expo","title":"展会计划","contextJson":"{}",' +
-        '"appliedSurfaceDigest":{}},"secondary":[],"query":"' + originalQuery + '"}';
+      const bimPrompt = bimSnapshotPrompt(originalQuery);
 
       const outcome = await runtime.submit(bimPrompt, { text: originalQuery }) as MultiAgentSettledOutcome;
 
@@ -2310,9 +2266,7 @@ export default function multiAgentCanaryRuntimeTest() {
         return canaryStructuredResult('flight.search', 'flights');
       };
       const runtime = new MultiAgentCanaryRuntime(options);
-      const bimPrompt = '[BIM_CONTEXT]\nContinue the primary matter.\n' +
-        '{"primary":{"id":"bim-expo","title":"展会计划","contextJson":"{}",' +
-        '"appliedSurfaceDigest":{}},"secondary":[],"query":"帮我查去展会的机票"}';
+      const bimPrompt = bimSnapshotPrompt('帮我查去展会的机票');
 
       const outcome = await runtime.submit(
         bimPrompt, { text: '帮我查去展会的机票' }
@@ -2343,9 +2297,7 @@ export default function multiAgentCanaryRuntimeTest() {
       };
       const runtime = new MultiAgentCanaryRuntime(options);
       const originalQuery = '帮我查从北京到上海 2026年8月的航班';
-      const bimPrompt = '[BIM_CONTEXT]\nContinue the primary matter.\n' +
-        '{"primary":{"id":"bim-expo","title":"展会计划","contextJson":"{}",' +
-        '"appliedSurfaceDigest":{}},"secondary":[],"query":"' + originalQuery + '"}';
+      const bimPrompt = bimSnapshotPrompt(originalQuery);
 
       const outcome = await runtime.submit(
         bimPrompt, { text: originalQuery }
@@ -3049,6 +3001,77 @@ export default function multiAgentCanaryRuntimeTest() {
       runtime.dispose();
     });
 
+    it('does not publish memory success when durable persistence fails', 0, async () => {
+      const surfaces: A2uiSurfaceState[] = [];
+      const bus = new TrackingBus();
+      const options = canaryOptions(
+        new QueueModel([MEMORY_DECISION]),
+        new CanaryHotelExecutor(),
+        new RecordingOpener(),
+        surfaces,
+        [],
+        bus
+      );
+      options.onMemoryUpdate = (_update: PersonaMemoryUpdateRequest): boolean => false;
+      const runtime = new MultiAgentCanaryRuntime(options);
+
+      await runtime.submit('我只喝瑞幸咖啡', {
+        text: '',
+        previousPersonaId: 'food_companion'
+      });
+      const actionResults = bus.messages.filter((message: AgentMessage): boolean =>
+        message.type === AgentMessageType.ACTION_RESULT);
+      const terminal = actionResults[0].payload as ActionResultPayload;
+
+      expect(surfaces.length).assertEqual(0);
+      expect(terminal.status).assertEqual('error');
+      expect(terminal.errorCode).assertEqual('MEMORY_UPDATE_PERSIST_FAILED');
+      runtime.dispose();
+    });
+
+    it('routes stable content recommendation memory to the entertainment companion', 0, async () => {
+      const updates: PersonaMemoryUpdateRequest[] = [];
+      const runtime = new MultiAgentCanaryRuntime(canaryOptions(
+        new QueueModel([MEMORY_DECISION]),
+        new CanaryHotelExecutor(),
+        new RecordingOpener(),
+        [],
+        updates
+      ));
+
+      await runtime.submit('以后多推荐 AI 视频', {
+        text: '',
+        previousPersonaId: 'food_companion'
+      });
+
+      expect(updates.length).assertEqual(1);
+      expect(updates[0].personaId).assertEqual('entertainment_companion');
+      runtime.dispose();
+    });
+
+    it('keeps BIM snapshots out of stable content recommendation memory', 0, async () => {
+      const updates: PersonaMemoryUpdateRequest[] = [];
+      const runtime = new MultiAgentCanaryRuntime(canaryOptions(
+        new QueueModel([MEMORY_DECISION]),
+        new CanaryHotelExecutor(),
+        new RecordingOpener(),
+        [],
+        updates
+      ));
+
+      const prompt = bimSnapshotPrompt('以后多推荐 AI 视频');
+      await runtime.submit(prompt, {
+        text: prompt,
+        previousPersonaId: 'food_companion'
+      });
+
+      expect(updates.length).assertEqual(1);
+      expect(updates[0].personaId).assertEqual('entertainment_companion');
+      expect(updates[0].summary).assertEqual('以后多推荐 AI 视频');
+      expect(updates[0].memoryText).assertEqual('以后多推荐 AI 视频');
+      runtime.dispose();
+    });
+
     it('keeps a reentrant virtual memory surface on its captured host generation', 0, async () => {
       const surfaceGenerations: number[] = [];
       const updateGenerations: number[] = [];
@@ -3068,12 +3091,13 @@ export default function multiAgentCanaryRuntimeTest() {
       options.onMemoryUpdate = (
         _update: PersonaMemoryUpdateRequest,
         runtimeGeneration: number
-      ): void => {
+      ): boolean => {
         updateGenerations.push(runtimeGeneration);
         if (newerTurn === null) {
           newerTurn = runtime.submit('newer turn', { text: '' }, 202) as
             Promise<MultiAgentSettledOutcome>;
         }
+        return true;
       };
       runtime = new MultiAgentCanaryRuntime(options);
 
@@ -4152,10 +4176,11 @@ export default function multiAgentCanaryRuntimeTest() {
         [],
         updates
       );
-      options.onMemoryUpdate = (update: PersonaMemoryUpdateRequest): void => {
+      options.onMemoryUpdate = (update: PersonaMemoryUpdateRequest): boolean => {
         updates.push(update);
         const pack = personaPackForId(update.personaId);
         updatePersonaPackText(update.personaId, pack.soul, update.memoryText);
+        return true;
       };
       const runtime = new MultiAgentCanaryRuntime(options);
       try {
@@ -4462,7 +4487,7 @@ export default function multiAgentCanaryRuntimeTest() {
       runtime.dispose();
     });
 
-    it('does not block Gmail send from the exact current reply surface', 0, async () => {
+    it('does not block Gmail send from the exact current search result reply surface', 0, async () => {
       const calls: RecordedPageAction[] = [];
       const bus = new TrackingBus();
       const surface = currentGmailReplySurface(29);

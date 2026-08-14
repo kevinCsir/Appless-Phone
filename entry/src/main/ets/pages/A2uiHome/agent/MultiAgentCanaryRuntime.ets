@@ -63,6 +63,7 @@ import {
 } from '@loop/agent-core';
 import { leaderPersonaContext } from '../../../model/LeaderPersonaContext';
 import {
+  isStableWaterfallContentPreference,
   memoryUpdateSurface,
   parsePersonaMemoryUpdateInput,
   PersonaMemoryUpdateRequest
@@ -106,8 +107,6 @@ import {
   resolveVirtualRegisteredPageAction
 } from './RegisteredPageActionRoute';
 import {
-  BimGatedLeaderPlanner,
-  BimTurnGate,
   bimTravelQueryIsComplete,
   originalQueryFromBimPrompt
 } from '../bim/BimRuntime';
@@ -176,14 +175,13 @@ interface SocialFeedTaskInput {
 
 export interface MultiAgentCanaryOptions {
   model: LocalModel;
-  turnGate?: BimTurnGate;
   opener: SystemUriOpener;
   pageAction?: RegisteredPageAction;
   currentPageSnapshot?: () => RegisteredPageSnapshot | null;
   currentHostSurface?: () => A2uiSurfaceState | null;
   currentHostGeneration?: () => number;
   onSurface: (surface: A2uiSurfaceState, runtimeGeneration: number) => boolean;
-  onMemoryUpdate: (update: PersonaMemoryUpdateRequest, runtimeGeneration: number) => void;
+  onMemoryUpdate: (update: PersonaMemoryUpdateRequest, runtimeGeneration: number) => boolean;
   onMailDetail?: (
     event: MailDetailInPlaceEvent,
     runtimeGeneration: number,
@@ -797,7 +795,7 @@ function normalizeCanaryTaskInput(
     const taskSource = task.input as Record<string, Object | string | number | boolean | null | undefined>;
     const taskQuery = taskSource['query'];
     const fieldQuery = queryFromTravelTaskFields(task.input, task.toolId);
-    const isBimTurn = input.text.indexOf('[BIM_CONTEXT]') === 0;
+    const isBimTurn = input.text.indexOf('[BIM_SNAPSHOTS]') === 0;
     let query = originalInput.text;
     if (isBimTurn) {
       if (validBimTravelQuery(originalInput.text, currentLocalDate)) {
@@ -1304,24 +1302,26 @@ class MemoryIntentResolver implements VirtualActionIntentResolver {
       };
       return intent;
     }
-    const pack = personaPackForId(request.personaId);
-    if (pack.manifest.id !== request.personaId) {
+    const statement: string = originalQueryFromBimPrompt(request.inputText).trim();
+    if (statement.length === 0) {
       return null;
     }
-    const statement: string = request.inputText.trim();
-    if (statement.length === 0) {
+    const personaId = isStableWaterfallContentPreference(statement) ?
+      'entertainment_companion' : request.personaId;
+    const pack = personaPackForId(personaId);
+    if (pack.manifest.id !== personaId) {
       return null;
     }
     const summary: string = statement.length > MEMORY_SUMMARY_LIMIT ?
       statement.substring(0, MEMORY_SUMMARY_LIMIT) : statement;
     const args: PersonaMemoryUpdateRequest = {
-      personaId: request.personaId,
+      personaId,
       summary,
       memoryText: statement,
       reason: '用户明确表达了可长期保存的偏好。'
     };
     const offer: ActionOffer = {
-      offerId: 'memory-update:' + request.personaId,
+      offerId: 'memory-update:' + personaId,
       actionId: MEMORY_ACTION_ID,
       label: '更新记忆',
       variant: 'primary',
@@ -1350,7 +1350,7 @@ class CanaryRegisteredExecutor implements RegisteredActionExecutor {
   private readonly onMemoryUpdate: (
     update: PersonaMemoryUpdateRequest,
     context: ActionExecutionContext
-  ) => void;
+  ) => boolean;
   private readonly onSurface: (surface: A2uiSurfaceState, context: ActionExecutionContext) => void;
   private readonly currentGmailDraftApply: () => A2uiAction | null;
   private sequence: number = 0;
@@ -1360,7 +1360,7 @@ class CanaryRegisteredExecutor implements RegisteredActionExecutor {
     onMemoryUpdate: (
       update: PersonaMemoryUpdateRequest,
       context: ActionExecutionContext
-    ) => void,
+    ) => boolean,
     onSurface: (surface: A2uiSurfaceState, context: ActionExecutionContext) => void,
     currentGmailDraftApply: () => A2uiAction | null
   ) {
@@ -1412,7 +1412,13 @@ class CanaryRegisteredExecutor implements RegisteredActionExecutor {
         message: 'Memory update args are invalid.'
       };
     }
-    this.onMemoryUpdate(update, context);
+    if (!this.onMemoryUpdate(update, context)) {
+      return {
+        status: 'error',
+        errorCode: 'MEMORY_UPDATE_PERSIST_FAILED',
+        message: 'Memory update could not be persisted.'
+      };
+    }
     this.sequence++;
     const surfaceId: string = 'memory-update:' + this.sequence.toString();
     this.onSurface(memoryUpdateSurface(surfaceId, update), context);
@@ -1684,8 +1690,7 @@ export class MultiAgentCanaryRuntime {
     this.runtime = new MultiAgentRuntime({
       conversationId,
       bus: options.bus,
-      planner: options.turnGate === undefined ?
-        leaderPlanner : new BimGatedLeaderPlanner(leaderPlanner, options.turnGate),
+      planner: leaderPlanner,
       planningContext: initialContext,
       planningContextProvider: (prompt: string): LeaderPlanningContext =>
         canaryPlanningContext(this.lastLeaderPersonaId, prompt, allowTrustedOperationTargets),
@@ -1701,11 +1706,12 @@ export class MultiAgentCanaryRuntime {
       actionCompiler: new MultiAgentActionPlanCompiler(options.model),
       actionExecutor: new CanaryRegisteredExecutor(
         aiphoneExecutor,
-        (update: PersonaMemoryUpdateRequest, context: ActionExecutionContext): void => {
+        (update: PersonaMemoryUpdateRequest, context: ActionExecutionContext): boolean => {
           const hostGeneration = this.turnHostGenerations.get(context.turnId);
           if (hostGeneration !== undefined && hostGeneration > 0) {
-            options.onMemoryUpdate(update, hostGeneration);
+            return options.onMemoryUpdate(update, hostGeneration);
           }
+          return false;
         },
         (surface: A2uiSurfaceState, context: ActionExecutionContext): void => {
           const hostGeneration = this.turnHostGenerations.get(context.turnId);
@@ -1742,9 +1748,6 @@ export class MultiAgentCanaryRuntime {
       directActionAdmission: (action: A2uiAction, context: ActionExecutionContext): boolean =>
         this.admitHotelDetailFollowUp(action, context),
       turnGenerationObserver: (turnId: string, hostGeneration: number): void => {
-        if (options.turnGate !== undefined) {
-          options.turnGate.bind(turnId, hostGeneration);
-        }
         this.rememberTurnHostGeneration(turnId, hostGeneration);
       }
     });
