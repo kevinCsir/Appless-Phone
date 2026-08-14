@@ -1,4 +1,10 @@
-import { A2uiComponent, WaterfallFeedState, WaterfallRankedCandidate, WaterfallSourceState } from '@loop/agent-core';
+import {
+  A2uiComponent,
+  A2uiFoodSearchContext,
+  WaterfallFeedState,
+  WaterfallRankedCandidate,
+  WaterfallSourceState
+} from '@loop/agent-core';
 
 export type HtmlHomeSource = 'welcome' | 'pending' | 'model' | 'tool';
 export type HtmlHomeKind = 'welcome' | 'thinking' | 'travel' | 'hotel' | 'food' | 'social' | 'dynamic-tools' | 'gmail' | 'media' | 'payment' | 'aggregate-search' | 'luckin' | 'multi-task' | 'generic';
@@ -119,5 +125,6 @@ export interface HtmlHomeDocument {
   waterfall?: WaterfallFeedState;
   activeSectionId?: string;
   executionMode?: 'parallel' | 'serial';
+  foodSearchContext?: A2uiFoodSearchContext;
   generatedAt: string;
 }
