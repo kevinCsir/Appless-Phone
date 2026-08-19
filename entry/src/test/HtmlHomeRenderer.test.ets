@@ -61,6 +61,10 @@ interface MapsOpenArgsFixture {
   url: string;
 }
 
+interface SuggestedActionRunArgsFixture {
+  suggestedActionId: string;
+}
+
 interface RenderedHomeDataFixture {
   blocks: HtmlHomeBlock[];
 }
@@ -2352,6 +2356,33 @@ export default function htmlHomeRendererTest() {
       expect(suggestedActionsPanelAllowsAction(
         JSON.stringify(payload), action, 'route-surface'
       )).assertTrue();
+      const embeddedAction: A2uiAction = {
+        id: action.id,
+        label: action.label,
+        prompt: action.prompt,
+        variant: action.variant,
+        kind: action.kind,
+        args: action.args,
+        sourceSectionId: 'slot-route'
+      };
+      expect(suggestedActionsPanelAllowsAction(
+        JSON.stringify(payload), embeddedAction, 'route-surface'
+      )).assertTrue();
+      const unknownSuggestedArgs: SuggestedActionRunArgsFixture = {
+        suggestedActionId: 'suggest-unknown'
+      };
+      const unknownSuggestedAction: A2uiAction = {
+        id: 'suggested-action.run',
+        label: action.label,
+        prompt: action.prompt,
+        variant: action.variant,
+        kind: 'client',
+        args: unknownSuggestedArgs,
+        sourceSectionId: 'slot-route'
+      };
+      expect(suggestedActionsPanelAllowsAction(
+        JSON.stringify(payload), unknownSuggestedAction, 'route-surface'
+      )).assertFalse();
       expect(suggestedActionsPanelAllowsAction(
         JSON.stringify(payload), action, 'other-surface'
       )).assertFalse();

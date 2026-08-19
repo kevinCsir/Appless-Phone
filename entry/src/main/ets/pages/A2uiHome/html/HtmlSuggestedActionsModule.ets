@@ -24,6 +24,14 @@ interface SuggestedActionRunArgs {
   suggestedActionId: string;
 }
 
+function suggestedActionId(action: A2uiAction): string {
+  if (action.args === undefined || action.args === null) {
+    return '';
+  }
+  const args = action.args as SuggestedActionRunArgs;
+  return typeof args.suggestedActionId === 'string' ? args.suggestedActionId.trim() : '';
+}
+
 function actionForStatus(status: SuggestedActionStatusPayload): A2uiAction | undefined {
   if (status.status !== 'ready' || status.label.trim().length === 0) {
     return undefined;
@@ -87,7 +95,9 @@ export function suggestedActionsPanelAllowsAction(
   action: A2uiAction,
   surfaceId: string
 ): boolean {
-  if (action.id !== 'suggested-action.run' || action.args === undefined) {
+  const actionSuggestedId = suggestedActionId(action);
+  if (action.id !== 'suggested-action.run' || action.kind !== 'client' ||
+    actionSuggestedId.length === 0) {
     return false;
   }
   try {
@@ -99,7 +109,9 @@ export function suggestedActionsPanelAllowsAction(
     for (let index = 0; index < payload.items.length; index++) {
       const item = payload.items[index];
       if (item.status === 'ready' && item.action !== undefined &&
-        JSON.stringify(item.action) === JSON.stringify(action)) {
+        item.action.id === action.id && item.action.kind === action.kind &&
+        item.suggestedActionId === actionSuggestedId &&
+        suggestedActionId(item.action) === actionSuggestedId) {
         return true;
       }
     }
