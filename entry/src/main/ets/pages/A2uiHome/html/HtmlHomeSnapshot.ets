@@ -909,6 +909,7 @@ function appendFoodBlocks(document: HtmlHomeDocument, surface: A2uiSurfaceState,
     });
     block.actions.push(clientAction('html_pin_food', '固定到桌面', payload, component.id));
     block.actions.push(clientAction('html_open_food_map', '导航去', payload, component.id));
+    block.actions.push(clientAction('food_favorite_toggle', '收藏门店', payload, component.id));
     if (phoneUri.length > 0) {
       block.actions.push(clientAction('html_call_food', '拨打电话', payload, component.id));
     }

@@ -109,6 +109,12 @@ function isHtmlHomeActionAllowedInDocument(document: HtmlHomeDocument, action: A
     foodSurfaceOwnedActionAllowed(document, action)) {
     return true;
   }
+  if (document.kind === 'food' && action.kind === 'client' &&
+    (action.id === 'food_favorite_remove' || action.id === 'food_favorite_map' ||
+      action.id === 'food_favorite_call' || action.id === 'food_favorite_pin') &&
+    foodFavoriteActionAllowed(document, action)) {
+    return true;
+  }
   if (action.id === 'payment.account.save' && paymentAccountSaveAllowed(document, action)) {
     return true;
   }
@@ -173,6 +179,15 @@ function foodSurfaceOwnedActionAllowed(document: HtmlHomeDocument, action: A2uiA
   }
   const args = action.args as Record<string, HtmlHomePolicyValue>;
   return policyText(args['surfaceId']).trim() === (document.surfaceId ?? '');
+}
+
+function foodFavoriteActionAllowed(document: HtmlHomeDocument, action: A2uiAction): boolean {
+  if (!foodSurfaceOwnedActionAllowed(document, action) || action.args === undefined || action.args === null) {
+    return false;
+  }
+  const args = action.args as Record<string, HtmlHomePolicyValue>;
+  const favoriteId = policyText(args['favoriteId']).trim();
+  return favoriteId.startsWith('food:') && favoriteId.length <= 512;
 }
 
 function foodLocationChangeAllowed(document: HtmlHomeDocument, action: A2uiAction): boolean {

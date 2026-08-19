@@ -273,6 +273,28 @@ export default function htmlHomeActionPolicyTest() {
       expect(isHtmlHomeActionAllowed(doc, action('html_call_food', '{"index":0,"name":"Coffee"}'))).assertFalse();
     });
 
+    it('allows favorite actions only for the current food surface and a bounded food id', 0, () => {
+      const doc = documentFixture();
+      doc.kind = JSON.parse('"food"') as HtmlHomeKind;
+      doc.surfaceId = 'food-surface';
+      const allowedArgs = JSON.parse('{"surfaceId":"food-surface","favoriteId":"food:nicecoffee@114.1,22.5"}') as Object;
+      const wrongSurfaceArgs = JSON.parse('{"surfaceId":"other-surface","favoriteId":"food:nicecoffee@114.1,22.5"}') as Object;
+      const invalidIdArgs = JSON.parse('{"surfaceId":"food-surface","favoriteId":"hotel:123"}') as Object;
+
+      expect(isHtmlHomeActionAllowed(doc,
+        action('food_favorite_remove', '取消收藏门店', 'client', allowedArgs))).assertTrue();
+      expect(isHtmlHomeActionAllowed(doc,
+        action('food_favorite_map', '导航到收藏门店', 'client', allowedArgs))).assertTrue();
+      expect(isHtmlHomeActionAllowed(doc,
+        action('food_favorite_call', '拨打收藏门店电话', 'client', allowedArgs))).assertTrue();
+      expect(isHtmlHomeActionAllowed(doc,
+        action('food_favorite_pin', '固定收藏门店', 'client', allowedArgs))).assertTrue();
+      expect(isHtmlHomeActionAllowed(doc,
+        action('food_favorite_remove', '取消收藏门店', 'client', wrongSurfaceArgs))).assertFalse();
+      expect(isHtmlHomeActionAllowed(doc,
+        action('food_favorite_remove', '取消收藏门店', 'client', invalidIdArgs))).assertFalse();
+    });
+
     it('allows only visible Firecrawl source and monitor actions from the current document', 0, () => {
       const doc = documentFixture();
       const visibleMonitorArgs: FirecrawlMonitorArgsFixture = { id: 'monitor-current' };

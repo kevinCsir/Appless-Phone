@@ -10085,7 +10085,7 @@ function foodNamesLikelySame(left: A2uiFoodData, right: A2uiFoodData): boolean {
   return textContainsWithSignal(leftName, rightName, 10) && foodDistanceClose(left, right);
 }
 
-function foodRecordsLikelySameStore(left: A2uiFoodData, right: A2uiFoodData): boolean {
+export function foodRecordsLikelySameStore(left: A2uiFoodData, right: A2uiFoodData): boolean {
   if (foodMergeKey(left) === foodMergeKey(right)) {
     return true;
   }

@@ -333,6 +333,7 @@ import {
 } from './html/HtmlAggregateSearchHomeRenderer';
 import { createFirecrawlPendingDocument, isFirecrawlToolId } from './html/HtmlFirecrawlHomeRenderer';
 import { FoodAddressBookStore, FoodSavedAddressViewModel } from './FoodAddressBookStore';
+import { FoodFavoritesStore, FoodFavoriteViewModel } from './FoodFavoritesStore';
 import { isHtmlHomeActionAllowed } from './html/HtmlHomeActionPolicy';
 import {
   HtmlHomeAction,
@@ -971,6 +972,8 @@ struct Index {
   private foodLocationOwnerSurfaceId: string = '';
   private foodSavedAddresses: FoodSavedAddressViewModel[] = [];
   private foodAddressBookStoreInstance: FoodAddressBookStore | null = null;
+  private foodFavorites: FoodFavoriteViewModel[] = [];
+  private foodFavoritesStoreInstance: FoodFavoritesStore | null = null;
   @State multiTaskPayloadJson: string = '';
   @State multiTaskShellHtml: string = '';
   @State multiTaskPayloadTick: number = 0;
@@ -2170,6 +2173,7 @@ struct Index {
     this.configureComposioRuntimeForCurrentUser();
     this.loadWaterfallPreferences();
     this.loadFoodAddressBook();
+    this.loadFoodFavorites();
     void this.requestLocationPermissionOnLaunch();
     this.subscribeTrainPresaleHandoff();
     this.subscribeWaterfallConversationTypedTest();
@@ -3699,6 +3703,7 @@ struct Index {
       this.foodLocationName,
       this.foodLocationAddress,
       JSON.stringify(this.foodSavedAddresses),
+      JSON.stringify(this.foodFavorites),
       needsInputText ? this.inputText : ''
     ].join('|');
   }
@@ -3717,7 +3722,8 @@ struct Index {
         name: this.foodLocationName,
         address: this.foodLocationAddress
       } : undefined,
-      document.kind === 'food' ? this.foodSavedAddresses : []);
+      document.kind === 'food' ? this.foodSavedAddresses : [],
+      document.kind === 'food' ? this.foodFavorites : []);
     this.recordRenderedPageSnapshot(this.currentSurface, document);
     if (this.htmlHomeDebugExportEnabled) {
       this.writeHtmlHomeDebugExport(document, 'auto');
@@ -5516,6 +5522,11 @@ struct Index {
       this.logHtmlHomeActionError(action, 'missing_food_row');
       return true;
     }
+    await this.openFoodMapRow(action, row);
+    return true;
+  }
+
+  private async openFoodMapRow(action: A2uiAction, row: A2uiFoodData): Promise<void> {
     const uri = buildSystemFoodNavigationUri(this.actionText(row.location), '', row.name);
     if (uri.length === 0) {
       this.applyPanelState(updateConnectionPanelState(this.currentPanelState(), {
@@ -5527,7 +5538,7 @@ struct Index {
         error: ''
       }));
       this.logHtmlHomeActionError(action, 'missing_food_coordinate');
-      return true;
+      return;
     }
     try {
       const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
@@ -5561,7 +5572,6 @@ struct Index {
       }));
       aiLogError('[AIPhone][HtmlHomeFoodMap] ok=false message=' + businessError.message);
     }
-    return true;
   }
 
   private updateHtmlFoodPhoneState(ok: boolean, message: string): void {
@@ -5604,6 +5614,10 @@ struct Index {
       aiLogInfo('[AIPhone][FoodPhoneAction] stage=validation result=blocked reason=missing_food_row');
       return true;
     }
+    return await this.callFoodRow(action, row);
+  }
+
+  private async callFoodRow(action: A2uiAction, row: A2uiFoodData): Promise<boolean> {
     const displayPhone = this.actionText(row.phone).trim();
     const uri = buildFoodPhoneUri(displayPhone);
     if (uri.length === 0) {
@@ -7068,6 +7082,17 @@ struct Index {
 
   private async handleClientAction(action: A2uiAction): Promise<void> {
     aiLogInfo('[AIPhone][A2uiHomeClientAction] id=' + action.id);
+    if (await this.handleStoredFoodFavoriteAction(action)) {
+      return;
+    }
+    if (action.id === 'food_favorite_remove') {
+      await this.removeFoodFavorite(action);
+      return;
+    }
+    if (action.id === 'food_favorite_toggle') {
+      await this.toggleFoodFavorite(action);
+      return;
+    }
     if (action.id === 'food_address_book_save') {
       await this.saveCurrentFoodAddress(action);
       return;
@@ -7389,6 +7414,130 @@ struct Index {
     this.htmlHomeCacheKey = '';
     this.htmlHomeCacheHtml = '';
     aiLogInfo('[AIPhone][FoodAddressBookLoaded] count=' + this.foodSavedAddresses.length.toString());
+  }
+
+  private foodFavoritesStore(): FoodFavoritesStore | null {
+    if (this.foodFavoritesStoreInstance !== null) {
+      return this.foodFavoritesStoreInstance;
+    }
+    try {
+      const context = this.getUIContext().getHostContext() as common.Context;
+      this.foodFavoritesStoreInstance = new FoodFavoritesStore(context);
+      return this.foodFavoritesStoreInstance;
+    } catch (error) {
+      aiLogError('[AIPhone][FoodFavoritesStore] phase=open ok=false reason=' +
+        (error instanceof Error ? error.message : JSON.stringify(error)));
+      return null;
+    }
+  }
+
+  private loadFoodFavorites(): void {
+    const store = this.foodFavoritesStore();
+    this.foodFavorites = store === null ? [] : store.list();
+    this.htmlHomeCacheKey = '';
+    this.htmlHomeCacheHtml = '';
+    aiLogInfo('[AIPhone][FoodFavoritesLoaded] count=' + this.foodFavorites.length.toString());
+  }
+
+  private async toggleFoodFavorite(action: A2uiAction): Promise<void> {
+    if (this.currentSurface.intent !== 'food') {
+      this.logHtmlHomeActionError(action, 'food_surface_required');
+      return;
+    }
+    const model = this.parsedDataModel();
+    const payload = this.htmlPinPayload(action);
+    const index = this.htmlActionIndex(action, payload);
+    if (model === null) {
+      this.logHtmlHomeActionError(action, 'invalid_model');
+      return;
+    }
+    const row = this.htmlPinFoodRow(model, payload, index);
+    if (row === null) {
+      this.logHtmlHomeActionError(action, 'missing_food_row');
+      return;
+    }
+    const store = this.foodFavoritesStore();
+    if (store === null) {
+      this.logHtmlHomeActionError(action, 'food_favorites_store_unavailable');
+      return;
+    }
+    try {
+      const active = await store.toggle(row);
+      this.foodFavorites = store.list();
+      this.getUIContext().getPromptAction().showToast({ message: active ? '已收藏门店' : '已取消收藏' });
+      aiLogInfo('[AIPhone][FoodFavoriteToggle] active=' + (active ? 'true' : 'false') +
+        ' count=' + this.foodFavorites.length.toString() + ' name=' + row.name);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : JSON.stringify(error);
+      aiLogError('[AIPhone][FoodFavoriteToggle] ok=false reason=' + message.substring(0, 220));
+      this.getUIContext().getPromptAction().showToast({ message: '收藏操作失败，请稍后重试。' });
+    }
+  }
+
+  private async removeFoodFavorite(action: A2uiAction): Promise<void> {
+    if (this.currentSurface.intent !== 'food' || action.args === undefined || action.args === null) {
+      this.logHtmlHomeActionError(action, 'food_surface_and_args_required');
+      return;
+    }
+    const args = action.args as Record<string, Object | string | number | boolean | null | undefined>;
+    const favoriteId = this.actionText(args['favoriteId']).trim();
+    if (favoriteId.length === 0) {
+      this.logHtmlHomeActionError(action, 'missing_favorite_id');
+      return;
+    }
+    const store = this.foodFavoritesStore();
+    if (store === null) {
+      this.logHtmlHomeActionError(action, 'food_favorites_store_unavailable');
+      return;
+    }
+    try {
+      const removed = await store.remove(favoriteId);
+      this.foodFavorites = store.list();
+      this.getUIContext().getPromptAction().showToast({ message: '已取消收藏' });
+      aiLogInfo('[AIPhone][FoodFavoriteRemove] removed=' + (removed ? 'true' : 'false') +
+        ' count=' + this.foodFavorites.length.toString());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : JSON.stringify(error);
+      aiLogError('[AIPhone][FoodFavoriteRemove] ok=false reason=' + message.substring(0, 220));
+      this.getUIContext().getPromptAction().showToast({ message: '取消收藏失败，请稍后重试。' });
+    }
+  }
+
+  private storedFoodFavorite(action: A2uiAction): FoodFavoriteViewModel | null {
+    if (action.args === undefined || action.args === null) {
+      return null;
+    }
+    const args = action.args as Record<string, Object | string | number | boolean | null | undefined>;
+    const favoriteId = this.actionText(args['favoriteId']).trim();
+    const store = this.foodFavoritesStore();
+    return favoriteId.length === 0 || store === null ? null : store.find(favoriteId);
+  }
+
+  private async handleStoredFoodFavoriteAction(action: A2uiAction): Promise<boolean> {
+    if (action.id !== 'food_favorite_map' && action.id !== 'food_favorite_call' &&
+      action.id !== 'food_favorite_pin') {
+      return false;
+    }
+    if (this.currentSurface.intent !== 'food') {
+      this.logHtmlHomeActionError(action, 'food_surface_required');
+      return true;
+    }
+    const favorite = this.storedFoodFavorite(action);
+    if (favorite === null) {
+      this.logHtmlHomeActionError(action, 'missing_food_favorite');
+      this.getUIContext().getPromptAction().showToast({ message: '未找到这条收藏记录。' });
+      return true;
+    }
+    if (action.id === 'food_favorite_map') {
+      await this.openFoodMapRow(action, favorite);
+      return true;
+    }
+    if (action.id === 'food_favorite_call') {
+      await this.callFoodRow(action, favorite);
+      return true;
+    }
+    await this.pinNavigationCard(favorite);
+    return true;
   }
 
   private foodAddressActionArgs(action: A2uiAction): Record<string, Object | string | number | boolean | null | undefined> | null {
