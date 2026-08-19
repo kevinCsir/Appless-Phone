@@ -1,7 +1,12 @@
 import { describe, it, expect } from '@ohos/hypium';
 import { A2uiAction } from '@loop/agent-core';
 import { isHtmlHomeActionAllowed } from '../main/ets/pages/A2uiHome/html/HtmlHomeActionPolicy';
-import { HtmlHomeAction, HtmlHomeBlock, HtmlHomeDocument } from '../main/ets/pages/A2uiHome/html/HtmlHomeTypes';
+import {
+  HtmlHomeAction,
+  HtmlHomeBlock,
+  HtmlHomeDocument,
+  HtmlHomeKind
+} from '../main/ets/pages/A2uiHome/html/HtmlHomeTypes';
 
 interface ThreadOnlyArgsFixture {
   threadId: string;
@@ -94,6 +99,10 @@ interface FirecrawlMonitorArgsFixture {
   confirmed?: boolean;
 }
 
+interface PhoneArgsFixture {
+  phone: string;
+}
+
 function action(id: string, prompt: string, kind: string = 'client', args: Object | null = null): A2uiAction {
   const next: A2uiAction = {
     id: id,
@@ -140,7 +149,10 @@ function documentFixture(): HtmlHomeDocument {
       source: 'amap',
       metrics: [],
       rows: [],
-      actions: [{ id: 'html_open_food_map', label: '打开地图', prompt: '{"index":0,"name":"Coffee"}', variant: 'primary', kind: 'client' }]
+      actions: [
+        { id: 'html_open_food_map', label: '打开地图', prompt: '{"index":0,"name":"Coffee"}', variant: 'primary', kind: 'client' },
+        { id: 'html_call_food', label: '拨打电话', prompt: '{"index":0,"name":"Coffee"}', variant: 'secondary', kind: 'client' }
+      ]
     }],
     actions: [{ id: 'gmail.open.web', label: 'Gmail Web', prompt: 'https://mail.google.com/', variant: 'secondary', kind: 'client' }],
     history: [],
@@ -191,13 +203,74 @@ function hotelActionDocumentFixture(): HtmlHomeDocument {
 
 export default function htmlHomeActionPolicyTest() {
   describe('htmlHomeActionPolicy', () => {
+    it('allows exact daily brief snapshot actions', 0, () => {
+      const doc = documentFixture();
+      doc.kind = JSON.parse('"daily-brief"') as HtmlHomeKind;
+      doc.actions = [
+        action('daily.brief.regenerate', '重新生成'),
+        action('daily.brief.history.open', '前一天', 'client', JSON.parse('{"direction":"previous"}') as Object),
+        action('daily.brief.mail.read', '查看消息', 'client', JSON.parse(
+          '{"provider":"gmail","threadId":"thread-1","messageId":"","requestKey":"request-1"}'
+        ) as Object),
+        action('daily.brief.discovery.open', '查看完整发现流')
+      ];
+
+      doc.actions.forEach((value: HtmlHomeAction): void => {
+        const candidate: A2uiAction = {
+          id: value.id,
+          label: value.label,
+          prompt: value.prompt,
+          variant: value.variant,
+          kind: value.kind,
+          args: value.args
+        };
+        expect(isHtmlHomeActionAllowed(doc, candidate)).assertTrue();
+      });
+    });
+
+    it('validates only bounded edited daily brief preference fields against the base save action', 0, () => {
+      const doc = documentFixture();
+      doc.kind = JSON.parse('"daily-brief"') as HtmlHomeKind;
+      doc.actions = [action('daily.brief.preference.save', '保存偏好', 'client', JSON.parse(
+        '{"topics":["AI 产品"],"language":"中文优先","timeBudgetMinutes":15,' +
+        '"formats":["图文"],"negativePreference":"减少重复","targetTime":"08:30"}'
+      ) as Object)];
+      const valid = JSON.parse(
+        '{"topics":["HarmonyOS","Agent"],"language":"中英混合","timeBudgetMinutes":5,' +
+        '"formats":["短视频"],"negativePreference":"少看重复内容","targetTime":"07:45"}'
+      ) as Object;
+      const invalid: Object[] = [
+        JSON.parse('{"topics":["AI"],"language":"中文优先","timeBudgetMinutes":5,"formats":["图文"],"negativePreference":"少重复","targetTime":"24:00"}') as Object,
+        JSON.parse('{"topics":["1","2","3","4","5","6","7","8","9"],"language":"中文优先","timeBudgetMinutes":5,"formats":["图文"],"negativePreference":"少重复","targetTime":"08:30"}') as Object,
+        JSON.parse('{"topics":["AI"],"language":"英文","timeBudgetMinutes":5,"formats":["图文"],"negativePreference":"少重复","targetTime":"08:30"}') as Object,
+        JSON.parse('{"topics":["12345678901234567890123456789012345678901"],"language":"中文优先","timeBudgetMinutes":5,"formats":["图文"],"negativePreference":"少重复","targetTime":"08:30"}') as Object,
+        JSON.parse('{"topics":["AI"],"language":"中文优先","timeBudgetMinutes":5,"formats":["图文"],"negativePreference":"少重复","targetTime":"08:30","url":"https://evil.example"}') as Object,
+        JSON.parse('{"topics":["AI"],"language":"中文优先","timeBudgetMinutes":5,"formats":["图文"],"negativePreference":{"raw":"nested"},"targetTime":"08:30"}') as Object
+      ];
+
+      expect(isHtmlHomeActionAllowed(doc,
+        action('daily.brief.preference.save', '保存偏好', 'client', valid))).assertTrue();
+      invalid.forEach((args: Object): void => {
+        expect(isHtmlHomeActionAllowed(doc,
+          action('daily.brief.preference.save', '保存偏好', 'client', args))).assertFalse();
+      });
+      expect(isHtmlHomeActionAllowed(doc,
+        action('daily.brief.preference.save.forged', '保存偏好', 'client', valid))).assertFalse();
+    });
     it('allows only actions from the current HTML document snapshot', 0, () => {
       const doc = documentFixture();
+      const phoneArgs: PhoneArgsFixture = { phone: '075512345678' };
 
       expect(isHtmlHomeActionAllowed(doc, action('gmail.open.web', 'https://mail.google.com/'))).assertTrue();
       expect(isHtmlHomeActionAllowed(doc, action('gmail.open.web', 'https://evil.example/'))).assertFalse();
       expect(isHtmlHomeActionAllowed(doc, action('html_open_food_map', '{"index":0,"name":"Coffee"}'))).assertTrue();
       expect(isHtmlHomeActionAllowed(doc, action('html_open_food_map', '{"index":99,"name":"Other"}'))).assertFalse();
+      expect(isHtmlHomeActionAllowed(doc, action('html_call_food', '{"index":0,"name":"Coffee"}'))).assertTrue();
+      expect(isHtmlHomeActionAllowed(doc, action('html_call_food', '{"index":0,"name":"Other"}'))).assertFalse();
+      expect(isHtmlHomeActionAllowed(doc,
+        action('html_call_food', '{"index":0,"name":"Coffee"}', 'client', phoneArgs))).assertFalse();
+      doc.blocks[1].actions = doc.blocks[1].actions.filter((item: HtmlHomeAction) => item.id !== 'html_call_food');
+      expect(isHtmlHomeActionAllowed(doc, action('html_call_food', '{"index":0,"name":"Coffee"}'))).assertFalse();
     });
 
     it('allows only visible Firecrawl source and monitor actions from the current document', 0, () => {

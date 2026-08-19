@@ -47,6 +47,7 @@ import {
   UiSurfaceWriter,
   UiTaskRenderer,
   UserInputPayload,
+  TravelSearchPreflightResult,
   VIRTUAL_ACTION_INTENT_SOURCE_TOOL_ID,
   VirtualActionIntent,
   VirtualActionIntentResolver,
@@ -54,7 +55,6 @@ import {
   callStructuredTool,
   gmailDraftApplyAction,
   genericToolResultsA2ui,
-  isExplicitLuckinOrderPrompt,
   isMultiTaskSurface,
   appendMultiTaskSlot,
   mergeSurfaceIntoMultiTaskSurface,
@@ -65,10 +65,12 @@ import {
   parseA2uiJsonl,
   setJsonPointer,
   toolDefinitionForToolId,
-  toolPlanningDescriptionForToolId
+  toolPlanningDescriptionForToolId,
+  travelSearchPreflight
 } from '@loop/agent-core';
 import { leaderPersonaContext } from '../../../model/LeaderPersonaContext';
 import {
+  isStableWaterfallContentPreference,
   memoryUpdateSurface,
   parsePersonaMemoryUpdateInput,
   PersonaMemoryUpdateRequest
@@ -116,8 +118,6 @@ import {
   resolveVirtualRegisteredPageAction
 } from './RegisteredPageActionRoute';
 import {
-  BimGatedLeaderPlanner,
-  BimTurnGate,
   bimTravelQueryIsComplete,
   originalQueryFromBimPrompt
 } from '../bim/BimRuntime';
@@ -194,14 +194,13 @@ interface SocialFeedTaskInput {
 
 export interface MultiAgentCanaryOptions {
   model: LocalModel;
-  turnGate?: BimTurnGate;
   opener: SystemUriOpener;
   pageAction?: RegisteredPageAction;
   currentPageSnapshot?: () => RegisteredPageSnapshot | null;
   currentHostSurface?: () => A2uiSurfaceState | null;
   currentHostGeneration?: () => number;
   onSurface: (surface: A2uiSurfaceState, runtimeGeneration: number) => boolean;
-  onMemoryUpdate: (update: PersonaMemoryUpdateRequest, runtimeGeneration: number) => void;
+  onMemoryUpdate: (update: PersonaMemoryUpdateRequest, runtimeGeneration: number) => boolean;
   onSuggestedActionStatus?: (
     status: SuggestedActionStatusPayload,
     runtimeGeneration: number
@@ -220,6 +219,7 @@ export interface MultiAgentCanaryOptions {
   submitTimeoutMs?: number;
   actionTimeoutMs?: number;
   currentLocalDate?: HotelLocalDateProvider;
+  onDeepSearch?: (query: string) => void;
   dataPlanner?: DataTaskPlanner;
   dataExecutor?: DataTaskExecutor;
   structuredToolCall?: (
@@ -767,6 +767,20 @@ function validSocialFeedTaskInput(input: Object): boolean {
   }
 }
 
+interface DeepSearchTaskInput {
+  query: string;
+}
+
+function normalizedDeepSearchTaskInput(input: Object): Object {
+  const source = input as Record<string, Object | string | number | boolean | null | undefined>;
+  const query = source['query'];
+  if (typeof query !== 'string' || query.trim().length === 0) {
+    throw new Error('DEEP_SEARCH_QUERY_INVALID');
+  }
+  const result: DeepSearchTaskInput = { query: query.trim() };
+  return result;
+}
+
 function travelTaskText(input: Object, keys: string[]): string {
   const source = input as Record<string, Object | string | number | boolean | null | undefined>;
   for (let index = 0; index < keys.length; index++) {
@@ -795,6 +809,47 @@ function validBimTravelQuery(query: string, currentLocalDate: string): boolean {
   return !Number.isNaN(timestamp) && bimTravelQueryIsComplete(query, new Date(timestamp));
 }
 
+function trustedTravelContextQuery(input: InputUserPayload): string {
+  const parts: string[] = [];
+  // Prefer the newest user statement so a follow-up date/origin overrides an
+  // older incomplete request. A BIM snapshot is host-owned read-only context,
+  // so retain it instead of stripping it before grounding model fields.
+  const current = input.text.indexOf('[BIM_SNAPSHOTS]') === 0 ?
+    input.text.trim() : originalQueryFromBimPrompt(input.text).trim();
+  if (current.length > 0) {
+    parts.push(current);
+  }
+  const recentMessages = input.recentMessages === undefined ? [] : input.recentMessages;
+  for (let index = recentMessages.length - 1; index >= 0; index--) {
+    const message = recentMessages[index];
+    if (message.role !== 'user') continue;
+    const content = originalQueryFromBimPrompt(message.content).trim();
+    if (content.length > 0 && (parts.length === 0 || parts[parts.length - 1] !== content)) {
+      parts.push(content);
+    }
+  }
+  return parts.join('；');
+}
+
+function sameTravelFields(
+  candidate: TravelSearchPreflightResult,
+  trusted: TravelSearchPreflightResult
+): boolean {
+  return candidate.complete && trusted.complete &&
+    candidate.departureDate === trusted.departureDate &&
+    candidate.origin === trusted.origin &&
+    candidate.destination === trusted.destination;
+}
+
+function groundedTravelCandidate(
+  query: string,
+  trusted: TravelSearchPreflightResult,
+  currentLocalDate: string
+): boolean {
+  if (query.trim().length === 0 || !trusted.complete) return false;
+  return sameTravelFields(travelSearchPreflight(query, currentLocalDate), trusted);
+}
+
 function normalizeCanaryTaskInput(
   input: InputUserPayload,
   task: LeaderDecisionDataTask,
@@ -819,17 +874,37 @@ function normalizeCanaryTaskInput(
     const taskSource = task.input as Record<string, Object | string | number | boolean | null | undefined>;
     const taskQuery = taskSource['query'];
     const fieldQuery = queryFromTravelTaskFields(task.input, task.toolId);
-    const isBimTurn = input.text.indexOf('[BIM_CONTEXT]') === 0;
+    const isBimTurn = input.text.indexOf('[BIM_SNAPSHOTS]') === 0;
+    const modelQuery = typeof taskQuery === 'string' ? taskQuery.trim() : '';
+    const trustedPreflight = travelSearchPreflight(
+      trustedTravelContextQuery(input), currentLocalDate
+    );
     let query = originalInput.text;
     if (isBimTurn) {
       if (validBimTravelQuery(originalInput.text, currentLocalDate)) {
         query = originalInput.text;
-      } else if (fieldQuery.length > 0 && validBimTravelQuery(fieldQuery, currentLocalDate)) {
+      } else if (fieldQuery.length > 0 && validBimTravelQuery(fieldQuery, currentLocalDate) &&
+        groundedTravelCandidate(fieldQuery, trustedPreflight, currentLocalDate)) {
         query = fieldQuery;
-      } else if (typeof taskQuery === 'string' && validBimTravelQuery(taskQuery, currentLocalDate)) {
-        query = taskQuery.trim();
+      } else if (validBimTravelQuery(modelQuery, currentLocalDate) &&
+        groundedTravelCandidate(modelQuery, trustedPreflight, currentLocalDate)) {
+        query = modelQuery;
       } else {
-        throw new Error('BIM_TRAVEL_QUERY_INCOMPLETE');
+        // Every foreground prompt is wrapped in read-only BIM snapshots. An
+        // incomplete travel request still belongs to the travel preflight
+        // repair path so the Leader can ask for the missing route/date fields.
+        throw new Error('TRAVEL_QUERY_INCOMPLETE');
+      }
+    } else {
+      const originalPreflight = travelSearchPreflight(originalInput.text, currentLocalDate);
+      if (originalPreflight.complete) {
+        query = originalInput.text.trim();
+      } else if (groundedTravelCandidate(modelQuery, trustedPreflight, currentLocalDate)) {
+        query = modelQuery;
+      } else if (groundedTravelCandidate(fieldQuery, trustedPreflight, currentLocalDate)) {
+        query = fieldQuery;
+      } else {
+        throw new Error('TRAVEL_QUERY_INCOMPLETE');
       }
     }
     const normalized = setJsonPointer(task.input as JsonValue, '/query', query);
@@ -842,6 +917,9 @@ function normalizeCanaryTaskInput(
   }
   if (task.toolId === 'social.feed.search') {
     return normalizedSocialFeedTaskInput(unwrapSingleArgsEnvelope(task.input));
+  }
+  if (task.toolId === 'deep.search') {
+    return normalizedDeepSearchTaskInput(unwrapSingleArgsEnvelope(task.input));
   }
   if (task.toolId !== 'calendar.events.search') {
     return task.input;
@@ -928,20 +1006,71 @@ class CanaryStructuredDataExecutor implements DataTaskExecutor {
     args: Object,
     onPartial?: (result: DataResult) => void
   ) => Promise<DataResult>;
+  private readonly onDeepSearch: ((query: string) => void) | null;
 
   constructor(structuredToolCall?: (
     toolId: string,
     prompt: string,
     args: Object,
     onPartial?: (result: DataResult) => void
-  ) => Promise<DataResult>) {
+  ) => Promise<DataResult>, onDeepSearch?: (query: string) => void) {
     this.structuredToolCall = structuredToolCall === undefined ? callStructuredTool : structuredToolCall;
+    this.onDeepSearch = onDeepSearch === undefined ? null : onDeepSearch;
   }
 
   async execute(
     task: CreateDataTaskPayload,
     onPartial?: (result: DataResult) => void
   ): Promise<DataResult> {
+    if (task.toolId === 'deep.search') {
+      const values = task.args as Record<string, Object | string | number | boolean | null | undefined>;
+      const query = values['query'];
+      const queryText = typeof query === 'string' ? query.trim() : task.goal.trim();
+      if (queryText.length === 0) {
+        throw new Error('DEEP_SEARCH_QUERY_MISSING');
+      }
+      if (this.onDeepSearch === null) {
+        return {
+          toolId: 'deep.search',
+          outputSchema: 'genericToolResults',
+          status: 'error',
+          sources: [],
+          data: new Object(),
+          warnings: [],
+          error: {
+            code: 'DEEP_SEARCH_HOST_UNAVAILABLE',
+            message: 'DeepSearch panel host is unavailable in this runtime.',
+            retryable: false
+          }
+        };
+      }
+      this.onDeepSearch(queryText);
+      const result: DynamicGenericToolResult = {
+        sourceTag: 'DeepSearch',
+        toolName: 'deep.search',
+        title: '深度搜索',
+        status: 'success',
+        summary: '深度搜索已在面板中开始：' + queryText,
+        rows: [{ label: '研究问题', value: queryText }],
+        rawPreview: ''
+      };
+      return {
+        toolId: 'deep.search',
+        outputSchema: 'genericToolResults',
+        status: 'success',
+        sources: [{
+          provider: 'DeepSearch',
+          backend: 'local_adapter',
+          operation: 'deep.search',
+          fetchedAt: new Date().toISOString()
+        }],
+        data: JSON.parse(JSON.stringify({
+          summary: queryText,
+          results: [result]
+        })) as Object,
+        warnings: []
+      };
+    }
     if (task.toolId === TIME_TOOL_ID) {
       const now = new Date();
       const localTime = now.toLocaleString();
@@ -1333,24 +1462,26 @@ class MemoryIntentResolver implements VirtualActionIntentResolver {
       };
       return intent;
     }
-    const pack = personaPackForId(request.personaId);
-    if (pack.manifest.id !== request.personaId) {
+    const statement: string = originalQueryFromBimPrompt(request.inputText).trim();
+    if (statement.length === 0) {
       return null;
     }
-    const statement: string = request.inputText.trim();
-    if (statement.length === 0) {
+    const personaId = isStableWaterfallContentPreference(statement) ?
+      'entertainment_companion' : request.personaId;
+    const pack = personaPackForId(personaId);
+    if (pack.manifest.id !== personaId) {
       return null;
     }
     const summary: string = statement.length > MEMORY_SUMMARY_LIMIT ?
       statement.substring(0, MEMORY_SUMMARY_LIMIT) : statement;
     const args: PersonaMemoryUpdateRequest = {
-      personaId: request.personaId,
+      personaId,
       summary,
       memoryText: statement,
       reason: '用户明确表达了可长期保存的偏好。'
     };
     const offer: ActionOffer = {
-      offerId: 'memory-update:' + request.personaId,
+      offerId: 'memory-update:' + personaId,
       actionId: MEMORY_ACTION_ID,
       label: '更新记忆',
       variant: 'primary',
@@ -1379,7 +1510,7 @@ class CanaryRegisteredExecutor implements RegisteredActionExecutor {
   private readonly onMemoryUpdate: (
     update: PersonaMemoryUpdateRequest,
     context: ActionExecutionContext
-  ) => void;
+  ) => boolean;
   private readonly onSurface: (surface: A2uiSurfaceState, context: ActionExecutionContext) => void;
   private readonly currentGmailDraftApply: () => A2uiAction | null;
   private sequence: number = 0;
@@ -1389,7 +1520,7 @@ class CanaryRegisteredExecutor implements RegisteredActionExecutor {
     onMemoryUpdate: (
       update: PersonaMemoryUpdateRequest,
       context: ActionExecutionContext
-    ) => void,
+    ) => boolean,
     onSurface: (surface: A2uiSurfaceState, context: ActionExecutionContext) => void,
     currentGmailDraftApply: () => A2uiAction | null
   ) {
@@ -1441,7 +1572,13 @@ class CanaryRegisteredExecutor implements RegisteredActionExecutor {
         message: 'Memory update args are invalid.'
       };
     }
-    this.onMemoryUpdate(update, context);
+    if (!this.onMemoryUpdate(update, context)) {
+      return {
+        status: 'error',
+        errorCode: 'MEMORY_UPDATE_PERSIST_FAILED',
+        message: 'Memory update could not be persisted.'
+      };
+    }
     this.sequence++;
     const surfaceId: string = 'memory-update:' + this.sequence.toString();
     this.onSurface(memoryUpdateSurface(surfaceId, update), context);
@@ -1457,27 +1594,11 @@ interface MemorySurfaceOutput {
   surfaceId: string;
 }
 
-function isExplicitLuckinOrderStatusPrompt(prompt: string): boolean {
-  const text: string = prompt.trim();
-  return /瑞幸|luckin|ruixing/i.test(text) &&
-    /订单状态|订单进度|取餐码|取餐号|提货码|order status|pickup code/i.test(text);
-}
-
-function isLuckinOrderToolVisible(toolId: string, prompt: string): boolean {
-  const orderIntent: boolean = isExplicitLuckinOrderPrompt(prompt);
-  if (toolId === 'luckin.order.preview') {
-    return orderIntent;
-  }
-  if (toolId === 'luckin.order.create' || toolId === 'luckin.order.status') {
-    return orderIntent || isExplicitLuckinOrderStatusPrompt(prompt);
-  }
-  return true;
-}
-
 function canaryPlanningContext(
   previousPersonaId: string,
-  prompt: string = '',
-  allowTrustedOperationTargets: boolean = false
+  _prompt: string = '',
+  allowTrustedOperationTargets: boolean = false,
+  allowDeepSearch: boolean = false
 ): LeaderPlanningContext {
   const tools: LeaderToolMetadata[] = allToolDefinitions()
     .filter((definition: ToolDefinition): boolean =>
@@ -1485,7 +1606,7 @@ function canaryPlanningContext(
         definition.toolId !== 'social.reply.draft' &&
         definition.toolId !== 'hotel.navigate' &&
         definition.toolId !== 'hotel.booking.open' &&
-        isLuckinOrderToolVisible(definition.toolId, prompt)
+        (allowDeepSearch || definition.toolId !== 'deep.search')
     )
     .map(
     (definition: ToolDefinition): LeaderToolMetadata => {
@@ -1734,8 +1855,9 @@ export class MultiAgentCanaryRuntime {
     );
     this.aiphoneExecutor = aiphoneExecutor;
     const allowTrustedOperationTargets = options.allowTrustedOperationTargets === true;
+    const allowDeepSearch = options.onDeepSearch !== undefined;
     const initialContext = canaryPlanningContext(
-      this.lastLeaderPersonaId, '', allowTrustedOperationTargets
+      this.lastLeaderPersonaId, '', allowTrustedOperationTargets, allowDeepSearch
     );
     const runtimePythonTools = new RuntimePythonToolRegistry(
       allToolDefinitions().map((definition: ToolDefinition): string => definition.toolId)
@@ -1756,17 +1878,18 @@ export class MultiAgentCanaryRuntime {
     this.runtime = new MultiAgentRuntime({
       conversationId,
       bus: options.bus,
-      planner: options.turnGate === undefined ?
-        leaderPlanner : new BimGatedLeaderPlanner(leaderPlanner, options.turnGate),
+      planner: leaderPlanner,
       planningContext: initialContext,
       planningContextProvider: (prompt: string): LeaderPlanningContext =>
-        canaryPlanningContext(this.lastLeaderPersonaId, prompt, allowTrustedOperationTargets),
+        canaryPlanningContext(
+          this.lastLeaderPersonaId, prompt, allowTrustedOperationTargets, allowDeepSearch
+        ),
       currentLocalDateProvider: options.currentLocalDate,
       dataTaskInputNormalizer,
       dataAuthorizer: authorizeCanaryDataTask,
       dataPlanner: options.dataPlanner,
       dataExecutor: options.dataExecutor === undefined ?
-        new CanaryStructuredDataExecutor(options.structuredToolCall) : options.dataExecutor,
+        new CanaryStructuredDataExecutor(options.structuredToolCall, options.onDeepSearch) : options.dataExecutor,
       uiRenderer: mailDetailBridge,
       surfaceWriter: mailDetailBridge,
       actionCatalog: catalog,
@@ -1791,11 +1914,12 @@ export class MultiAgentCanaryRuntime {
       },
       actionExecutor: new CanaryRegisteredExecutor(
         aiphoneExecutor,
-        (update: PersonaMemoryUpdateRequest, context: ActionExecutionContext): void => {
+        (update: PersonaMemoryUpdateRequest, context: ActionExecutionContext): boolean => {
           const hostGeneration = this.turnHostGenerations.get(context.turnId);
           if (hostGeneration !== undefined && hostGeneration > 0) {
-            options.onMemoryUpdate(update, hostGeneration);
+            return options.onMemoryUpdate(update, hostGeneration);
           }
+          return false;
         },
         (surface: A2uiSurfaceState, context: ActionExecutionContext): void => {
           const hostGeneration = this.turnHostGenerations.get(context.turnId);
@@ -1832,9 +1956,6 @@ export class MultiAgentCanaryRuntime {
       directActionAdmission: (action: A2uiAction, context: ActionExecutionContext): boolean =>
         this.admitHotelDetailFollowUp(action, context),
       turnGenerationObserver: (turnId: string, hostGeneration: number): void => {
-        if (options.turnGate !== undefined) {
-          options.turnGate.bind(turnId, hostGeneration);
-        }
         this.rememberTurnHostGeneration(turnId, hostGeneration);
       }
     });

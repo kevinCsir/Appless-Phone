@@ -1,10 +1,24 @@
 import { describe, it, expect } from '@ohos/hypium';
-import { createHtmlHomeDocument } from '../main/ets/pages/A2uiHome/html/HtmlHomeSnapshot';
+import {
+  createHtmlHomeDocument,
+  MailTerminalPresentation,
+  mailTerminalPresentation
+} from '../main/ets/pages/A2uiHome/html/HtmlHomeSnapshot';
 import { isHtmlHomeActionAllowed } from '../main/ets/pages/A2uiHome/html/HtmlHomeActionPolicy';
-import { HtmlHomeBlock } from '../main/ets/pages/A2uiHome/html/HtmlHomeTypes';
+import { HtmlHomeBlock, HtmlHomeDocument } from '../main/ets/pages/A2uiHome/html/HtmlHomeTypes';
+import {
+  createDailyBriefSurface,
+  defaultDailyBriefPreference
+} from '../main/ets/pages/A2uiHome/dailybrief/DailyBriefCore';
+import {
+  DailyBriefSection,
+  DailyBriefPreference,
+  DailyBriefSnapshot
+} from '../main/ets/pages/A2uiHome/dailybrief/DailyBriefTypes';
 import {
   A2uiAction,
   A2uiComponent,
+  A2uiGenericToolResultData,
   A2uiMessage,
   A2uiSurfaceState,
   AggregateSearchPost,
@@ -47,6 +61,33 @@ interface AggregateSearchFixtureDataModel {
   aggregateSearch: AggregateSearchResult;
 }
 
+interface DailyBriefHtmlHomeDocumentFixture extends HtmlHomeDocument {
+  dailyBrief?: DailyBriefSnapshot;
+  dailyBriefPreference?: DailyBriefPreference;
+}
+
+function dailyBriefSnapshot(profile: DailyBriefPreference): DailyBriefSnapshot {
+  return {
+    schemaVersion: 1,
+    date: '2026-08-10',
+    generatedAt: '2026-08-10T08:31:00+08:00',
+    status: 'complete',
+    profile: profile,
+    topThree: [],
+    sections: [],
+    discovery: [],
+    sources: [],
+    waterfall: null,
+    actions: [{
+      id: 'daily.brief.regenerate',
+      label: '重新生成',
+      prompt: '重新生成个人日报',
+      variant: 'primary',
+      kind: 'client'
+    }]
+  };
+}
+
 function aggregateSearchDataModelJson(result: AggregateSearchResult): string {
   const model: AggregateSearchFixtureDataModel = {
     aggregateSearch: result
@@ -56,6 +97,49 @@ function aggregateSearchDataModelJson(result: AggregateSearchResult): string {
 
 export default function htmlHomeSnapshotTest() {
   describe('htmlHomeSnapshot', () => {
+    it('presents terminal mail reads without requesting the body again', 0, () => {
+      const successResult: A2uiGenericToolResultData = {
+        sourceTag: 'QQ Mail',
+        toolName: 'mail.thread.read',
+        title: '真实邮件',
+        status: 'success',
+        summary: '来自 Provider 的真实邮件正文',
+        rows: [{ label: 'Message ID', value: 'message-1' }],
+        rawPreview: ''
+      };
+      const failureResult: A2uiGenericToolResultData = {
+        sourceTag: 'Gmail API',
+        toolName: 'users.threads.get',
+        title: '邮件读取失败',
+        status: 'error',
+        summary: 'Provider: message no longer exists',
+        rows: [{ label: 'Error', value: 'Provider: message no longer exists' }],
+        rawPreview: ''
+      };
+      const searchResult: A2uiGenericToolResultData = {
+        sourceTag: 'QQ Mail',
+        toolName: 'mail.thread',
+        title: '搜索结果',
+        status: 'success',
+        summary: '摘要，不是邮件正文',
+        rows: [{ label: 'Message ID', value: 'message-1' }],
+        rawPreview: ''
+      };
+      const success: MailTerminalPresentation = mailTerminalPresentation('mail.thread.read', successResult);
+      const failure: MailTerminalPresentation = mailTerminalPresentation('gmail.thread.read', failureResult);
+      const search: MailTerminalPresentation = mailTerminalPresentation('mail.search', searchResult);
+
+      expect(success.bodyText).assertEqual('来自 Provider 的真实邮件正文');
+      expect(success.errorText).assertEqual('');
+      expect(success.shouldRequestDetail).assertFalse();
+      expect(failure.bodyText).assertEqual('');
+      expect(failure.errorText).assertEqual('Provider: message no longer exists');
+      expect(failure.shouldRequestDetail).assertFalse();
+      expect(search.bodyText).assertEqual('');
+      expect(search.errorText).assertEqual('');
+      expect(search.shouldRequestDetail).assertTrue();
+    });
+
     it('creates a welcome document without a surface', 0, () => {
       const doc = createHtmlHomeDocument({
         messages: [],
@@ -88,6 +172,109 @@ export default function htmlHomeSnapshotTest() {
       expect(doc.timeline[0].subtitle).assertEqual('find lunch near office');
       expect(doc.history.length).assertEqual(1);
       expect(JSON.stringify(doc).indexOf('"isBusy":true')).assertLarger(-1);
+    });
+
+    it('extracts the frozen daily brief snapshot and separate editable preference', 0, () => {
+      const frozen = defaultDailyBriefPreference();
+      const editable = defaultDailyBriefPreference();
+      editable.timeBudgetMinutes = 5;
+      const snapshot = dailyBriefSnapshot(frozen);
+      const doc = createHtmlHomeDocument({
+        surface: createDailyBriefSurface(snapshot, editable),
+        messages: [],
+        isBusy: false,
+        isAwaitingFirstSurface: false
+      }) as DailyBriefHtmlHomeDocumentFixture;
+
+      expect(doc.kind).assertEqual('daily-brief');
+      expect(doc.source).assertEqual('tool');
+      expect(doc.generatedAt).assertEqual('2026-08-10T08:31:00+08:00');
+      expect(doc.dailyBrief?.profile.timeBudgetMinutes ?? -1).assertEqual(15);
+      expect(doc.dailyBriefPreference?.timeBudgetMinutes ?? -1).assertEqual(5);
+      expect(doc.actions.length).assertEqual(1);
+      expect(doc.actions[0].id).assertEqual('daily.brief.regenerate');
+    });
+
+    it('falls back to the frozen profile when the editable daily preference is absent', 0, () => {
+      const snapshot = dailyBriefSnapshot(defaultDailyBriefPreference());
+      snapshot.profile.targetTime = '07:45';
+      const dailySurface = createDailyBriefSurface(snapshot);
+      dailySurface.dataModelJson = JSON.stringify({ dailyBrief: snapshot });
+      const doc = createHtmlHomeDocument({
+        surface: dailySurface,
+        messages: [],
+        isBusy: false,
+        isAwaitingFirstSurface: false
+      }) as DailyBriefHtmlHomeDocumentFixture;
+
+      expect(doc.kind).assertEqual('daily-brief');
+      expect(doc.dailyBriefPreference?.targetTime ?? '').assertEqual('07:45');
+    });
+
+    it('does not attach parseable malformed daily brief snapshots', 0, () => {
+      const malformedModels: string[] = [
+        '{"dailyBrief":{}}',
+        '{"dailyBrief":null}',
+        '{"dailyBrief":{"schemaVersion":1,"date":"2026-08-10","generatedAt":"2026-08-10T08:31:00+08:00",' +
+          '"status":"complete","profile":{},"topThree":[],"sections":[],"discovery":[],"sources":[]}}'
+      ];
+
+      malformedModels.forEach((dataModelJson: string): void => {
+        const doc = createHtmlHomeDocument({
+          surface: surface('daily-brief', 'error', [root('root')], dataModelJson),
+          messages: [],
+          isBusy: false,
+          isAwaitingFirstSurface: false
+        }) as DailyBriefHtmlHomeDocumentFixture;
+
+        expect(doc.kind).assertEqual('daily-brief');
+        expect(doc.dailyBrief === undefined).assertTrue();
+        expect(doc.actions.length).assertEqual(0);
+      });
+    });
+
+    it('does not attach a daily brief item with a null action', 0, () => {
+      const snapshot = dailyBriefSnapshot(defaultDailyBriefPreference());
+      const dailySurface = createDailyBriefSurface(snapshot);
+      snapshot.sections = JSON.parse('[{"id":"today","title":"Today","state":"success","message":"",' +
+        '"items":[{"id":"item-1","sourceId":"todo","sourceRecordId":"item-1","title":"Task",' +
+        '"summary":"Summary","timeLabel":"Now","startsAt":"","dueAt":"","leaveBy":"",' +
+        '"completed":false,"needsAction":false,"severity":"none","action":null}]}]') as DailyBriefSection[];
+      dailySurface.dataModelJson = JSON.stringify({ dailyBrief: snapshot });
+      const doc = createHtmlHomeDocument({
+        surface: dailySurface,
+        messages: [],
+        isBusy: false,
+        isAwaitingFirstSurface: false
+      }) as DailyBriefHtmlHomeDocumentFixture;
+
+      expect(doc.kind).assertEqual('daily-brief');
+      expect(doc.dailyBrief === undefined).assertTrue();
+      expect(doc.actions.length).assertEqual(0);
+    });
+
+    it('does not attach a daily brief with a null snapshot action', 0, () => {
+      const snapshot = dailyBriefSnapshot(defaultDailyBriefPreference());
+      const dailySurface = createDailyBriefSurface(snapshot);
+      snapshot.actions = JSON.parse('[null]') as A2uiAction[];
+      dailySurface.dataModelJson = JSON.stringify({ dailyBrief: snapshot });
+      let doc: DailyBriefHtmlHomeDocumentFixture | null = null;
+      let threw = false;
+      try {
+        doc = createHtmlHomeDocument({
+          surface: dailySurface,
+          messages: [],
+          isBusy: false,
+          isAwaitingFirstSurface: false
+        }) as DailyBriefHtmlHomeDocumentFixture;
+      } catch (_error) {
+        threw = true;
+      }
+
+      expect(threw).assertFalse();
+      expect(doc?.kind ?? '').assertEqual('daily-brief');
+      expect(doc?.dailyBrief === undefined).assertTrue();
+      expect(doc?.actions.length ?? -1).assertEqual(0);
     });
 
     it('does not expose assistant A2UI protocol in history', 0, () => {
@@ -128,7 +315,7 @@ export default function htmlHomeSnapshotTest() {
       };
       const doc = createHtmlHomeDocument({
         surface: surface('travel', 'ready', [root('options'), options],
-          '{"travelOptions":[{"id":"train-G1","source":"train","sourceTag":"12306","title":"G1","from":"SZ","to":"SH","depart":"09:00","arrive":"13:28","duration":"4h28m","price":"","availability":"available","status":"success","detail":"provider row"}]}'),
+          '{"travelOptions":[{"id":"train-G1","source":"train","sourceTag":"12306","title":"G1","from":"SZ","to":"SH","depart":"09:00","arrive":"13:28","duration":"4h28m","price":"","availability":"available","status":"success","detail":"provider row","travelDate":"2026-08-28","calendarConflict":true,"calendarConflictTitle":"客户会议"}]}'),
         messages: [],
         isBusy: false,
         isAwaitingFirstSurface: false
@@ -142,13 +329,19 @@ export default function htmlHomeSnapshotTest() {
       expect(doc.blocks[0].source).assertEqual('12306');
       expect(doc.actions[0].id).assertEqual('travel_filter_train');
       expect(JSON.stringify(doc.blocks[0].actions).indexOf('html_pin_travel')).assertLarger(-1);
-      expect(doc.blocks[0].actions.length).assertEqual(1);
-      expect(doc.blocks[0].actions[0].prompt.indexOf('"index":0')).assertLarger(-1);
-      expect(doc.blocks[0].actions[0].prompt.indexOf('"id":"train-G1"')).assertLarger(-1);
-      expect(doc.blocks[0].actions[0].prompt.indexOf('"source":"train"')).assertLarger(-1);
-      expect(doc.blocks[0].actions[0].prompt.indexOf('"depart":"09:00"')).assertLarger(-1);
-      expect(doc.blocks[0].actions[0].prompt.indexOf('"from":"SZ"')).assertLarger(-1);
-      expect(doc.blocks[0].actions[0].prompt.indexOf('"to":"SH"')).assertLarger(-1);
+      expect(doc.blocks[0].actions.length).assertEqual(2);
+      expect(doc.blocks[0].actions[0].id).assertEqual('travel.calendar.add');
+      expect(doc.blocks[0].actions[0].label).assertEqual('时间冲突');
+      expect(doc.blocks[0].actions[0].variant).assertEqual('danger');
+      expect(doc.blocks[0].calendarConflict).assertTrue();
+      expect(doc.blocks[0].calendarConflictTitle).assertEqual('客户会议');
+      expect(doc.blocks[0].actions[0].prompt.indexOf('"calendarCollection":"travel"')).assertLarger(-1);
+      expect(doc.blocks[0].actions[1].prompt.indexOf('"index":0')).assertLarger(-1);
+      expect(doc.blocks[0].actions[1].prompt.indexOf('"id":"train-G1"')).assertLarger(-1);
+      expect(doc.blocks[0].actions[1].prompt.indexOf('"source":"train"')).assertLarger(-1);
+      expect(doc.blocks[0].actions[1].prompt.indexOf('"depart":"09:00"')).assertLarger(-1);
+      expect(doc.blocks[0].actions[1].prompt.indexOf('"from":"SZ"')).assertLarger(-1);
+      expect(doc.blocks[0].actions[1].prompt.indexOf('"to":"SH"')).assertLarger(-1);
     });
 
     it('keeps the real 12306 booking action on mixed travel train cards', 0, () => {
@@ -165,7 +358,8 @@ export default function htmlHomeSnapshotTest() {
           '"from":"深圳北","to":"上海虹桥","depart":"09:00","arrive":"13:28","duration":"4h28m",' +
           '"price":"553","availability":"有票","status":"success","detail":"","bookingUrl":"' + bookingUrl +
           '"},{"id":"flight-CZ1","source":"flight","sourceTag":"飞机 · 飞常准","title":"CZ1",' +
-          '"from":"SZX","to":"SHA","depart":"10:00","arrive":"12:20","duration":"2h20m",' +
+          '"from":"深圳宝安","to":"上海虹桥","fromCode":"SZX","toCode":"SHA","travelDate":"2026-08-28",' +
+          '"depart":"10:00","arrive":"12:20","duration":"2h20m",' +
           '"price":"680","availability":"","status":"scheduled","detail":"南方航空"}]}'),
         messages: [],
         isBusy: false,
@@ -178,6 +372,19 @@ export default function htmlHomeSnapshotTest() {
       expect(trainAction.label).assertEqual('去购票');
       expect(JSON.stringify(trainAction.args).indexOf('"bookingUrl":"' + bookingUrl + '"')).assertLarger(-1);
       expect(JSON.stringify(doc.blocks[1].actions).indexOf('train.booking.open')).assertEqual(-1);
+      expect(doc.blocks[1].actions.length).assertEqual(3);
+      expect(doc.blocks[1].actions[0].id).assertEqual('flight.booking.ctrip.open');
+      expect(doc.blocks[1].actions[0].label).assertEqual('去携程订票');
+      expect(doc.blocks[1].actions[0].variant).assertEqual('primary');
+      expect(doc.blocks[1].actions[0].prompt.indexOf('"id":"flight-CZ1"')).assertLarger(-1);
+      expect(doc.blocks[1].actions[0].prompt.indexOf('"source":"flight"')).assertLarger(-1);
+      expect(doc.blocks[1].actions[0].prompt.indexOf('"fromCode":"SZX"')).assertLarger(-1);
+      expect(doc.blocks[1].actions[0].prompt.indexOf('"toCode":"SHA"')).assertLarger(-1);
+      expect(doc.blocks[1].actions[0].prompt.indexOf('"travelDate":"2026-08-28"')).assertLarger(-1);
+      expect(doc.blocks[1].actions[1].id).assertEqual('travel.calendar.add');
+      expect(doc.blocks[1].actions[1].label).assertEqual('加入日历');
+      expect(doc.blocks[1].actions[2].id).assertEqual('html_pin_travel');
+      expect(isHtmlHomeActionAllowed(doc, doc.blocks[1].actions[0] as A2uiAction)).assertTrue();
     });
 
     it('keeps presale mixed travel train cards on the schedule action', 0, () => {
@@ -236,7 +443,7 @@ export default function htmlHomeSnapshotTest() {
       };
       const doc = createHtmlHomeDocument({
         surface: surface('travel', 'ready', [root('trains'), trains, flights],
-          '{"trains":[{"trainCode":"G123","from":"深圳北","to":"上海虹桥","depart":"09:00","arrive":"15:30","duration":"6h30m","seats":"二等座有票","status":"available","business":"","first":"2","second":"有","noSeat":"","hardSeat":"","sleeperSoft":"","price":"553","bookingUrl":"https://kyfw.12306.cn/otn/leftTicket/init?linktypeid=dc&fs=test&ts=test&date=2026-07-22&flag=N,N,Y"}],"flights":[{"flightNo":"CZ8888","airline":"南方航空","dep":"SZX","arr":"SHA","depTime":"10:20","arrTime":"12:45","status":"scheduled","price":"680"}],"summary":{"text":"北京到上海 2026-07-01 航班结果","toolName":"flight.search","dataLabel":"航班","count":1}}'),
+          '{"trains":[{"trainCode":"G123","from":"深圳北","to":"上海虹桥","depart":"09:00","arrive":"15:30","duration":"6h30m","seats":"二等座有票","status":"available","business":"","first":"2","second":"有","noSeat":"","hardSeat":"","sleeperSoft":"","price":"553","bookingUrl":"https://kyfw.12306.cn/otn/leftTicket/init?linktypeid=dc&fs=test&ts=test&date=2026-07-22&flag=N,N,Y"}],"flights":[{"flightNo":"CZ8888","airline":"南方航空","dep":"深圳宝安","arr":"上海虹桥","depCode":"SZX","arrCode":"SHA","travelDate":"2026-07-01","depTime":"10:20","arrTime":"12:45","status":"scheduled","price":"680"}],"summary":{"text":"北京到上海 2026-07-01 航班结果","toolName":"flight.search","dataLabel":"航班","count":1}}'),
         messages: [],
         isBusy: false,
         isAwaitingFirstSurface: false
@@ -254,7 +461,7 @@ export default function htmlHomeSnapshotTest() {
       expect(serialized.indexOf('CZ8888')).assertLarger(-1);
       expect(serialized.indexOf('680')).assertLarger(-1);
       expect(doc.actions[0].id).assertEqual('travel_open');
-      expect(doc.blocks[0].actions.length).assertEqual(3);
+      expect(doc.blocks[0].actions.length).assertEqual(4);
       expect(doc.blocks[0].actions[0].id).assertEqual('train.booking.open');
       expect(doc.blocks[0].actions[0].label).assertEqual('去购票');
       expect(doc.blocks[0].actions[0].variant).assertEqual('primary');
@@ -262,18 +469,34 @@ export default function htmlHomeSnapshotTest() {
       expect(doc.blocks[0].actions[1].id).assertEqual('train.booking.alipay.open');
       expect(doc.blocks[0].actions[1].label).assertEqual('支付宝购票');
       expect(doc.blocks[0].actions[1].prompt).assertEqual('alipays://platformapi/startapp?appId=20000135');
-      expect(doc.blocks[0].actions[2].id).assertEqual('html_pin_train');
-      expect(doc.blocks[1].actions[0].id).assertEqual('html_pin_flight');
+      expect(doc.blocks[0].actions[2].id).assertEqual('travel.calendar.add');
+      expect(doc.blocks[0].actions[2].label).assertEqual('加入日历');
+      expect(doc.blocks[0].actions[3].id).assertEqual('html_pin_train');
+      expect(doc.blocks[1].actions.length).assertEqual(3);
+      expect(doc.blocks[1].actions[0].id).assertEqual('flight.booking.ctrip.open');
+      expect(doc.blocks[1].actions[0].label).assertEqual('去携程订票');
+      expect(doc.blocks[1].actions[0].variant).assertEqual('primary');
+      expect(doc.blocks[1].actions[1].id).assertEqual('travel.calendar.add');
+      expect(doc.blocks[1].actions[1].label).assertEqual('加入日历');
+      expect(doc.blocks[1].actions[2].id).assertEqual('html_pin_flight');
       expect(JSON.stringify(doc.blocks[0].actions).indexOf('train.booking.open')).assertLarger(-1);
       expect(JSON.stringify(doc.blocks[1].actions).indexOf('html_pin_flight')).assertLarger(-1);
-      expect(doc.blocks[0].actions[2].prompt.indexOf('"trainCode":"G123"')).assertLarger(-1);
-      expect(doc.blocks[0].actions[2].prompt.indexOf('"depart":"09:00"')).assertLarger(-1);
-      expect(doc.blocks[0].actions[2].prompt.indexOf('"from":"深圳北"')).assertLarger(-1);
-      expect(doc.blocks[0].actions[2].prompt.indexOf('"to":"上海虹桥"')).assertLarger(-1);
+      expect(doc.blocks[0].actions[3].prompt.indexOf('"trainCode":"G123"')).assertLarger(-1);
+      expect(doc.blocks[0].actions[3].prompt.indexOf('"depart":"09:00"')).assertLarger(-1);
+      expect(doc.blocks[0].actions[3].prompt.indexOf('"from":"深圳北"')).assertLarger(-1);
+      expect(doc.blocks[0].actions[3].prompt.indexOf('"to":"上海虹桥"')).assertLarger(-1);
       expect(doc.blocks[1].actions[0].prompt.indexOf('"flightNo":"CZ8888"')).assertLarger(-1);
       expect(doc.blocks[1].actions[0].prompt.indexOf('"depTime":"10:20"')).assertLarger(-1);
-      expect(doc.blocks[1].actions[0].prompt.indexOf('"dep":"SZX"')).assertLarger(-1);
-      expect(doc.blocks[1].actions[0].prompt.indexOf('"arr":"SHA"')).assertLarger(-1);
+      expect(doc.blocks[1].actions[0].prompt.indexOf('"fromCode":"SZX"')).assertLarger(-1);
+      expect(doc.blocks[1].actions[0].prompt.indexOf('"toCode":"SHA"')).assertLarger(-1);
+      expect(doc.blocks[1].actions[0].prompt.indexOf('"travelDate":"2026-07-01"')).assertLarger(-1);
+      expect(isHtmlHomeActionAllowed(doc, doc.blocks[1].actions[0] as A2uiAction)).assertTrue();
+      const forgedFlightBooking: A2uiAction = {
+        id: 'flight.booking.ctrip.open', label: '去携程订票',
+        prompt: doc.blocks[1].actions[0].prompt.replace('"toCode":"SHA"', '"toCode":"PEK"'),
+        variant: 'primary', kind: 'client'
+      };
+      expect(isHtmlHomeActionAllowed(doc, forgedFlightBooking)).assertFalse();
       expect(doc.blocks[1].prompt).assertEqual('2026-07-01');
     });
 
@@ -292,8 +515,9 @@ export default function htmlHomeSnapshotTest() {
       });
 
       expect(JSON.stringify(doc.blocks[0].metrics).indexOf('"label":"price"')).assertEqual(-1);
-      expect(doc.blocks[0].actions.length).assertEqual(1);
-      expect(doc.blocks[0].actions[0].id).assertEqual('html_pin_train');
+      expect(doc.blocks[0].actions.length).assertEqual(2);
+      expect(doc.blocks[0].actions[0].id).assertEqual('travel.calendar.add');
+      expect(doc.blocks[0].actions[1].id).assertEqual('html_pin_train');
     });
 
     it('drops completed thinking blocks after real results arrive', 0, () => {
@@ -529,7 +753,7 @@ export default function htmlHomeSnapshotTest() {
       expect(JSON.stringify(doc).length).assertLarger(0);
     });
 
-    it('adds food map block actions', 0, () => {
+    it('adds safe food map and call block actions', 0, () => {
       const food: A2uiComponent = {
         id: 'food',
         component: 'FoodChoices',
@@ -537,7 +761,7 @@ export default function htmlHomeSnapshotTest() {
       };
       const doc = createHtmlHomeDocument({
         surface: surface('food', 'ready', [root('food'), food],
-          '{"foods":[{"name":"Coffee","category":"Cafe","address":"Road","distance":"800m","location":"22,113"}]}'),
+          '{"foods":[{"name":"Coffee","category":"Cafe","address":"Road","distance":"800m","location":"22,113","phone":"0755-12345678","phoneSource":"高德","openHoursToday":"10:00-22:00","openHoursWeek":"周一至周日:10:00-22:00","pricePerPerson":42,"priceText":"人均¥42","priceSource":"高德","rating":4.7,"ratingText":"4.7分","ratingSource":"高德","businessStatus":"open","businessStatusLabel":"营业中"}]}'),
         messages: [],
         isBusy: false,
         isAwaitingFirstSurface: false
@@ -545,11 +769,31 @@ export default function htmlHomeSnapshotTest() {
       const serialized = JSON.stringify(doc.blocks);
 
       expect(serialized.indexOf('html_pin_food')).assertLarger(-1);
+      expect(serialized.indexOf('pricePerPerson')).assertLarger(-1);
+      expect(serialized.indexOf('businessStatusLabel')).assertLarger(-1);
       expect(serialized.indexOf('html_open_food_map')).assertLarger(-1);
       expect(doc.blocks[0].actions[0].prompt.indexOf('"name":"Coffee"')).assertLarger(-1);
       expect(doc.blocks[0].actions[0].prompt.indexOf('"address":"Road"')).assertLarger(-1);
       expect(doc.blocks[0].actions[0].prompt.indexOf('"location":"22,113"')).assertLarger(-1);
       expect(doc.blocks[0].actions[0].prompt.indexOf('"distance":"800m"')).assertLarger(-1);
+      expect(serialized.indexOf('"label":"phone","value":"0755-12345678"')).assertLarger(-1);
+      expect(serialized.indexOf('"label":"phoneSource","value":"高德"')).assertLarger(-1);
+      expect(serialized.indexOf('html_call_food')).assertLarger(-1);
+      const callAction = doc.blocks[0].actions.filter((item: A2uiAction) => item.id === 'html_call_food')[0];
+      expect(callAction.prompt.indexOf('phone')).assertEqual(-1);
+      expect(callAction.prompt.indexOf('tel:')).assertEqual(-1);
+      expect(callAction.args === undefined).assertTrue();
+    });
+
+    it('does not add food call actions for missing or invalid phones', 0, () => {
+      const food: A2uiComponent = { id: 'food', component: 'FoodChoices', dataPath: '/foods' };
+      const doc = createHtmlHomeDocument({
+        surface: surface('food', 'ready', [root('food'), food],
+          '{"foods":[{"name":"Missing"},{"name":"Invalid","phone":"tel:075512345678"}]}'),
+        messages: [], isBusy: false, isAwaitingFirstSurface: false
+      });
+
+      expect(JSON.stringify(doc.blocks).indexOf('html_call_food')).assertEqual(-1);
     });
 
     it('adds Gmail AI reply draft action to real thread result blocks', 0, () => {

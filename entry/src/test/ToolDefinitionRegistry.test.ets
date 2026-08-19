@@ -177,6 +177,43 @@ export default function toolDefinitionRegistryTest() {
       expect(movie.actions.length).assertEqual(0);
     });
 
+    it('registers personal daily brief as one read-only App-internal system intent', 0, () => {
+      const daily = toolDefinitionForToolId('daily.brief.open') as ToolDefinition;
+
+      expect(daily.toolId).assertEqual('daily.brief.open');
+      expect(daily.domain).assertEqual('productivity');
+      expect(daily.riskLevel).assertEqual('read');
+      expect(daily.backendPriority.join(',')).assertEqual('system_intent');
+      expect(daily.authModes.join(',')).assertEqual('system');
+      expect(daily.inputSchema).assertEqual('dailyBriefOpenRequest');
+      expect(daily.outputSchema).assertEqual('dailyBriefSnapshot');
+      expect(daily.a2uiComponent).assertEqual('DailyBrief');
+      expect(daily.actions.length).assertEqual(0);
+      expect(toolPlanningDescriptionForToolId('daily.brief.open').indexOf('personal daily brief') >= 0)
+        .assertTrue();
+      expect(toolPlanningDescriptionForToolId('dynamic.search').indexOf('personal daily brief') >= 0)
+        .assertTrue();
+    });
+
+    it('registers DeepSearch as a read-only research tool for LLM-autonomous routing', 0, () => {
+      const deepSearch = toolDefinitionForToolId('deep.search') as ToolDefinition;
+      const description = aiphoneToolDescriptionForModel('deep.search');
+
+      expect(deepSearch.toolId).assertEqual('deep.search');
+      expect(deepSearch.domain).assertEqual('research');
+      expect(deepSearch.riskLevel).assertEqual('read');
+      expect(deepSearch.backendPriority.join(',')).assertEqual('local_adapter');
+      expect(deepSearch.authModes.join(',')).assertEqual('none');
+      expect(deepSearch.inputSchema).assertEqual('deepSearchQuery');
+      expect(deepSearch.outputSchema).assertEqual('genericToolResults');
+      expect(deepSearch.a2uiComponent).assertEqual('GenericToolResults');
+      expect(deepSearch.actions.length).assertEqual(0);
+      expect(isRegisteredAiphoneToolId('deep.search')).assertTrue();
+      expect(isLocalAdapterToolId('deep.search')).assertTrue();
+      expect(description.indexOf('complex research')).assertLarger(-1);
+      expect(description.indexOf('query')).assertLarger(-1);
+    });
+
     it('registers SocialHub read and draft tools without send', 0, () => {
       const feed = toolDefinitionForToolId('social.feed.search') as ToolDefinition;
       const draft = toolDefinitionForToolId('social.reply.draft') as ToolDefinition;
@@ -718,10 +755,10 @@ export default function toolDefinitionRegistryTest() {
       const action: ToolDefinition[] = actionAgentToolDefinitions();
       const ids: string[] = data.concat(action).map((item: ToolDefinition): string => item.toolId);
 
-      expect(all.length).assertEqual(54);
-      expect(data.length).assertEqual(31);
-      expect(action.length).assertEqual(23);
-      expect(new Set<string>(ids).size).assertEqual(54);
+      expect(all.length).assertEqual(56);
+      expect(data.length).assertEqual(32);
+      expect(action.length).assertEqual(24);
+      expect(new Set<string>(ids).size).assertEqual(56);
       expect(all.filter((item: ToolDefinition): boolean => item.riskLevel === 'blocked').length)
         .assertEqual(0);
       expect(ids.indexOf('hotel.navigate') >= 0).assertTrue();

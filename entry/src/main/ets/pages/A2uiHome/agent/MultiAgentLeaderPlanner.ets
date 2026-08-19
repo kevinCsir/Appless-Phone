@@ -35,6 +35,10 @@ import {
   leaderSameRoundDependencyProducerTaskToolIds,
   leaderTasksHaveSameRoundDependency
 } from '@loop/agent-core';
+import {
+  explicitBimCreateRequest,
+  originalQueryFromBimPrompt
+} from '../bim/BimRuntime';
 import { HotelLocalDateProvider, hotelSearchPlanningContract } from './HotelLeaderPlanner';
 
 const DECISION_KEYS: string[] = [
@@ -93,6 +97,11 @@ const BIM_FIELD_RULES: string =
   'Use hotel, flight, transport, and event only for outcomes explicitly confirmed by the user or a real provider; ' +
   'never turn candidates or intermediate search results into confirmed cards. Use [] when there is no item. ' +
   'Do not copy the conversation transcript and do not claim unverified external completion.';
+const SNAPSHOT_ONLY_BIM_RULES: string =
+  '[BIM_SNAPSHOTS] is read-only context for this foreground turn. Never emit bimSuggestion or ' +
+  'bimContextUpdate. When the original user query explicitly asks to remember or keep following a matter, ' +
+  'answer normally without memory.update; the asynchronous BIM Curator owns the later create or update. ' +
+  'Do not claim the matter is saved before host confirmation; tell the user to confirm the visible remember card.';
 const REQUEST_SCOPE_CONTRACT: string =
   'Request scope contract: The current user request defines a closed capability and source set. ' +
   'Persona, active Skill, saved Memory, defaults, and available tools may shape behavior but must not add an ' +
@@ -140,10 +149,15 @@ const SUGGESTED_GOALS_CONTRACT: string =
   'satisfy a Beijing weather request. ' +
   'When the user asks "帮我查询XX（某地）附近的酒店", ' +
   '{"suggestedGoals":["帮用户查询XX附近的美食"]} is valid because it includes the required place parameter XX.';
+const WATERFALL_MEMORY_SELECTION_CONTRACT: string =
+  'Stable content-recommendation preferences such as 以后多推荐..., 不要推荐..., 少给我看... use only ' +
+  'memory.update with personaId entertainment_companion. A one-off search or ordinary topic mention is not a ' +
+  'stable preference.';
 const LEADER_SYSTEM_PROMPT: string = 'Return exactly one JSON object and nothing else. ' +
   'Do not include Thought, markdown, or code fences. ' + ANSWER_FIELD_RULE + ' ' + REASON_CODE_FIELD_RULE + ' ' +
   CONTINUATION_MODE_FIELD_RULE + ' ' + REQUEST_SCOPE_CONTRACT + ' ' + SUGGESTED_GOALS_CONTRACT + ' ' +
-  FULL_DECISION_CONTRACT + ' ' + BIM_FIELD_RULES;
+  FULL_DECISION_CONTRACT + ' ' +
+  BIM_FIELD_RULES + ' ' + WATERFALL_MEMORY_SELECTION_CONTRACT;
 const REPAIR_INSTRUCTION: string = 'Correction: previous decision rejected by strict schema. ' +
   'Return one corrected decision matching the schema exactly. ' + FULL_DECISION_CONTRACT;
 const BIM_MEMORY_UPDATE_REPAIR_INSTRUCTION: string =
@@ -154,11 +168,16 @@ const BIM_NEW_MATTER_MEMORY_UPDATE_REPAIR_INSTRUCTION: string =
   'Return answer or clarify with requestedCapabilityIds=[], dataTasks=[], no actionIntent, a bimSuggestion, ' +
   'and a complete initial bimContextUpdate including dashboardItems. Preserve memory.update only for stable ' +
   'preferences or background facts that do not describe an ongoing matter.';
+const SNAPSHOT_ONLY_BIM_REPAIR_INSTRUCTION: string =
+  'Correction: BIM Snapshots are read-only foreground context. Return answer or clarify with ' +
+  'requestedCapabilityIds=[], dataTasks=[], no actionIntent, no bimSuggestion, and no bimContextUpdate. ' +
+  'The asynchronous BIM Curator owns later BIM writes.';
 const COMPLETED_TOOL_REUSE_ERROR: string = 'LEADER_COMPLETED_TOOL_REUSE';
 const UNBOUND_LATER_TOOL_ERROR: string = 'LEADER_UNBOUND_LATER_TOOL';
 const SAME_ROUND_DEPENDENCY_ERROR: string = 'LEADER_SAME_ROUND_DEPENDENCY';
 const OVERLAPPING_VIDEO_TOOLS_ERROR: string = 'LEADER_OVERLAPPING_VIDEO_TOOLS';
 const TASK_INPUT_INVALID_ERROR: string = 'LEADER_TASK_INPUT_INVALID';
+const TRAVEL_QUERY_INCOMPLETE_ERROR: string = 'LEADER_TRAVEL_QUERY_INCOMPLETE';
 const ACTION_OWNED_DATA_TASK_ERROR: string = 'LEADER_ACTION_OWNED_DATA_TASK';
 const SKILL_CAPABILITY_ERROR: string = 'LEADER_SKILL_CAPABILITY_VIOLATION';
 const PERSONA_SKILL_SWITCH_ERROR: string = 'LEADER_PERSONA_SKILL_SWITCH';
@@ -243,6 +262,13 @@ const TASK_INPUT_REPAIR_INSTRUCTION: string =
   'registered input shape. Keep personaId, skillId, requestedCapabilityIds, roundAction, each Data task localId, ' +
   'goal, allowedToolIds, toolId and required value, uiIntent, actionIntent, answer, and Data task order exactly ' +
   'unchanged. The only permitted difference is inside dataTasks[].input. ' + FULL_DECISION_CONTRACT;
+const TRAVEL_QUERY_INCOMPLETE_REPAIR_INSTRUCTION: string =
+  'Correction: LEADER_TRAVEL_QUERY_INCOMPLETE. A selected travel, train, or flight search lacks an exact ' +
+  'departure date, origin, or destination. Re-read the current message and standard recent conversation. ' +
+  'If all required values are explicitly grounded there, correct only the affected task input. Otherwise return ' +
+  'clarify with empty dataTasks and no actionIntent, and ask only for the missing values in your own natural words. ' +
+  'Preserve requestedCapabilityIds and do not invent a date, city, airport, station, or provider result. ' +
+  FULL_DECISION_CONTRACT;
 const BIM_STATE_ONLY_REPAIR_INSTRUCTION: string =
   'Correction: LEADER_TASK_INPUT_INVALID during a BIM turn. First decide whether the user explicitly requested ' +
   'the selected business tool. A BIM state-only update, including participants, room preferences, dates, budgets, ' +
@@ -294,7 +320,9 @@ const TRAVEL_SELECTION_CONTRACT: string =
   'user explicitly asks only for train/高铁/火车. For requests that do not explicitly name those concrete modes, ' +
   'broad or multimodal wording such as 出行方案, 怎么去, or 综合比较 means exactly ' +
   'one travel.search Data task. Preserve route fields and relative date wording such as 明天 in the selected ' +
-  'task input; do not drop or silently replace them.';
+  'task input; do not drop or silently replace them. This contract chooses a tool only after its required date, ' +
+  'origin, and destination are grounded. If any required value is missing or ambiguous, return clarify with no ' +
+  'Data task and ask for the missing value in your own words.';
 const VIDEO_SELECTION_CONTRACT: string =
   'Video selection contract: A video-only request that explicitly names both YouTube and Bilibili means exactly ' +
   'one media.video.search Data task with sources ["youtube","bilibili"]. Never schedule youtube.video.search in ' +
@@ -591,6 +619,8 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
         correction = input.text.indexOf('[BIM_CONTEXT]') === 0 ?
           BIM_STATE_ONLY_REPAIR_INSTRUCTION + '\nRejected decision: ' + output :
           TASK_INPUT_REPAIR_INSTRUCTION + '\nRejected decision: ' + output;
+      } else if (error instanceof Error && error.message === TRAVEL_QUERY_INCOMPLETE_ERROR) {
+        correction = TRAVEL_QUERY_INCOMPLETE_REPAIR_INSTRUCTION + '\nRejected decision: ' + output;
       } else if (error instanceof Error && error.message === ACTION_OWNED_DATA_TASK_ERROR) {
         correction = ACTION_OWNED_DATA_TASK_REPAIR_INSTRUCTION + '\nRejected decision: ' + output;
       } else if (error instanceof Error && error.message === SKILL_CAPABILITY_ERROR) {
@@ -598,7 +628,8 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
       } else if (error instanceof Error && error.message === BIM_MEMORY_UPDATE_ERROR) {
         correction = BIM_MEMORY_UPDATE_REPAIR_INSTRUCTION;
       } else if (error instanceof Error && error.message === BIM_NEW_MATTER_MEMORY_UPDATE_ERROR) {
-        correction = BIM_NEW_MATTER_MEMORY_UPDATE_REPAIR_INSTRUCTION;
+        correction = input.text.indexOf('[BIM_SNAPSHOTS]\n') === 0 ?
+          SNAPSHOT_ONLY_BIM_REPAIR_INSTRUCTION : BIM_NEW_MATTER_MEMORY_UPDATE_REPAIR_INSTRUCTION;
       } else if (error instanceof Error && error.message === BIM_NEW_MATTER_CONTRACT_ERROR) {
         correction = BIM_NEW_MATTER_MEMORY_UPDATE_REPAIR_INSTRUCTION;
       }
@@ -622,6 +653,7 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
           error.message === UNBOUND_LATER_TOOL_ERROR ||
           error.message === PREMATURE_CALENDAR_DELETE_ACTION_ERROR ||
           error.message === PREMATURE_CALENDAR_UPDATE_AFTER_SEARCH_ERROR ||
+          error.message === TRAVEL_QUERY_INCOMPLETE_ERROR ||
           error.message === BIM_MEMORY_UPDATE_ERROR ||
           error.message === BIM_NEW_MATTER_MEMORY_UPDATE_ERROR ||
           error.message === BIM_NEW_MATTER_CONTRACT_ERROR);
@@ -702,6 +734,10 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
           round
         );
         this.validateDecisionInputs(input, repairedDecision, currentLocalDate);
+        if (error instanceof Error && error.message === TRAVEL_QUERY_INCOMPLETE_ERROR &&
+          repairedDecision.roundAction === 'clarify') {
+          repairedDecision.reasonCode = 'host_preflight_clarify';
+        }
         repairedDecision.normalizationCurrentLocalDate = currentLocalDate;
         return repairedDecision;
       } catch (repairError) {
@@ -728,7 +764,10 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
       for (let index = 0; index < decision.dataTasks.length; index++) {
         normalizer(input, decision.dataTasks[index], currentLocalDate);
       }
-    } catch (_error) {
+    } catch (error) {
+      if (error instanceof Error && error.message === 'TRAVEL_QUERY_INCOMPLETE') {
+        throw new Error(TRAVEL_QUERY_INCOMPLETE_ERROR);
+      }
       throw new Error(TASK_INPUT_INVALID_ERROR);
     }
   }
@@ -737,6 +776,13 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
     input: InputUserPayload,
     decision: LeaderDecision
   ): void {
+    if (input.text.indexOf('[BIM_SNAPSHOTS]\n') === 0) {
+      if (explicitBimCreateRequest(originalQueryFromBimPrompt(input.text)) &&
+        decision.requestedCapabilityIds.indexOf('memory.update') >= 0) {
+        throw new Error(BIM_NEW_MATTER_MEMORY_UPDATE_ERROR);
+      }
+      return;
+    }
     if (input.text.indexOf('[BIM_CONTEXT]') < 0 &&
       decision.requestedCapabilityIds.indexOf('memory.update') >= 0 &&
       isLongRunningMatterRequest(input.text)) {
@@ -748,6 +794,9 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
     input: InputUserPayload,
     decision: LeaderDecision
   ): void {
+    if (input.text.indexOf('[BIM_SNAPSHOTS]\n') === 0) {
+      return;
+    }
     if (input.text.indexOf('[BIM_CONTEXT]') >= 0 || !isLongRunningMatterRequest(input.text)) {
       return;
     }
@@ -1682,9 +1731,16 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
     currentLocalDate: string
   ): string {
     const completedToolIds: string[] = this.currentTurnCompletedToolIds(message, input, context, round);
-    const dataOwnerIds: string[] = leaderDataCapabilityIds(context);
-    const actionOwnerIds: string[] = leaderActionCapabilityIds(context);
-    const promptTools: LeaderToolMetadata[] = context.tools.map(
+    const snapshotOnlyBim: boolean = input.text.indexOf('[BIM_SNAPSHOTS]\n') === 0;
+    const foregroundBimCreate: boolean = snapshotOnlyBim &&
+      explicitBimCreateRequest(originalQueryFromBimPrompt(input.text));
+    const dataOwnerIds: string[] = leaderDataCapabilityIds(context)
+      .filter((toolId: string): boolean => !foregroundBimCreate || toolId !== 'memory.update');
+    const actionOwnerIds: string[] = leaderActionCapabilityIds(context)
+      .filter((toolId: string): boolean => !foregroundBimCreate || toolId !== 'memory.update');
+    const promptTools: LeaderToolMetadata[] = context.tools
+      .filter((tool: LeaderToolMetadata): boolean => !foregroundBimCreate || tool.toolId !== 'memory.update')
+      .map(
       (tool: LeaderToolMetadata): LeaderToolMetadata => ({
         toolId: tool.toolId,
         domain: tool.domain,
@@ -1770,7 +1826,7 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
       DATA_SCOPE_CONTRACT,
       EXPLICIT_SERIAL_SEQUENCE_CONTRACT,
       SUGGESTED_GOALS_CONTRACT,
-      BIM_FIELD_RULES,
+      snapshotOnlyBim ? SNAPSHOT_ONLY_BIM_RULES : BIM_FIELD_RULES,
       'Never emit provider facts, action args, A2UI, credentials, or unregistered tool IDs.',
       hotelSearchPlanningContract(currentLocalDate),
       'Maximum planning rounds: 3.',
@@ -1988,7 +2044,8 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
       decision.actionIntent = actionIntent;
     }
     const hasBimContext: boolean = inputText.indexOf('[BIM_CONTEXT]') >= 0;
-    if (rawBimSuggestion !== undefined) {
+    const snapshotOnlyBim: boolean = inputText.indexOf('[BIM_SNAPSHOTS]\n') === 0;
+    if (!snapshotOnlyBim && rawBimSuggestion !== undefined) {
       if (hasBimContext && rawBimContextUpdate === undefined) {
         throw new Error('Leader BIM suggestion is forbidden for an existing BIM context.');
       }
@@ -1999,7 +2056,7 @@ export class MultiAgentLeaderPlanner implements LeaderPlanner {
     if (hasBimContext && decision.requestedCapabilityIds.indexOf('memory.update') >= 0) {
       throw new Error(BIM_MEMORY_UPDATE_ERROR);
     }
-    if (rawBimContextUpdate !== undefined) {
+    if (!snapshotOnlyBim && rawBimContextUpdate !== undefined) {
       if (!hasBimContext && decision.bimSuggestion === undefined) {
         throw new Error('Leader BIM context update requires the internal BIM marker.');
       }

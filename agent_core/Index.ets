@@ -1,3 +1,4 @@
+export { DEBUG as AGENT_CORE_DEBUG } from './BuildProfile';
 export { ChatMessage, ConversationContext, ConversationRole } from './src/main/ets/agent/ConversationContext';
 export {
   ApplessCapabilityEnvironment,
@@ -9,7 +10,8 @@ export {
   CapabilityRegistry,
   CapabilityRuntime,
   ExecutionEventBus,
-  HotelCapabilityModule
+  HotelCapabilityModule,
+  sha256Digest
 } from './src/main/ets/capability/Index';
 export {
   ApprovalGrant,
@@ -158,7 +160,7 @@ export { aiphoneToolDefinitionCount, allToolDefinitions as allAiphoneToolDefinit
 export { BackendAvailability, BackendResolution, ToolAuthMode, ToolBackendType, ToolDefinition, ToolRiskLevel } from './src/main/ets/aiphone/runtime/ToolDefinitionTypes';
 export { ToolInputJsonSchema, ToolInputJsonSchemaType, ToolInputValidationResult, cloneToolInputJsonSchema, validateToolInputValue } from './src/main/ets/aiphone/runtime/ToolInputJsonSchema';
 export { GMAIL_TOOL_IDS, actionAgentToolDefinitions, aiphoneToolDescriptionForModel, allToolDefinitions, backendLabel, dataAgentToolDefinitions, isCalendarToolId, isExplicitLuckinOrderPrompt, isFirecrawlToolId, isGmailToolId, isHotelToolId, isKnownDomainToolId, isLocalAdapterToolId, isMailToolId, isMapsToolId, isMediaToolId, isPaymentToolId, isRideToolId, isSurfaceDerivedHotelActionId, isYouTubeToolId, resolveBackendForTool, toolDefinitionForToolId, toolPlanningDescriptionForToolId } from './src/main/ets/aiphone/runtime/ToolDefinitionRegistry';
-export { callToolGateway, configureFirecrawlMcpClientForTests, configureLocalProviderConfig, configureLocalProviderConfigFromRawJson, configureLocalStripeReceivingAgentJson, configureLocalToolDebugConfig, defaultToolGatewayUrl, gmailOAuthConfigFromProvider, isRegisteredToolId, localProviderConfigDebugSummary, prepareGmailOAuthAuthorizationUrl, prepareGoogleOAuthAuthorizationUrl, LocalToolDebugConfig } from './src/main/ets/aiphone/runtime/ToolGatewayClient';
+export { callConfiguredAggregateSearchContinuation, callConfiguredWaterfallInterestRecall, callToolGateway, configureFirecrawlMcpClientForTests, configureLocalProviderConfig, configureLocalProviderConfigFromRawJson, configureLocalStripeReceivingAgentJson, configureLocalToolDebugConfig, defaultToolGatewayUrl, gmailOAuthConfigFromProvider, isRegisteredToolId, localProviderConfigDebugSummary, prepareGmailOAuthAuthorizationUrl, prepareGoogleOAuthAuthorizationUrl, LocalToolDebugConfig, resolveLuckinActionPrompt, WaterfallInterestRecallBatch, WaterfallInterestRecallObserver } from './src/main/ets/aiphone/runtime/ToolGatewayClient';
 export { GMAIL_MCP_AUTH_SETUP_URL, GMAIL_WEB_URL, GOOGLE_CALENDAR_WEB_URL, GOOGLE_OAUTH_SETUP_URL } from './src/main/ets/aiphone/runtime/GmailToolA2ui';
 export { AssetCredentialStore, CredentialStore, credentialRefFor } from './src/main/ets/aiphone/runtime/DynamicCredentialStore';
 export { GmailOAuthConfig, GmailOAuthRedirectResult, GmailOAuthTokenSet, handleGmailOAuthRedirect } from './src/main/ets/aiphone/runtime/GmailOAuthClient';
@@ -214,6 +216,7 @@ export * from './src/main/ets/aiphone/runtime/SocialHubTypes';
 export * from './src/main/ets/aiphone/runtime/ToolDefinitionRegistry';
 export * from './src/main/ets/aiphone/runtime/ToolDefinitionTypes';
 export * from './src/main/ets/aiphone/runtime/ToolGatewayClient';
+export * from './src/main/ets/aiphone/runtime/TravelSearchPreflight';
 export * from './src/main/ets/aiphone/runtime/Utf8Bytes';
 export * from './src/main/ets/aiphone/runtime/WaterfallAnythingCore';
 export * from './src/main/ets/aiphone/runtime/YouTubeApiClient';

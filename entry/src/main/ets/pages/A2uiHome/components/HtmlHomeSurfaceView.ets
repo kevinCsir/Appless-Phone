@@ -1,6 +1,7 @@
 import { webview } from '@kit.ArkWeb';
 import { A2uiAction } from '@loop/agent-core';
 import { aiLogError, aiLogInfo } from '@loop/agent-core';
+import { sha256Digest } from '@loop/agent-core';
 import { COLOR_PAGE } from '../style/A2uiHomeTheme';
 
 type HtmlHomeActionValue = Object | string | number | boolean | null | undefined;
@@ -114,6 +115,7 @@ export struct HtmlHomeSurfaceView {
       this.lastSuggestedActionsPayloadTick = -1;
       this.appliedLuckinPatchTick = this.luckinInlinePatchTick;
       aiLogInfo('[AIPhone][HtmlHomeSurfaceLoad] chars=' + this.html.length.toString() +
+        ' contentDigest=' + sha256Digest(this.html) +
         ' renderTick=' + this.renderTick.toString() +
         ' busy=' + (this.isBusy ? 'true' : 'false'));
     } catch (error) {
@@ -337,7 +339,10 @@ export struct HtmlHomeSurfaceView {
 
   build() {
     Stack({ alignContent: Alignment.Top }) {
-      Web({ src: 'data:text/html;charset=utf-8,<body style="margin:0;background:%23F5F2EE"></body>', controller: this.controller })
+      Web({
+        src: 'data:text/html;charset=utf-8,<body style="margin:0;background:rgba(255,255,255,0.48)"></body>',
+        controller: this.controller
+      })
         .javaScriptAccess(true)
         .domStorageAccess(true)
         .mediaPlayGestureAccess(false)
@@ -351,7 +356,7 @@ export struct HtmlHomeSurfaceView {
         })
         .width('100%')
         .height('100%')
-        .backgroundColor(COLOR_PAGE)
+        .backgroundColor('#00000000')
         .opacity(1)
         .onPageEnd(() => {
           this.webReady = true;
@@ -435,13 +440,13 @@ export struct HtmlHomeSurfaceView {
         .height(8)
         .linearGradient({
           angle: 180,
-          colors: [[COLOR_PAGE, 0], ['#00F5F2EE', 1]]
+          colors: [['#8AFFFFFF', 0], ['#00FFFFFF', 1]]
         })
         .hitTestBehavior(HitTestMode.Transparent)
     }
       .width('100%')
       .height('100%')
-      .backgroundColor(COLOR_PAGE)
+      .backgroundColor('#00000000')
   }
 }
 

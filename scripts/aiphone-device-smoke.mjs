@@ -1,8 +1,10 @@
 #!/usr/bin/env node
-import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { dirname, extname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createInterface } from 'node:readline';
+import { createHash } from 'node:crypto';
 import {
   evaluateHotelSystemActionEvidence,
   foregroundBundleFromAbilityDump,
@@ -26,20 +28,26 @@ import {
   captureCompletionSettled,
   collectExternalAuthJumps,
   composioAuthEvidence,
+  DAILY_BRIEF_VISIBLE_MARKERS,
   calendarConfirmationButtonCenter,
   calendarProviderActionEvidence,
   calendarProviderAbsenceEvidence,
+  dailyBriefDirectAnalysis,
+  dailyBriefDirectEvidence,
   normalizeCalendarQaDate,
   runC19CleanupFinalizer,
   directTextVisibleEvidence,
   dynamicAuthOutcomeAssessment,
   dynamicToolDiscoveryEvidence,
   expandedMailBodyRegionText,
+  finalVisibleDateBlockingHits,
   mailThreadReadEvidence,
   modelTransportEvidence,
   multiAgentActionEvidence,
   multiAgentPostCompletionWaitMs,
   multiAgentTurnEvidence,
+  scrolledEvidenceAttemptLimit,
+  shouldDismissKeyboardBeforeScrolledEvidence,
   shouldPreserveSmokeAppSession,
   socialDraftUiEvidence,
   socialReplyButtonCenter,
@@ -48,18 +56,19 @@ import {
   visibleMailBodyText
 } from './multi-agent-smoke-evidence.mjs';
 import {
-  bimCleanSessionBlocker,
+  bimDeleteConfirmationPoint,
   bimScenarioStatus,
+  bimSentinelEvidence,
+  bimSentinelUsesInAppTimer,
   bimSmokeStatus,
   completeBimScenarios,
   hasBimDirectory,
-  hasBimExecutionBar,
   hasBimHome,
+  hasBimReadOnlyContext,
   hasConversationTranscript,
-  hasMainAgentResult,
-  hasRememberSuggestion,
-  hasZeroCandidateBimRoute,
+  hasSnapshotOnlyMainAgent,
   heartCountFromLayout,
+  heartPointFromLayout,
   sanitizeBimFailureReason
 } from './bim-smoke-evidence.mjs';
 
@@ -78,11 +87,13 @@ function snapshotCaseArtifacts(caseId, attempt, sourcePrefixes, summary) {
     const prefix = sourcePrefixes.find((candidate) =>
       fileName.startsWith(`${candidate}-`) || fileName.startsWith(`${candidate}.`));
     if (prefix === undefined) continue;
+    const sourcePath = join(outDir, fileName);
+    if (!statSync(sourcePath).isFile()) continue;
     const extension = extname(fileName);
     const stage = fileName.slice(prefix.length + 1, extension.length > 0 ? -extension.length : undefined)
       .replace(/[^a-zA-Z0-9_-]+/g, '-') || 'artifact';
     const destinationPath = join(destinationDir, `${attempt}-${stage}-${timestamp}${extension}`);
-    copyFileSync(join(outDir, fileName), destinationPath);
+    copyFileSync(sourcePath, destinationPath);
     if (extension === '.png') evidenceScreens.push({ caseId, attempt, path: destinationPath });
   }
   writeFileSync(
@@ -243,6 +254,14 @@ const googleAppCases = [
   { query: '帮我用 Google Maps 搜索深圳坂田华为基地附近的咖啡店', expectsTool: true, expectedToolId: 'maps.place.search' }
 ];
 
+const publicPersonaCases = [
+  { id: 'P01', description: 'first launch, retained platform terminals, confirmed four-field accounts' },
+  { id: 'P02', description: 'confirm selection and prove only selected account reads' },
+  { id: 'P03', description: 'leave while reading and keep partial provider state truthful' },
+  { id: 'P04', description: 'one main avatar, Markdown save, MBTI re-inference and hide reload' },
+  { id: 'P05', description: 'delete locally and prove persona is absent from the next normal prompt' }
+];
+
 const smokeRunId = process.env.AIPHONE_SMOKE_RUN_ID ||
   new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
 const whatsappTestTo = (process.env.AIPHONE_WHATSAPP_TEST_TO || '').trim();
@@ -318,7 +337,8 @@ const coreRegressionCases = [
       { toolId: 'ride.estimate', round: 1 }
     ]
   },
-  { id: 'C23', query: '我想看看现在热映电影、票房和明星动态', expectsTool: true, expectedToolId: 'movie.open' }
+  { id: 'C23', query: '我想看看现在热映电影、票房和明星动态', expectsTool: true, expectedToolId: 'movie.open' },
+  { id: 'C24', query: '我想查看今日日报', expectsTool: true, expectedToolId: 'daily.brief.open' }
 ];
 
 const retainedFullCases = [
@@ -401,8 +421,19 @@ const coreScenarioManifest = [
   ['C20', ['hotel.search']],
   ['C21', ['time', 'ride.estimate']],
   ['C22', ['ride.estimate', 'luckin.order.preview', 'payment.send']],
-  ['C23', ['movie.open']]
-].map(([id, expectedToolIds]) => ({ id, expectedToolIds }));
+  ['C23', ['movie.open']],
+  ['C24', ['daily.brief.open'], {
+    requiredVisibleMarkers: DAILY_BRIEF_VISIBLE_MARKERS,
+    automatedDerivedActionIds: [],
+    manualDerivedActionIds: [
+      'daily.brief.regenerate',
+      'daily.brief.preference.save',
+      'daily.brief.history.open',
+      'daily.brief.mail.read',
+      'daily.brief.discovery.open'
+    ]
+  }]
+].map(([id, expectedToolIds, evidence = {}]) => ({ id, expectedToolIds, ...evidence }));
 
 const fullScenarioManifest = retainedFullCases.map((testCase) => ({
   id: testCase.id,
@@ -515,7 +546,8 @@ const visibleDomainMarkers = [
   'x.post.search',
   '生成草稿',
   'Slack',
-  '企业微信'
+  '企业微信',
+  ...DAILY_BRIEF_VISIBLE_MARKERS
 ];
 
 const forbiddenLayoutActionMarkers = [
@@ -558,11 +590,6 @@ const finalLayoutBlockingMarkers = [
 const finalLayoutRouteMarkers = [
   '北京',
   '上海'
-];
-
-const finalLayoutBlockingPatterns = [
-  { name: 'iso-date', pattern: /\b20\d{2}[-/]\d{1,2}[-/]\d{1,2}\b/ },
-  { name: 'zh-date', pattern: /\b\d{4}年\d{1,2}月\d{1,2}日\b/ }
 ];
 
 const forbiddenGmailSendSuccessPatterns = [
@@ -614,6 +641,20 @@ const aggregateMediaTruthfulBlockingMarkers = [
   'Bad Request'
 ];
 
+const dailyBriefTruthfulStateMarkers = [
+  ...aggregateMediaTruthfulBlockingMarkers,
+  'Google Places API 调用失败',
+  'Gmail 调用失败',
+  'Gmail API 调用失败',
+  'Gmail MCP 调用失败',
+  'QQ 邮箱调用失败',
+  'QQ IMAP timeout',
+  'Composio 调用失败',
+  'Failed to resolve the host name',
+  '同步失败',
+  '暂无可展示数据'
+];
+
 const argv = process.argv.slice(2);
 const cleanData = process.env.AIPHONE_SMOKE_CLEAN_DATA === '1' || argv.includes('--clean-data');
 const runDynamicCases = argv.includes('--dynamic-tools');
@@ -624,6 +665,7 @@ const runFullRegression = argv.includes('--full-regression');
 const runCoreRegression = argv.includes('--core-regression');
 const runGmailSendManual = argv.includes('--gmail-send-manual');
 const runBimSmoke = argv.includes('--bim');
+const runPublicPersona = argv.includes('--public-persona');
 const listCases = argv.includes('--list-cases');
 const queryArgs = argv.filter((arg) => arg !== '--clean-data' &&
   arg !== '--dynamic-tools' &&
@@ -634,6 +676,7 @@ const queryArgs = argv.filter((arg) => arg !== '--clean-data' &&
   arg !== '--core-regression' &&
   arg !== '--gmail-send-manual' &&
   arg !== '--bim' &&
+  arg !== '--public-persona' &&
   arg !== '--list-cases');
 const selectedDefaultCases = runComposioCases ? composioCases :
   (runFullRegression ? fullRegressionCases :
@@ -649,8 +692,25 @@ if (listCases) {
       id: 'BIM',
       mode: 'device-smoke',
       automated: true,
+      preservesAppData: true,
       requires: ['local-model', 'heart-things']
     }], null, 2));
+    process.exit(0);
+  }
+  if (runPublicPersona) {
+    console.log(JSON.stringify(publicPersonaCases.map((testCase) => ({
+      id: testCase.id,
+      description: testCase.description,
+      automated: false,
+      manualGate: true,
+      runner: 'runPublicPersonaSmoke',
+      requires: [
+        'AIPHONE_PUBLIC_PERSONA_USERNAME',
+        'AIPHONE_PUBLIC_PERSONA_MANUAL_RESUME=1',
+        'AIPHONE_PUBLIC_PERSONA_SELECTED_URLS + AIPHONE_PUBLIC_PERSONA_UNSELECTED_URLS'
+      ],
+      providerSuccessRequired: true
+    })), null, 2));
     process.exit(0);
   }
   if (runGmailSendManual) {
@@ -681,6 +741,64 @@ if (listCases) {
   console.log(JSON.stringify(manifest, null, 2));
   process.exit(0);
 }
+
+function publicPersonaConfiguredUrls(value) {
+  const urls = [];
+  for (const candidate of String(value || '').split(/[\n,]/)) {
+    const trimmed = candidate.trim();
+    if (!/^https:\/\/[^\s?#]+$/i.test(trimmed) || urls.includes(trimmed)) {
+      continue;
+    }
+    urls.push(trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed);
+  }
+  return urls;
+}
+
+const publicPersonaUsername = (process.env.AIPHONE_PUBLIC_PERSONA_USERNAME || '').trim();
+const publicPersonaSearchMode = (process.env.AIPHONE_PUBLIC_PERSONA_SEARCH_MODE || 'fuzzy').trim().toLowerCase();
+const publicPersonaExpectedPlatform = (process.env.AIPHONE_PUBLIC_PERSONA_EXPECTED_PLATFORM || '').trim().toLowerCase();
+const publicPersonaExpectedState = (process.env.AIPHONE_PUBLIC_PERSONA_EXPECTED_STATE || '').trim().toLowerCase();
+const publicPersonaSelectedUrls = publicPersonaConfiguredUrls(process.env.AIPHONE_PUBLIC_PERSONA_SELECTED_URLS);
+const publicPersonaUnselectedUrls = publicPersonaConfiguredUrls(process.env.AIPHONE_PUBLIC_PERSONA_UNSELECTED_URLS);
+const publicPersonaExpectedHapSha256 = (process.env.AIPHONE_PUBLIC_PERSONA_HAP_SHA256 || '').trim().toLowerCase();
+const publicPersonaHapPath = join(rootDir, 'entry/build/default/outputs/default/entry-default-signed.hap');
+let publicPersonaHapSha256 = '';
+try {
+  publicPersonaHapSha256 = createHash('sha256').update(readFileSync(publicPersonaHapPath)).digest('hex');
+} catch (_error) {}
+const publicPersonaAdmissionPlatforms = [
+  'weibo', 'github', 'qq', 'inaturalist', 'leetcode_cn', 'gitee', 'stackoverflow', 'gitlab',
+  'bitbucket', 'devto', 'keybase', 'lemmy', 'codeberg', 'codeforces', 'leetcode', 'gitea',
+  'hackerrank', 'discogs'
+];
+if (runPublicPersona && !/^[A-Za-z0-9._-]{1,64}$/.test(publicPersonaUsername)) {
+  console.error('Public persona smoke requires AIPHONE_PUBLIC_PERSONA_USERNAME; no provider result is synthesized.');
+  process.exit(2);
+}
+if (runPublicPersona && publicPersonaSearchMode !== 'exact' && publicPersonaSearchMode !== 'fuzzy') {
+  console.error('AIPHONE_PUBLIC_PERSONA_SEARCH_MODE must be exact or fuzzy.');
+  process.exit(2);
+}
+if (runPublicPersona && publicPersonaExpectedPlatform.length > 0 &&
+  !publicPersonaAdmissionPlatforms.includes(publicPersonaExpectedPlatform)) {
+  console.error('AIPHONE_PUBLIC_PERSONA_EXPECTED_PLATFORM is not an enabled public persona source.');
+  process.exit(2);
+}
+if (runPublicPersona && publicPersonaExpectedPlatform.length > 0 &&
+  (!/^[a-f0-9]{64}$/.test(publicPersonaExpectedHapSha256) ||
+    publicPersonaExpectedHapSha256 !== publicPersonaHapSha256)) {
+  console.error('AIPHONE_PUBLIC_PERSONA_HAP_SHA256 must match the local signed HAP used for admission.');
+  process.exit(2);
+}
+if (runPublicPersona && publicPersonaExpectedState.length > 0 &&
+  !['found', 'not_found'].includes(publicPersonaExpectedState)) {
+  console.error('AIPHONE_PUBLIC_PERSONA_EXPECTED_STATE must be found or not_found; unknown cannot pass admission.');
+  process.exit(2);
+}
+if (runPublicPersona && (publicPersonaExpectedPlatform.length > 0) !== (publicPersonaExpectedState.length > 0)) {
+  console.error('AIPHONE_PUBLIC_PERSONA_EXPECTED_PLATFORM and AIPHONE_PUBLIC_PERSONA_EXPECTED_STATE are required together.');
+  process.exit(2);
+}
 if (runGmailSendManual) {
   console.error('gmail.message.send is manual-only; use --gmail-send-manual --list-cases to inspect its safe gate.');
   process.exit(2);
@@ -702,6 +820,11 @@ function isHotelQuery(query) {
   return /酒店|hotel/i.test(query);
 }
 
+function isDailyBriefQuery(query) {
+  return /今日日报|今日简报|个人日报/.test(query) &&
+    /看|查看|打开|生成|重新生成|重做|刷新/.test(query);
+}
+
 function expectedCaseForQuery(query) {
   const configuredCase = fullRegressionCases.find((testCase) => testCase.query === query);
   if (configuredCase !== undefined) {
@@ -717,6 +840,12 @@ function expectedCaseForQuery(query) {
     return {
       expectsTool: false,
       expectedToolId: ''
+    };
+  }
+  if (isDailyBriefQuery(query)) {
+    return {
+      expectsTool: true,
+      expectedToolId: 'daily.brief.open'
     };
   }
   if (/船票|轮渡|客船|渡轮|码头/.test(query)) {
@@ -973,9 +1102,19 @@ function hdc(args, options = {}) {
   return result.stdout;
 }
 
+function deviceLocalIsoDate() {
+  const value = hdc(['shell', 'date', '+%Y-%m-%d']).trim();
+  if (!/^20\d{2}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error(`Could not read ISO local date from target ${target}: ${value}`);
+  }
+  return value;
+}
+
+const expectedDeviceLocalDate = queries.some((query) => isDailyBriefQuery(query)) ? deviceLocalIsoDate() : '';
+
 function appWindowRect() {
   const output = hdc(['shell', 'hidumper', '-s', 'WindowManagerService', '-a', '-a']);
-  const line = output.split('\n').find((value) => value.includes('aiphonedemo'));
+  const line = output.split('\n').find((value) => value.includes('com.jiuwen.appless'));
   if (line === undefined) {
     return null;
   }
@@ -1012,7 +1151,7 @@ function clearHilog() {
 
 function cleanBundleData() {
   try {
-    hdc(['shell', 'bm', 'clean', '-n', 'com.example.aiphonedemo', '-d']);
+    hdc(['shell', 'bm', 'clean', '-n', 'com.jiuwen.appless', '-d']);
     return true;
   } catch (error) {
     console.warn(`Could not clean bundle data: ${error instanceof Error ? error.message : String(error)}`);
@@ -1020,11 +1159,22 @@ function cleanBundleData() {
   }
 }
 
-const personaStorePath = '/data/app/el2/100/base/com.example.aiphonedemo/haps/entry/preferences/aiphone_persona_store';
+const personaStorePath = '/data/app/el2/100/base/com.jiuwen.appless/haps/entry/preferences/aiphone_persona_store';
 const personaBackupPath = `/data/local/tmp/aiphone-persona-store-${smokeRunId}`;
+const publicPersonaStorePath = '/data/app/el2/100/base/com.jiuwen.appless/haps/entry/preferences/aiphone_public_persona';
+
+function publicPersonaSnapshotExists() {
+  const output = hdc(['shell',
+    `if [ -f ${publicPersonaStorePath} ] && grep -q snapshot_v1 ${publicPersonaStorePath}; then echo PRESENT; else echo ABSENT; fi`
+  ]).trim();
+  if (output !== 'PRESENT' && output !== 'ABSENT') {
+    throw new Error(`Could not determine public persona snapshot state: ${output}`);
+  }
+  return output === 'PRESENT';
+}
 
 function backupPersonaMemoryStore() {
-  hdc(['shell', 'aa', 'force-stop', 'com.example.aiphonedemo']);
+  hdc(['shell', 'aa', 'force-stop', 'com.jiuwen.appless']);
   const output = hdc(['shell',
     `if [ -f ${personaStorePath} ]; then cp ${personaStorePath} ${personaBackupPath} && echo PRESENT; else echo ABSENT; fi`
   ]).trim();
@@ -1038,7 +1188,7 @@ function backupPersonaMemoryStore() {
 }
 
 function restorePersonaMemoryStore(backup) {
-  hdc(['shell', 'aa', 'force-stop', 'com.example.aiphonedemo']);
+  hdc(['shell', 'aa', 'force-stop', 'com.jiuwen.appless']);
   const restoreCommand = backup.existed
     ? `cp ${backup.backupPath} ${personaStorePath} && cmp -s ${backup.backupPath} ${personaStorePath} && echo RESTORED`
     : `rm -f ${personaStorePath} && [ ! -f ${personaStorePath} ] && echo RESTORED`;
@@ -1181,13 +1331,29 @@ function attrIsFalse(value) {
   return value === false || value === 'false';
 }
 
-function dumpLayout(localName = 'latest-layout.json') {
+function redactPublicPersonaLayout(value) {
+  if (typeof value === 'string') {
+    return value.replace(/https:\/\/[^\s"'<>|]+/gi, 'https://<redacted>');
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactPublicPersonaLayout(item));
+  }
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactPublicPersonaLayout(item)]));
+  }
+  return value;
+}
+
+function dumpLayout(localName = 'latest-layout.json', bundleName = 'com.jiuwen.appless') {
   const remote = '/data/local/tmp/aiphone-smoke-layout.json';
   const local = join(outDir, localName);
+  const redact = localName.startsWith('public-persona-');
   let lastError = null;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
-      hdc(['shell', 'uitest', 'dumpLayout', '-p', remote, '-b', 'com.example.aiphonedemo']);
+      const args = ['shell', 'uitest', 'dumpLayout', '-p', remote];
+      if (bundleName.length > 0) args.push('-b', bundleName);
+      hdc(args);
       hdc(['file', 'recv', remote, local]);
       const raw = readFileSync(local, 'utf8').trim();
       if (raw.length === 0) {
@@ -1197,9 +1363,18 @@ function dumpLayout(localName = 'latest-layout.json') {
       if (!Array.isArray(layout.children) || layout.children.length === 0) {
         throw new Error('dumpLayout produced an empty accessibility tree');
       }
+      if (redact) {
+        writeFileSync(local, JSON.stringify(redactPublicPersonaLayout(layout), null, 2));
+      }
       return layout;
     } catch (error) {
       lastError = error;
+      if (redact) {
+        try {
+          writeFileSync(local, '{}');
+        } catch (_writeError) {
+        }
+      }
       spawnSync('sleep', ['0.5']);
     }
   }
@@ -1233,6 +1408,168 @@ function sanitizeExternalUrlLogs(logText) {
   return String(logText || '')
     .replace(/("(?:bookingUrl|uri|url)"\s*:\s*")[^"]*(")/g, '$1<redacted>$2')
     .replace(/\b(url|uri|bookingUrl)=\S+/g, '$1=<redacted>');
+}
+
+function publicPersonaLogDelta(before, after) {
+  const previous = String(before || '');
+  const current = String(after || '');
+  if (previous.length === 0) {
+    return { delta: '', baselineMismatch: true };
+  }
+  const offset = current.indexOf(previous);
+  return offset >= 0 ?
+    { delta: current.slice(offset + previous.length), baselineMismatch: false } :
+    { delta: '', baselineMismatch: true };
+}
+
+function publicPersonaStrictLogDelta(before, after) {
+  const previous = String(before || '');
+  const current = String(after || '');
+  if (previous.length === 0) {
+    return { matched: false, delta: '' };
+  }
+  const offset = current.indexOf(previous);
+  return offset >= 0 ? { matched: true, delta: current.slice(offset + previous.length) } : { matched: false, delta: '' };
+}
+
+function publicPersonaPlatformFromHost(hostname) {
+  const host = String(hostname || '').toLowerCase().replace(/^www\./, '');
+  if (host === 'space.bilibili.com') return 'bilibili';
+  if (host === 'zhihu.com') return 'zhihu';
+  if (host === 'weibo.com') return 'weibo';
+  if (host === 'github.com') return 'github';
+  if (host.endsWith('.qzone.qq.com') || host === 'qzone.qq.com') return 'qq';
+  if (host === 'scratch.mit.edu') return 'scratch';
+  if (host === 'hackernoon.com') return 'hackernoon';
+  if (host === 'inaturalist.org') return 'inaturalist';
+  if (host === 'disqus.com') return 'disqus';
+  if (host === 'bsky.app') return 'bluesky';
+  if (host === 'chess.com') return 'chess';
+  if (host === 'boosty.to') return 'boosty';
+  if (host === 'tieba.baidu.com') return 'tieba';
+  if (host.endsWith('.douban.com') || host === 'douban.com') return 'douban';
+  if (host === 'npmjs.com') return 'npm';
+  if (host === 'leetcode.cn') return 'leetcode_cn';
+  if (host === 'gitee.com') return 'gitee';
+  if (host === 'gitcode.com') return 'gitcode';
+  if (host === 'yuque.com') return 'yuque';
+  if (host === 'cnblogs.com') return 'cnblogs';
+  if (host === 'v2ex.com') return 'v2ex';
+  if (host === 'matrix-client.matrix.org') return 'matrix';
+  if (host.endsWith('.tuchong.com') || host === 'tuchong.com') return 'tuchong';
+  if (host === 'stackoverflow.com') return 'stackoverflow';
+  if (host === 'gitlab.com') return 'gitlab';
+  if (host === 'bitbucket.org') return 'bitbucket';
+  if (host === 'hub.docker.com') return 'dockerhub';
+  if (host === 'dev.to') return 'devto';
+  if (host === 'producthunt.com') return 'producthunt';
+  if (host === 'keybase.io') return 'keybase';
+  if (host === 'huggingface.co') return 'huggingface';
+  if (host === 'blog.csdn.net') return 'csdn';
+  if (host === 'medium.com') return 'medium';
+  if (host === 'mastodon.social' || host === 'fosstodon.org') return 'mastodon';
+  if (host === 'about.me') return 'aboutme';
+  if (host === 't.me') return 'telegram';
+  if (host === 'behance.net') return 'behance';
+  if (host === 'steamcommunity.com') return 'steam';
+  if (host === 'lemmy.world') return 'lemmy';
+  if (host === 'substack.com') return 'substack';
+  if (host === 'codeberg.org') return 'codeberg';
+  if (host === 'codeforces.com') return 'codeforces';
+  if (host === 'leetcode.com') return 'leetcode';
+  if (host === 'picsart.com') return 'picsart';
+  if (host === 'dailymotion.com') return 'dailymotion';
+  if (host === 'topcoder.com') return 'topcoder';
+  if (host === 'mixcloud.com') return 'mixcloud';
+  if (host.endsWith('.gravatar.com') || host === 'gravatar.com') return 'gravatar';
+  if (host === 'gitea.com') return 'gitea';
+  if (host.endsWith('.launchpad.net') || host === 'launchpad.net') return 'launchpad';
+  if (host === 'deviantart.com') return 'deviantart';
+  if (host === 'hackerrank.com') return 'hackerrank';
+  if (host === 'discogs.com') return 'discogs';
+  if (host === 'opencollective.com') return 'opencollective';
+  if (host === 'misskey.io') return 'misskey';
+  if (host === 'x.com' || host === 'twitter.com') return 'x';
+  if (host === 'youtube.com') return 'youtube';
+  if (host === 'linkedin.com') return 'linkedin';
+  return '';
+}
+
+function publicPersonaAccountKey(url) {
+  try {
+    const parsed = new URL(url);
+    const platform = publicPersonaPlatformFromHost(parsed.hostname);
+    const segments = parsed.pathname.split('/').filter((value) => value.length > 0);
+    if (platform.length === 0) return '';
+    let username = segments.length === 0 ? '' : segments[segments.length - 1].replace(/^@/, '');
+    if (platform === 'tieba') username = parsed.searchParams.get('un') || '';
+    if (platform === 'tuchong' && parsed.hostname.toLowerCase() !== 'tuchong.com') {
+      username = parsed.hostname.split('.')[0];
+    }
+    return username.length === 0 ? '' : `${platform}:${username.toLowerCase()}`;
+  } catch {
+    return '';
+  }
+}
+
+function publicPersonaCandidateLayoutState(layout) {
+  const labels = [
+    ['bilibili', '哔哩哔哩'], ['zhihu', '知乎'], ['weibo', '微博'],
+    ['github', 'GitHub'], ['qq', 'QQ 空间'], ['tieba', '百度贴吧'], ['douban', '豆瓣'], ['npm', 'NPM'],
+    ['scratch', 'Scratch'], ['hackernoon', 'HackerNoon'], ['inaturalist', 'iNaturalist'],
+    ['disqus', 'Disqus'], ['bluesky', 'Bluesky'], ['chess', 'Chess.com'], ['boosty', 'Boosty'],
+    ['leetcode_cn', '力扣'], ['gitee', 'Gitee'], ['gitcode', 'GitCode'], ['yuque', '语雀'],
+    ['cnblogs', '博客园'], ['v2ex', 'V2EX'], ['matrix', 'Matrix'], ['tuchong', '图虫'], ['stackoverflow', 'Stack Overflow'],
+    ['gitlab', 'GitLab'], ['bitbucket', 'Bitbucket'], ['dockerhub', 'Docker Hub'], ['devto', 'DEV Community'],
+    ['producthunt', 'Product Hunt'], ['keybase', 'Keybase'], ['huggingface', 'Hugging Face'], ['csdn', 'CSDN'],
+    ['medium', 'Medium'], ['mastodon', 'Mastodon'], ['aboutme', 'About.me'], ['telegram', 'Telegram'],
+    ['behance', 'Behance'], ['steam', 'Steam'],
+    ['lemmy', 'Lemmy'], ['substack', 'Substack'], ['codeberg', 'Codeberg'],
+    ['codeforces', 'Codeforces'], ['leetcode', 'LeetCode'], ['picsart', 'Picsart'],
+    ['dailymotion', 'Dailymotion'], ['topcoder', 'Topcoder'],
+    ['mixcloud', 'Mixcloud'], ['gravatar', 'Gravatar'], ['gitea', 'Gitea'],
+    ['launchpad', 'Launchpad'], ['deviantart', 'DeviantArt'],
+    ['hackerrank', 'HackerRank'], ['discogs', 'Discogs'], ['opencollective', 'Open Collective'], ['misskey', 'Misskey'],
+    ['x', 'X'], ['youtube', 'YouTube'], ['linkedin', 'LinkedIn']
+  ];
+  const rows = [];
+  walk(layout, (node) => {
+    const bounds = parseBounds((node.attributes || {}).bounds);
+    if (bounds === null || bounds.width < 200 || bounds.height < 45 || bounds.height > 300) return;
+    const values = [];
+    walk(node, (child) => {
+      const attrs = child.attributes || {};
+      ['text', 'content', 'description', 'hint'].forEach((key) => {
+        const value = attrs[key];
+        if (typeof value === 'string' && value.trim().length > 0) values.push(value.trim());
+      });
+    });
+    const uniqueValues = [...new Set(values)];
+    const line = uniqueValues.join('|');
+    const username = /@([A-Za-z0-9][A-Za-z0-9._-]*)/.exec(line);
+    const platform = labels.find((entry) => uniqueValues.some((value) => value === entry[1] ||
+      value.indexOf('·') >= 0 && value.endsWith(entry[1])));
+    const selected = uniqueValues.some((value) => value === '已选');
+    const unselected = uniqueValues.some((value) => value === '选择');
+    if (username === null || platform === undefined || !selected && !unselected) return;
+    const key = `${platform[0]}:${username[1].toLowerCase()}`;
+    if (!rows.some((row) => row.key === key)) rows.push({ key, selected });
+  });
+  return rows;
+}
+
+function publicPersonaProbeResultFromLog(log, platform) {
+  const pattern = new RegExp(`\\[AIPhone\\]\\[PublicPersonaProbe\\] platform=${platform} result=(found|not_found|unknown)`, 'g');
+  let result = '';
+  for (const match of String(log || '').matchAll(pattern)) result = match[1];
+  return result;
+}
+
+function publicPersonaProbeStatesFromLog(log) {
+  const states = {};
+  const pattern = /\[AIPhone\]\[PublicPersonaProbe\] platform=([a-z0-9_]+) result=(found|not_found|unknown)/g;
+  for (const match of String(log || '').matchAll(pattern)) states[match[1]] = match[2];
+  return states;
 }
 
 function collectLayoutText(layout) {
@@ -1273,10 +1610,6 @@ function findHotelDetailTextCenter(layout, marker) {
   return match === undefined ? null : { x: match.bounds.x, y: match.bounds.y };
 }
 
-function findTextCenters(layout, marker) {
-  return findTextMatches(layout, marker).map((match) => ({ x: match.bounds.x, y: match.bounds.y }));
-}
-
 function findTextMatches(layout, marker) {
   const matches = [];
   walk(layout, (node) => {
@@ -1314,6 +1647,20 @@ function findHeaderSettingsCenter(layout) {
   });
   candidates.sort((left, right) => right.x - left.x);
   return candidates.length > 0 ? { x: candidates[0].x, y: candidates[0].y } : null;
+}
+
+function findHeaderPublicPersonaCenter(layout) {
+  const candidates = [];
+  walk(layout, (node) => {
+    const attrs = node.attributes || {};
+    const bounds = parseBounds(attrs.bounds);
+    if (bounds === null || !attrIsTrue(attrs.clickable) || attrIsFalse(attrs.enabled)) return;
+    if (bounds.top <= 360 && bounds.width >= 32 && bounds.width <= 160 && bounds.height >= 32 && bounds.height <= 160) {
+      candidates.push(bounds);
+    }
+  });
+  candidates.sort((left, right) => right.x - left.x);
+  return candidates.length > 1 ? { x: candidates[1].x, y: candidates[1].y } : null;
 }
 
 async function findTextCenterWithScroll(marker, localNamePrefix, maxSwipes = 4) {
@@ -1682,6 +2029,8 @@ function analyze(
   expectedParallelDataToolIds = []
 ) {
   const text = logs.join('\n');
+  const dailyBriefDirect = expectedToolId === 'daily.brief.open' ?
+    dailyBriefDirectEvidence(text) : null;
   const multiAgentLifecycle = multiAgentTurnEvidence(text, {
     expectedToolIds,
     minimumDataRounds,
@@ -1725,6 +2074,7 @@ function analyze(
     expectedToolIds,
     expectedDiscoveredToolId,
     expectedDynamicQualifiedName,
+    dailyBriefDirect,
     dynamicDiscovery,
     multiAgentLifecycle,
     hasExpectedToolId,
@@ -1790,7 +2140,9 @@ function analyze(
   result.transportPassed = !result.failedConnect && !result.providerFailed;
   result.basePassedWithoutTransport = baseWithoutTransport;
   const basePassed = result.transportPassed && baseWithoutTransport;
-  if (isPersonaMemoryUpdateQuery(query)) {
+  if (dailyBriefDirect !== null) {
+    Object.assign(result, dailyBriefDirectAnalysis(result, dailyBriefDirect));
+  } else if (isPersonaMemoryUpdateQuery(query)) {
     result.modelPassed = result.personaMemoryUpdateProof === true;
     result.transportPassed = true;
     result.basePassedWithoutTransport = true;
@@ -1972,6 +2324,9 @@ function layoutExpectationsForQuery(query) {
   if (/^你好$|问候|打招呼/.test(query)) {
     return ['你好'];
   }
+  if (isDailyBriefQuery(query)) {
+    return DAILY_BRIEF_VISIBLE_MARKERS;
+  }
   if (/船票|轮渡|客船|渡轮|码头/.test(query)) {
     return ['接入工具', 'dynamic.search', '没有找到'];
   }
@@ -2100,16 +2455,19 @@ function requiredScrolledMarkersForQuery(query, expectedToolId) {
   if (expectedToolId === 'movie.open') {
     return ['电影 Anything OS', '明星正在发生'];
   }
+  if (expectedToolId === 'daily.brief.open') {
+    return DAILY_BRIEF_VISIBLE_MARKERS;
+  }
   return [];
 }
 
-async function collectScrolledLayoutEvidence(initialLayout, initialText, index, requiredMarkers) {
+async function collectScrolledLayoutEvidence(initialLayout, initialText, index, requiredMarkers, attemptLimit = 5) {
   const texts = [initialText];
   const layoutPaths = [join(outDir, `query-${index + 1}-final-layout.json`)];
   const textPaths = [join(outDir, `query-${index + 1}-final-layout-text.txt`)];
   const screenPaths = [];
   let currentLayout = initialLayout;
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  for (let attempt = 0; attempt < attemptLimit; attempt += 1) {
     const combinedText = texts.join('\n');
     if (requiredMarkers.every((marker) => combinedText.includes(marker))) {
       break;
@@ -2500,7 +2858,7 @@ async function exerciseHotelSystemAction(
       `query-${index + 1}-hotel-${actionName}-restored-ability-${backPressCount}.txt`
     );
   } while (shouldRetryHotelReturnToApp(restoredForeground.bundleName, backPressCount));
-  runtime.returnedToApp = restoredForeground.bundleName === 'com.example.aiphonedemo';
+  runtime.returnedToApp = restoredForeground.bundleName === 'com.jiuwen.appless';
   let restoredLayout = located.layout;
   let restoredLayoutPath = '';
   let restoredScreenPath = '';
@@ -2617,7 +2975,7 @@ async function verifyHotelBookingAction(layout, index, appPid, actionEvidence, a
   const bookingText = collectLayoutText(bookingLayout).join('\n');
   report.headerVisible = bookingText.includes('RollingGo 酒店预订');
   report.domainVisible = /rollinggo\.cn/i.test(bookingText) || /rollinggo\.cn/i.test(bookingLogs);
-  report.returnedToRoom = foreground.bundleName === 'com.example.aiphonedemo';
+  report.returnedToRoom = foreground.bundleName === 'com.jiuwen.appless';
 
   const loginCenter = findExactTextCenter(bookingLayout, '登录查看价格');
   if (loginCenter !== null) {
@@ -3147,15 +3505,15 @@ async function runQuery(query, index, expectedTool, expectedCaseOverride = null,
   const expectedParallelDataToolIds = lifecycle.expectedParallelDataToolIds;
   clearHilog();
   if (!preserveAppSession) {
-    hdc(['shell', 'aa', 'force-stop', 'com.example.aiphonedemo']);
+    hdc(['shell', 'aa', 'force-stop', 'com.jiuwen.appless']);
     if (cleanData) {
       cleanBundleData();
     }
-    hdc(['shell', 'aa', 'start', '-a', 'EntryAbility', '-b', 'com.example.aiphonedemo']);
+    hdc(['shell', 'aa', 'start', '-a', 'EntryAbility', '-b', 'com.jiuwen.appless']);
   }
   await sleep(3000);
   moveAppWindowIntoScreenshot();
-  const appPid = hdc(['shell', 'pidof', 'com.example.aiphonedemo']).trim().split(/\s+/)[0] || '';
+  const appPid = hdc(['shell', 'pidof', 'com.jiuwen.appless']).trim().split(/\s+/)[0] || '';
   const controls = await waitForControls();
   const directTextBaselineName = `query-${index + 1}-direct-text-baseline-layout.json`;
   let directTextBaselineLayout = null;
@@ -3184,7 +3542,9 @@ async function runQuery(query, index, expectedTool, expectedCaseOverride = null,
       }
     }
     hdc(['shell', 'uitest', 'uiInput', 'click', String(submitControls.generate.x), String(submitControls.generate.y)]);
-  }, {
+  }, expectedToolId === 'daily.brief.open' ? {
+    completionEvidence: (text) => dailyBriefDirectEvidence(text)
+  } : {
     expectedToolIds,
     minimumDataRounds,
     expectedDependencies,
@@ -3249,11 +3609,16 @@ async function runQuery(query, index, expectedTool, expectedCaseOverride = null,
     skipped: directTextEvidence.skipped === true
   };
   const expectedMarkers = layoutExpectationsForQuery(query);
+  if (shouldDismissKeyboardBeforeScrolledEvidence(expectedToolId)) {
+    hdc(['shell', 'uitest', 'uiInput', 'keyEvent', 'Back']);
+    await sleep(500);
+  }
   const scrollEvidence = await collectScrolledLayoutEvidence(
     layout,
     layoutText,
     index,
-    requiredScrolledMarkersForQuery(query, expectedToolId)
+    requiredScrolledMarkersForQuery(query, expectedToolId),
+    scrolledEvidenceAttemptLimit(expectedToolId)
   );
   const evidenceText = scrollEvidence.text;
   const evidenceLayout = scrollEvidence.currentLayout;
@@ -3292,6 +3657,13 @@ async function runQuery(query, index, expectedTool, expectedCaseOverride = null,
   const aggregateMediaVisibleOutput = expectedToolId === 'media.aggregate.search' && hasVisibleAggregateMediaOutput(evidenceText);
   const worldCupVisibleOutput = expectedToolId === 'worldcup.open' && evidenceText.includes('世界杯 Anything OS');
   const movieVisibleOutput = expectedToolId === 'movie.open' && evidenceText.includes('电影 Anything OS');
+  const dailyBriefEvidence = expectedToolId === 'daily.brief.open' ?
+    dailyBriefDirectEvidence(safeLogText, evidenceText) : null;
+  const dailyBriefDateBlockingHits = expectedToolId === 'daily.brief.open' ?
+    finalVisibleDateBlockingHits(evidenceText, expectedToolId, expectedDeviceLocalDate) : [];
+  const dailyBriefVisibleOutput = dailyBriefEvidence?.ok === true && dailyBriefDateBlockingHits.length === 0;
+  summary.dailyBriefDirectEvidence = dailyBriefEvidence;
+  summary.dailyBriefDateBlockingHits = dailyBriefDateBlockingHits;
   const allowsExternalGmailWeb = isGmailWebQuery(query) && summary.gmailWebOpened === true;
   const allowsAggregateMailProviderFailure = expectedToolId === 'mail.search' &&
     !isQqMailQuery(query) &&
@@ -3312,6 +3684,9 @@ async function runQuery(query, index, expectedTool, expectedCaseOverride = null,
     if (aggregateMediaVisibleOutput && aggregateMediaTruthfulBlockingMarkers.includes(marker)) {
       return false;
     }
+    if (dailyBriefVisibleOutput && dailyBriefTruthfulStateMarkers.includes(marker)) {
+      return false;
+    }
     if (allowsAggregateMailProviderFailure && (/^(Gmail|QQ)/.test(marker) || marker === 'Operation timeout' || marker === '2300028')) {
       return false;
     }
@@ -3320,6 +3695,7 @@ async function runQuery(query, index, expectedTool, expectedCaseOverride = null,
   if (expectedToolId === 'gmail.mail.search' && hasTechnicalGmailArgsCard(evidenceText)) {
     layoutBlockingHits.push('gmail-technical-args-card');
   }
+  layoutBlockingHits.push(...dailyBriefDateBlockingHits);
   if (expectedToolId === 'gmail.draft.create') {
     for (const blockingPattern of forbiddenGmailSendSuccessPatterns) {
       if (blockingPattern.pattern.test(evidenceText)) {
@@ -3328,7 +3704,8 @@ async function runQuery(query, index, expectedTool, expectedCaseOverride = null,
     }
   }
   const providerLayoutFailed = retryableProviderLayoutMarkers.some((marker) => evidenceText.includes(marker));
-  summary.providerFailed = summary.providerFailed || (providerLayoutFailed && !allowsSocialHubTruthfulState && !aggregateMediaVisibleOutput && !allowsAggregateMailProviderFailure);
+  summary.providerFailed = summary.providerFailed || (providerLayoutFailed && !allowsSocialHubTruthfulState &&
+    !aggregateMediaVisibleOutput && !dailyBriefVisibleOutput && !allowsAggregateMailProviderFailure);
   summary.layoutPath = join(outDir, `query-${index + 1}-final-layout.json`);
   summary.layoutTextPath = layoutTextPath;
   summary.layoutScrolledTextPath = scrollEvidence.combinedTextPath;
@@ -3350,7 +3727,8 @@ async function runQuery(query, index, expectedTool, expectedCaseOverride = null,
     (summary.allowsCorrelatedDynamicAuth ||
       (isSocialHubCase ?
         socialHubVisibleOutput :
-        (worldCupVisibleOutput || movieVisibleOutput || expectedMarkers.length === 0 || expectedHits.length > 0) &&
+        (worldCupVisibleOutput || movieVisibleOutput || dailyBriefVisibleOutput ||
+          expectedMarkers.length === 0 || expectedHits.length > 0) &&
         calendarMarkersOk &&
         composioCardMarkersOk &&
         aggregateMediaMarkersOk &&
@@ -3497,6 +3875,12 @@ async function runQuery(query, index, expectedTool, expectedCaseOverride = null,
       summary.movieOpened === true &&
       movieVisibleOutput &&
       summary.layoutOk;
+  } else if (expectedToolId === 'daily.brief.open') {
+    summary.ok = dailyBriefVisibleOutput &&
+      summary.basePassedWithoutTransport === true &&
+      summary.dailyBriefRequestObserved === true &&
+      summary.dailyBriefExecutionObserved === true &&
+      summary.layoutOk;
   } else if (layoutEvidenceRecovered) {
     summary.basePassedWithoutTransport = true;
     summary.ok = summary.modelPassed === true &&
@@ -3598,11 +3982,11 @@ async function waitForComposioAuthEvidence() {
 
 async function runComposioAuthSmoke() {
   clearHilog();
-  hdc(['shell', 'aa', 'force-stop', 'com.example.aiphonedemo']);
+  hdc(['shell', 'aa', 'force-stop', 'com.jiuwen.appless']);
   if (cleanData) {
     cleanBundleData();
   }
-  hdc(['shell', 'aa', 'start', '-a', 'EntryAbility', '-b', 'com.example.aiphonedemo']);
+  hdc(['shell', 'aa', 'start', '-a', 'EntryAbility', '-b', 'com.jiuwen.appless']);
   await sleep(3000);
   moveAppWindowIntoScreenshot();
 
@@ -3697,7 +4081,7 @@ async function runComposioAuthSmoke() {
         );
       } while (shouldRetryHotelReturnToApp(restoredForeground.bundleName, backPressCount));
       return Object.assign(jump, {
-        returned: restoredForeground.bundleName === 'com.example.aiphonedemo',
+        returned: restoredForeground.bundleName === 'com.jiuwen.appless',
         backPressCount,
         returnAbilityPath: restoredForeground.path
       });
@@ -3774,9 +4158,9 @@ async function waitForBimLayout(prefix, predicate, attempts = 12) {
   return latest;
 }
 
-async function submitBimPrompt(query, prefix, captureExecutionBar = false) {
+async function submitBimPrompt(query, prefix) {
   clearHilog();
-  const appPid = hdc(['shell', 'pidof', 'com.example.aiphonedemo']).trim().split(/\s+/)[0] || '';
+  const appPid = hdc(['shell', 'pidof', 'com.jiuwen.appless']).trim().split(/\s+/)[0] || '';
   const controls = await waitForControls(`${prefix}-controls-layout.json`);
   let typed = false;
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -3791,15 +4175,9 @@ async function submitBimPrompt(query, prefix, captureExecutionBar = false) {
     }
   }
   if (!typed) throw new Error(`Could not type full BIM query: ${query}`);
-  let executionBar = null;
   const logs = await captureWhile(appPid, async () => {
     const submit = await waitForControls(`${prefix}-submit-layout.json`, 2);
     hdc(['shell', 'uitest', 'uiInput', 'click', String(submit.generate.x), String(submit.generate.y)]);
-    if (!captureExecutionBar) return;
-    executionBar = await waitForBimLayout(`${prefix}-execution`, (layout) => hasBimExecutionBar(layout), 10);
-    if (executionBar !== null && hasBimExecutionBar(executionBar.layout)) {
-      executionBar.screenPath = captureScreen(`${prefix}-execution-screen.png`);
-    }
   }, {
     idleActionTimeoutMs: 0,
     completionEvidence: (text) => ({
@@ -3812,7 +4190,7 @@ async function submitBimPrompt(query, prefix, captureExecutionBar = false) {
   writeFileSync(logPath, safeLogText + '\n');
   const final = await waitForBimLayout(`${prefix}-final`, () => true, 1);
   final.screenPath = captureScreen(`${prefix}-final-screen.png`);
-  return { logs: safeLogText, logPath, executionBar, ...final };
+  return { logs: safeLogText, logPath, ...final };
 }
 
 function tapBimText(layout, text, label) {
@@ -3821,115 +4199,254 @@ function tapBimText(layout, text, label) {
   hdc(['shell', 'uitest', 'uiInput', 'click', String(point.x), String(point.y)]);
 }
 
+function tapBimHeart(layout) {
+  const point = heartPointFromLayout(layout);
+  if (point === null) throw new Error('Heart entry was not visible.');
+  hdc(['shell', 'uitest', 'uiInput', 'click', String(point.x), String(point.y)]);
+}
+
+async function runBimSentinelMockSmoke() {
+  const testPoint = await findTextCenterWithScroll(
+    '10秒测试 Sentinel', 'bim-sentinel-action', 6
+  );
+  if (testPoint === null) throw new Error('Sentinel debug action was not visible.');
+
+  clearHilog();
+  const appPid = hdc(['shell', 'pidof', 'com.jiuwen.appless']).trim().split(/\s+/)[0] || '';
+  let reminderScreenPath = '';
+  let reminderLayoutPath = '';
+  let reminderMissing = false;
+  const logs = await captureWhile(appPid, async () => {
+    hdc(['shell', 'uitest', 'uiInput', 'click', String(testPoint.x), String(testPoint.y)]);
+    await sleep(900);
+    const permissionLayout = dumpLayout('bim-sentinel-permission-layout.json', '');
+    let inAppTimer = bimSentinelUsesInAppTimer(collectLayoutText(permissionLayout));
+    const allow = findExactTextCenter(permissionLayout, '允许');
+    if (allow !== null) {
+      hdc(['shell', 'uitest', 'uiInput', 'click', String(allow.x), String(allow.y)]);
+      await sleep(900);
+      const scheduledLayout = dumpLayout('bim-sentinel-scheduled-layout.json', '');
+      inAppTimer = bimSentinelUsesInAppTimer(collectLayoutText(scheduledLayout));
+    }
+    await sleep(11000);
+    if (inAppTimer) return;
+    hdc(['shell', 'uitest', 'uiInput', 'swipe', '220', '20', '220', '1800', '800']);
+    await sleep(1200);
+    const reminderLayout = dumpLayout('bim-sentinel-reminder-layout.json', '');
+    reminderLayoutPath = join(outDir, 'bim-sentinel-reminder-layout.json');
+    writeFileSync(
+      join(outDir, 'bim-sentinel-reminder-layout-text.txt'),
+      collectLayoutText(reminderLayout).join('\n') + '\n'
+    );
+    const reminder = findTextCenter(reminderLayout, '检查心上事（测试）');
+    if (reminder === null) {
+      reminderMissing = true;
+      return;
+    }
+    reminderScreenPath = captureCurrentScreen('bim-sentinel-reminder-screen.png');
+    hdc(['shell', 'uitest', 'uiInput', 'click', String(reminder.x), String(reminder.y)]);
+  }, {
+    idleActionTimeoutMs: 0,
+    completionEvidence: (text) => ({
+      complete: bimSentinelEvidence(text).completed ||
+        /\[AIPhone\]\[BimSentinelMockScheduled\] ok=false/.test(text) ||
+        /\[AIPhone\]\[BimSentinel\] (?!mode=mock)/.test(text)
+    })
+  });
+  const safeLogText = sanitizeExternalUrlLogs(logs.join('\n'));
+  const logPath = join(outDir, 'bim-sentinel.log');
+  writeFileSync(logPath, safeLogText + '\n');
+  const evidence = bimSentinelEvidence(safeLogText);
+  if (reminderMissing && evidence.transport !== 'in_app_timer') {
+    throw new Error('Sentinel test reminder was not visible.');
+  }
+  if (reminderMissing) {
+    hdc(['shell', 'uitest', 'uiInput', 'keyEvent', 'Back']);
+    await sleep(700);
+  }
+  return {
+    ...evidence,
+    logPath,
+    reminderLayoutPath,
+    reminderScreenPath
+  };
+}
+
+async function openBimMarker(marker, prefix) {
+  let current = await waitForBimLayout(`${prefix}-current`, () => true, 1);
+  if (hasBimHome(current.layout)) {
+    tapBimHeart(current.layout);
+    current = await waitForBimLayout(`${prefix}-directory`, (_layout, text) =>
+      hasBimDirectory(_layout) && text.includes(marker), 30);
+  }
+  if (hasBimDirectory(current.layout)) {
+    tapBimText(current.layout, marker, marker + ' row');
+    current = await waitForBimLayout(`${prefix}-detail`, (_layout, text) =>
+      text.includes(marker) && /当前 Snapshot · v\d+/.test(text), 30);
+  }
+  if (!current.text.includes(marker) || !/当前 Snapshot · v\d+/.test(current.text)) {
+    throw new Error('Could not open the created BIM detail.');
+  }
+  const fullContextPoint = await findTextCenterWithScroll(
+    '完整上下文', `${prefix}-full-context`, 4
+  );
+  if (fullContextPoint === null) throw new Error('Full Context was not visible in BIM detail.');
+  const fullContext = await waitForBimLayout(`${prefix}-full-context-visible`, () => true, 1);
+  if (!hasBimReadOnlyContext(current.layout, fullContext.layout) ||
+    hasConversationTranscript(current.layout) || hasConversationTranscript(fullContext.layout)) {
+    throw new Error('BIM detail was not read-only or contained conversation transcript.');
+  }
+  const fullContextScreenPath = captureScreen(`${prefix}-full-context-screen.png`);
+
+  hdc(['shell', 'uitest', 'uiInput', 'keyEvent', 'Back']);
+  const directory = await waitForBimLayout(`${prefix}-return-directory`, (_layout, text) =>
+    hasBimDirectory(_layout) && text.includes(marker), 20);
+  tapBimText(directory.layout, marker, marker + ' row');
+  current = await waitForBimLayout(`${prefix}-return-detail`, (_layout, text) =>
+    text.includes(marker) && /当前 Snapshot · v\d+/.test(text), 20);
+  return { ...current, readOnlyContext: true, fullContextScreenPath };
+}
+
+async function cleanupBimMarker(marker, prefix) {
+  let detail = await openBimMarker(marker, prefix);
+  if (!detail.text.includes('已结束')) {
+    tapBimText(detail.layout, '结束', '结束 button');
+    detail = await waitForBimLayout(`${prefix}-ended`, (_layout, text) =>
+      text.includes(marker) && text.includes('已结束') && text.includes('删除'), 30);
+  }
+  tapBimText(detail.layout, '删除', '删除 button');
+  const prompt = await waitForBimLayout(`${prefix}-confirm`, (_layout, text) =>
+    text.includes('删除这件已结束的心上事？'), 20);
+  const confirm = bimDeleteConfirmationPoint(prompt.layout);
+  if (confirm === null) throw new Error('Delete confirmation action was not visible.');
+  hdc(['shell', 'uitest', 'uiInput', 'click', String(confirm.x), String(confirm.y)]);
+  const directory = await waitForBimLayout(`${prefix}-done`, (_layout, text) =>
+    hasBimDirectory(_layout) && !text.includes(marker), 30);
+  directory.screenPath = captureScreen(`${prefix}-screen.png`);
+  return directory;
+}
+
 async function runBimDeviceSmoke() {
   const scenarios = [];
-  let currentScenarioId = 'suggestion';
+  let currentScenarioId = 'home';
   let failedScenarioId = '';
   let failureReason = '';
+  let created = false;
+  let cleanupComplete = false;
+  const marker = 'BIM双机验收' + smokeRunId.replace(/\D/g, '').slice(-6);
   try {
     if (queryArgs.length > 0) throw new Error('--bim does not accept query arguments.');
-    failureReason = bimCleanSessionBlocker(cleanData, false);
-    if (!cleanData) return;
     if (target.length === 0) target = firstTarget();
-    hdc(['shell', 'aa', 'force-stop', 'com.example.aiphonedemo']);
-    const cleanSucceeded = cleanBundleData();
-    failureReason = bimCleanSessionBlocker(true, cleanSucceeded);
-    if (!cleanSucceeded) return;
-    hdc(['shell', 'aa', 'start', '-a', 'EntryAbility', '-b', 'com.example.aiphonedemo']);
+    hdc(['shell', 'uitest', 'uiInput', 'keyEvent', 'Back']);
+    hdc(['shell', 'aa', 'force-stop', 'com.jiuwen.appless']);
+    hdc(['shell', 'aa', 'start', '-a', 'EntryAbility', '-b', 'com.jiuwen.appless']);
     await sleep(3000);
     moveAppWindowIntoScreenshot();
+
     const initial = await waitForBimLayout('bim-initial-home', (layout) =>
-      hasBimHome(layout) && heartCountFromLayout(layout) === 0);
-    if (initial === null || !hasBimHome(initial.layout) || heartCountFromLayout(initial.layout) !== 0) {
-      throw new Error('Clean BIM session did not open exact Home with zero heart items.');
-    }
-
-    const plan = await submitBimPrompt('帮我规划八月去东京一周的旅行，之后还要继续选机票和酒店', 'bim-plan');
-    const planBlocked = bimUnavailableReason(plan.logs, plan.text);
-    const planOk = hasRememberSuggestion(plan.layout) &&
-      !/(?:预订成功|订单已确认|已出票|订票成功|订房成功)/.test(plan.text);
-    scenarios.push(bimScenario('suggestion', planOk, planBlocked, {
-      layoutPath: join(outDir, 'bim-plan-final-1-layout.json'), logPath: plan.logPath,
-      screenPath: plan.screenPath
+      hasBimHome(layout) && heartCountFromLayout(layout) !== null, 30);
+    const initialCount = heartCountFromLayout(initial.layout);
+    initial.screenPath = captureScreen('bim-initial-home-screen.png');
+    const homeOk = hasBimHome(initial.layout) && initialCount !== null;
+    scenarios.push(bimScenario('home', homeOk, '', {
+      heartCount: initialCount,
+      screenPath: initial.screenPath
     }));
-    if (!planOk || planBlocked.length > 0) {
-      failureReason = planBlocked || 'Missing visible remember suggestion or saw fabricated booking success.';
-      return;
-    }
-
-    currentScenarioId = 'remember';
-    tapBimText(plan.layout, '记在心上', '记在心上 suggestion');
-    const saved = await waitForBimLayout('bim-saved', (layout) =>
-      collectLayoutText(layout).some((value) => value.includes('已记在心上')) && heartCountFromLayout(layout) === 1);
-    saved.screenPath = captureScreen('bim-saved-screen.png');
-    const saveOk = collectLayoutText(saved.layout).some((value) => value.includes('已记在心上')) &&
-      heartCountFromLayout(saved.layout) === 1;
-    scenarios.push(bimScenario('remember', saveOk, '', { screenPath: saved.screenPath }));
-    if (!saveOk) {
-      failureReason = 'Remember action did not settle with one heart item.';
-      return;
-    }
-
-    currentScenarioId = 'directory';
-    tapBimText(saved.layout, '打开心上事', 'heart entry');
-    const directory = await waitForBimLayout('bim-directory', (layout, text) =>
-      hasBimDirectory(layout) && text.includes('东京旅行'));
-    directory.screenPath = captureScreen('bim-directory-screen.png');
-    const directoryOk = hasBimDirectory(directory.layout) && directory.text.includes('东京旅行');
-    scenarios.push(bimScenario('directory', directoryOk, '', { screenPath: directory.screenPath }));
-    if (!directoryOk) {
-      failureReason = 'Heart directory did not show 东京旅行.';
-      return;
-    }
-
-    currentScenarioId = 'detail';
-    tapBimText(directory.layout, '东京旅行', '东京旅行 row');
-    const detail = await waitForBimLayout('bim-detail', (layout, text) =>
-      /当前(?:状态|安排)/.test(text) && !hasConversationTranscript(layout));
-    detail.screenPath = captureScreen('bim-detail-screen.png');
-    const detailOk = /当前(?:状态|安排)/.test(detail.text) && !hasConversationTranscript(detail.layout);
-    scenarios.push(bimScenario('detail', detailOk, '', { screenPath: detail.screenPath }));
-    if (!detailOk) {
-      failureReason = 'Detail did not show current state or leaked a conversation transcript.';
-      return;
-    }
-
-    currentScenarioId = 'update';
-    const update = await submitBimPrompt('不要红眼航班，尽量中午前到', 'bim-update', true);
-    const updateBlocked = bimUnavailableReason(update.logs, update.text);
-    const executionSeen = update.executionBar !== null && hasBimExecutionBar(update.executionBar.layout);
-    const updateOk = executionSeen && !hasBimExecutionBar(update.layout) &&
-      update.text.includes('不要红眼航班') && !hasConversationTranscript(update.layout);
-    scenarios.push(bimScenario('update', updateOk, updateBlocked, {
-      executionScreenPath: update.executionBar?.screenPath || '', screenPath: update.screenPath,
-      logPath: update.logPath
-    }));
-    if (!updateOk || updateBlocked.length > 0) {
-      failureReason = updateBlocked || 'BIM execution bar or updated current state was not observed.';
+    if (!homeOk) {
+      failureReason = 'BIM Home or heart count was not visible.';
       return;
     }
 
     currentScenarioId = 'main-agent';
-    tapBimText(update.layout, '返回心上事列表', 'detail back');
-    const restoredDirectory = await waitForBimLayout('bim-return-directory', (layout) => hasBimDirectory(layout));
-    if (restoredDirectory === null || !hasBimDirectory(restoredDirectory.layout)) {
-      throw new Error('Detail back did not restore the exact heart directory.');
-    }
-    hdc(['shell', 'uitest', 'uiInput', 'swipe', '1100', '1200', '100', '1200', '500']);
-    const home = await waitForBimLayout('bim-home', (layout) => hasBimHome(layout));
-    if (home === null || !hasBimHome(home.layout)) {
-      throw new Error('Left swipe did not restore the exact Home surface.');
-    }
     const main = await submitBimPrompt('解释一下量子计算', 'bim-main');
     const mainBlocked = bimUnavailableReason(main.logs, main.text);
-    const mainOk = hasZeroCandidateBimRoute(main.logs) && hasMainAgentResult(main.logs) &&
-      hasBimHome(main.layout);
+    const mainOk = hasSnapshotOnlyMainAgent(main.logs) && hasBimHome(main.layout);
     scenarios.push(bimScenario('main-agent', mainOk, mainBlocked, {
-      screenPath: main.screenPath, logPath: main.logPath
+      screenPath: main.screenPath,
+      logPath: main.logPath
     }));
     if (!mainOk || mainBlocked.length > 0) {
-      failureReason = mainBlocked || 'Main Agent result was not retained after zero-candidate BIM routing.';
+      failureReason = mainBlocked || 'Main Agent did not finish exactly once without legacy BIM routing.';
+      return;
     }
+
+    currentScenarioId = 'curator-create';
+    const create = await submitBimPrompt(
+      `请帮我记在心上，标题必须是“${marker}”：验证完成后可以结束并删除。`,
+      'bim-curator-create'
+    );
+    const createBlocked = bimUnavailableReason(create.logs, create.text);
+    const confirmation = await waitForBimLayout('bim-curator-confirmation', (layout) =>
+      findExactTextCenter(layout, '♡ 记在心上') !== null, 30);
+    const beforeConfirmCount = heartCountFromLayout(confirmation.layout);
+    const remember = findExactTextCenter(confirmation.layout, '♡ 记在心上');
+    if (remember === null || beforeConfirmCount !== initialCount) {
+      throw new Error('BIM was created before the remember confirmation.');
+    }
+    confirmation.screenPath = captureScreen('bim-curator-confirmation-screen.png');
+    hdc(['shell', 'uitest', 'uiInput', 'click', String(remember.x), String(remember.y)]);
+    const published = await waitForBimLayout('bim-curator-published', (layout) => {
+      const count = heartCountFromLayout(layout);
+      return hasBimHome(layout) && count !== null && count > initialCount;
+    }, 180);
+    const publishedCount = heartCountFromLayout(published.layout);
+    created = publishedCount !== null && publishedCount > initialCount;
+    const createOk = created && !/\[AIPhone\]\[(?:BimRoute|BimGate)\]/.test(create.logs);
+    published.screenPath = captureScreen('bim-curator-published-screen.png');
+    scenarios.push(bimScenario('curator-create', createOk, createBlocked, {
+      beforeCount: initialCount,
+      confirmationCount: beforeConfirmCount,
+      confirmationScreenPath: confirmation.screenPath,
+      afterCount: publishedCount,
+      screenPath: published.screenPath,
+      logPath: create.logPath
+    }));
+    if (!createOk || createBlocked.length > 0) {
+      failureReason = createBlocked || 'Asynchronous Curator did not publish one new BIM.';
+      return;
+    }
+
+    currentScenarioId = 'directory';
+    tapBimHeart(published.layout);
+    const directory = await waitForBimLayout('bim-directory', (layout, text) =>
+      hasBimDirectory(layout) && text.includes(marker), 30);
+    directory.screenPath = captureScreen('bim-directory-screen.png');
+    const directoryOk = hasBimDirectory(directory.layout) && directory.text.includes(marker);
+    scenarios.push(bimScenario('directory', directoryOk, '', { screenPath: directory.screenPath }));
+    if (!directoryOk) {
+      failureReason = 'Heart directory did not show the asynchronously created BIM.';
+      return;
+    }
+
+    currentScenarioId = 'sentinel';
+    const sentinel = await runBimSentinelMockSmoke();
+    const sentinelOk = sentinel.scheduled && sentinel.triggered && sentinel.completed;
+    scenarios.push(bimScenario('sentinel', sentinelOk, '', sentinel));
+    if (!sentinelOk) {
+      failureReason = 'Sentinel reminder did not complete the scheduled, triggered, and finished chain.';
+      return;
+    }
+
+    currentScenarioId = 'detail';
+    const detail = await openBimMarker(marker, 'bim-detail');
+    detail.screenPath = captureScreen('bim-detail-screen.png');
+    const detailOk = detail.readOnlyContext &&
+      !hasConversationTranscript(detail.layout) &&
+      detail.text.includes(marker);
+    scenarios.push(bimScenario('detail', detailOk, '', {
+      screenPath: detail.screenPath,
+      fullContextScreenPath: detail.fullContextScreenPath
+    }));
+    if (!detailOk) {
+      failureReason = 'Detail did not show read-only Snapshot and Full Context.';
+      return;
+    }
+
+    currentScenarioId = 'cleanup';
+    const cleaned = await cleanupBimMarker(marker, 'bim-cleanup');
+    cleanupComplete = !cleaned.text.includes(marker);
+    scenarios.push(bimScenario('cleanup', cleanupComplete, '', { screenPath: cleaned.screenPath }));
+    if (!cleanupComplete) failureReason = 'Created BIM was not deleted after validation.';
   } catch (error) {
     failureReason = sanitizeBimFailureReason(error);
     failedScenarioId = currentScenarioId;
@@ -3937,6 +4454,25 @@ async function runBimDeviceSmoke() {
       scenarios.push(bimScenario(currentScenarioId, false, '', { reason: failureReason }));
     }
   } finally {
+    if (created && !cleanupComplete) {
+      try {
+        const recovered = await cleanupBimMarker(marker, 'bim-cleanup-recovery');
+        cleanupComplete = !recovered.text.includes(marker);
+        const cleanup = scenarios.find((scenario) => scenario.id === 'cleanup');
+        const recoveredScenario = bimScenario('cleanup', cleanupComplete, '', {
+          screenPath: recovered.screenPath,
+          recovered: true
+        });
+        if (cleanup === undefined) scenarios.push(recoveredScenario);
+        else Object.assign(cleanup, recoveredScenario);
+      } catch (cleanupError) {
+        const cleanupReason = sanitizeBimFailureReason(cleanupError);
+        if (!scenarios.some((scenario) => scenario.id === 'cleanup')) {
+          scenarios.push(bimScenario('cleanup', false, '', { reason: cleanupReason }));
+        }
+        if (failureReason.length === 0) failureReason = cleanupReason;
+      }
+    }
     return finishBimSmoke(scenarios, failureReason, failedScenarioId);
   }
 }
@@ -3957,7 +4493,577 @@ function finishBimSmoke(scenarios, failureReason, failedId = '') {
   return summary;
 }
 
+async function tapPublicPersonaText(marker, localName, attempts = 18) {
+  let lastLayout = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      lastLayout = dumpLayout(`${localName}-${attempt + 1}.json`);
+    } catch (_error) {
+      await sleep(700);
+      continue;
+    }
+    const center = findTextCenter(lastLayout, marker);
+    if (center !== null) {
+      hdc(['shell', 'uitest', 'uiInput', 'click', String(center.x), String(center.y)]);
+      await sleep(500);
+      return { center, layout: lastLayout };
+    }
+    await sleep(700);
+  }
+  return { center: null, layout: lastLayout };
+}
+
+async function waitForPublicPersonaTerminal(localName) {
+  let last = null;
+  let lastPath = '';
+  const maxAttempts = Number.parseInt(process.env.AIPHONE_PUBLIC_PERSONA_MAX_ATTEMPTS || '180', 10);
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    lastPath = join(outDir, `${localName}-${attempt + 1}.json`);
+    last = dumpLayout(`${localName}-${attempt + 1}.json`);
+    const text = collectLayoutText(last).join('\n');
+    if (text.includes('确认这些账号') || text.includes('暂时没有能确认的公开账号') ||
+      text.includes('这次没有完成') || text.includes('你的画像')) {
+      return { layout: last, text, attempts: attempt + 1, path: lastPath };
+    }
+    await sleep(1000);
+  }
+  return { layout: last, text: last === null ? '' : collectLayoutText(last).join('\n'), attempts: maxAttempts, path: lastPath };
+}
+
+async function waitForPublicPersonaManualResume(message = '完成当前画像页面的手动步骤后按 Enter 继续取证：') {
+  if (!process.stdin.isTTY) {
+    return false;
+  }
+  const reader = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    reader.question(message, () => {
+      reader.close();
+      resolve(true);
+    });
+  });
+}
+
+async function waitForPublicPersonaReadingState(localName) {
+  let last = null;
+  let lastPath = '';
+  for (let attempt = 0; attempt < 90; attempt += 1) {
+    lastPath = join(outDir, `${localName}-${attempt + 1}.json`);
+    last = dumpLayout(`${localName}-${attempt + 1}.json`);
+    const text = collectLayoutText(last).join('\n');
+    if (/正在整理你的画像|正在读取|正在生成/.test(text)) {
+      return { layout: last, text, path: lastPath, attempts: attempt + 1 };
+    }
+    await sleep(1000);
+  }
+  return { layout: last, text: last === null ? '' : collectLayoutText(last).join('\n'), path: lastPath, attempts: 90 };
+}
+
+function publicPersonaMbtiLine(text) {
+  const match = /[EI][NS][TF][JP] · \d+%/.exec(text);
+  return match === null ? '' : match[0];
+}
+
+function publicPersonaSeedHandle(url) {
+  try {
+    const path = new URL(url).pathname.replace(/\/+$/, '');
+    const segments = path.split('/').filter((value) => value.length > 0);
+    return segments.length === 0 ? '' : segments[segments.length - 1].replace(/^@/, '');
+  } catch {
+    return '';
+  }
+}
+
+function publicPersonaRequestMarker(text) {
+  const match = /\b(?:request|turn|conversation|message|prompt)[_-]?id\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9_-]{3,})/i.exec(text);
+  return match === null ? '' : match[1];
+}
+
+function publicPersonaPromptAssemblySafe() {
+  const source = readFileSync(join(rootDir, 'entry/src/main/ets/pages/A2uiHome/Index.ets'), 'utf8');
+  const start = source.indexOf('  private async submitPrompt(');
+  const end = source.indexOf('\n  private ', start + 1);
+  if (start < 0 || end <= start) {
+    return false;
+  }
+  return !/publicPersonaSnapshot|publicPersonaStore|aiphone_public_persona|snapshot_v1/.test(source.slice(start, end));
+}
+
+function publicPersonaMainAvatarEvidence(layout) {
+  let count = 0;
+  walk(layout, (node) => {
+    const attrs = node.attributes || {};
+    const bounds = parseBounds(attrs.bounds);
+    const type = String(node.type || node.componentType || attrs.type || '');
+    if (bounds !== null && /image/i.test(type) && bounds.width >= 70 && bounds.width <= 100 &&
+      bounds.height >= 70 && bounds.height <= 100 && bounds.top < 720) {
+      count += 1;
+    }
+  });
+  return count === 1;
+}
+
+function publicPersonaLayoutContainsType(layout, pattern) {
+  let found = false;
+  walk(layout, (node) => {
+    const attrs = node.attributes || {};
+    const type = String(node.type || node.componentType || attrs.type || '');
+    if (pattern.test(type)) found = true;
+  });
+  return found;
+}
+
+async function enterPublicPersonaFromHome(existingSnapshot = false) {
+  let opened = await tapPublicPersonaText('我的画像', 'public-persona-open', 2);
+  if (opened.center === null && opened.layout !== null) {
+    const center = findHeaderPublicPersonaCenter(opened.layout);
+    if (center !== null) {
+      hdc(['shell', 'uitest', 'uiInput', 'click', String(center.x), String(center.y)]);
+      await sleep(500);
+      opened = { center, layout: opened.layout };
+    }
+  }
+  if (opened.center === null) {
+    return { ok: false, reason: 'public persona entry not found' };
+  }
+  const layout = dumpLayout('public-persona-opened-after-tap.json');
+  const layoutText = collectLayoutText(layout).join('\n');
+  const onboarding = layoutText.includes('开始设置');
+  let input = layoutText.includes('开始查找') || layoutText.includes('输入一个你常用的用户名');
+  if (onboarding) {
+    await tapPublicPersonaText('开始设置', 'public-persona-setup');
+  }
+  if (existingSnapshot && input === false) {
+    const restart = await tapPublicPersonaText('重新认识我', 'public-persona-restart');
+    if (restart.center !== null) input = true;
+  }
+  if (input === false) {
+    const retry = await tapPublicPersonaText('重新输入', 'public-persona-retry-input');
+    if (retry.center !== null) input = true;
+  }
+  return { ok: input || onboarding, onboarding, input };
+}
+
+async function startPublicPersonaDiscoveryOnDevice() {
+  const layout = dumpLayout('public-persona-input-layout.json');
+  const input = findTextMatches(layout, '例如 XiaoLuoLYG')[0] ||
+    findTextMatches(layout, '输入一个你常用的用户名')[0];
+  if (input === undefined) {
+    return { ok: false, reason: 'public persona username input not found' };
+  }
+  hdc(['shell', 'uitest', 'uiInput', 'click', String(input.bounds.x), String(input.bounds.y)]);
+  hdc(['shell', 'uitest', 'uiInput', 'keyEvent', '2072', '2017']);
+  hdc(['shell', 'uitest', 'uiInput', 'keyEvent', '2055']);
+  hdc(['shell', 'uitest', 'uiInput', 'text', publicPersonaUsername]);
+  hdc(['shell', 'uitest', 'uiInput', 'keyEvent', 'Back']);
+  await sleep(250);
+  if (publicPersonaSearchMode === 'exact') {
+    const mode = await tapPublicPersonaText('精确', 'public-persona-exact-mode');
+    if (mode.center === null) return { ok: false, reason: '精确 mode button not found' };
+  }
+  const started = await tapPublicPersonaText('开始查找', 'public-persona-start');
+  return started.center === null ? { ok: false, reason: '开始查找 button not found' } : { ok: true };
+}
+
+async function runPublicPersonaSmoke() {
+  const nativeAdmission = publicPersonaExpectedPlatform.length > 0 &&
+    publicPersonaExpectedState.length > 0;
+  if (nativeAdmission) {
+    const installOutput = hdc(['install', '-r', publicPersonaHapPath]);
+    if (!/install bundle successfully/i.test(installOutput)) {
+      throw new Error('Could not install the verified public persona HAP for admission.');
+    }
+  }
+  if (publicPersonaSnapshotExists() && !nativeAdmission) {
+    const reason = 'existing_persona_snapshot';
+    const summary = {
+      mode: 'public-persona',
+      username: '<redacted>',
+      blocked: reason,
+      cases: publicPersonaCases.map((testCase) => ({
+        id: testCase.id,
+        status: 'BLOCKED',
+        ok: false,
+        manualGate: true,
+        reason
+      })),
+      ok: false
+    };
+    writeFileSync(join(outDir, 'public-persona-summary.json'), JSON.stringify(summary, null, 2));
+    return summary;
+  }
+  let snapshotCreatedThisRun = false;
+  let snapshotDeleted = false;
+  try {
+    clearHilog();
+    hdc(['shell', 'aa', 'force-stop', 'com.jiuwen.appless']);
+    hdc(['shell', 'aa', 'start', '-a', 'EntryAbility', '-b', 'com.jiuwen.appless']);
+    await sleep(3000);
+    moveAppWindowIntoScreenshot();
+    const cases = [];
+    const manualResume = process.env.AIPHONE_PUBLIC_PERSONA_MANUAL_RESUME === '1' && Boolean(process.stdin.isTTY);
+    const firstLaunch = await enterPublicPersonaFromHome(nativeAdmission && publicPersonaSnapshotExists());
+    let p01 = { id: 'P01', status: 'BLOCKED', ok: false, manualGate: true, reason: firstLaunch.reason || '' };
+    const p02 = {
+      id: 'P02', status: 'BLOCKED', ok: false, manualGate: true,
+      reason: manualResume ? 'manual confirmation not yet evidenced' : 'requires explicit manual resume'
+    };
+    let p02Result = p02;
+    let p02Baseline = '';
+    let selectedProfileUrls = [];
+    let knownUnselectedProfileUrls = [];
+    let selectionMode = 'unavailable';
+    let selectionStepEvidence = false;
+    let selectionLayoutEvidence = false;
+    let selectionSetsMatch = false;
+    let selectionLayoutPath = null;
+    let p01Terminal = { layout: null, text: '', attempts: 0, path: '' };
+    let discoveryLogs = [];
+    if (firstLaunch.ok) {
+      const appPid = hdc(['shell', 'pidof', 'com.jiuwen.appless']).trim();
+      discoveryLogs = await captureAppLogsFor(appPid, async () => {
+        await sleep(250);
+        const started = await startPublicPersonaDiscoveryOnDevice();
+        p01Terminal = started.ok ? await waitForPublicPersonaTerminal('public-persona-p01') : p01Terminal;
+      }, 250);
+      const summaryMatch = /明确结果 (\d+) · 找到 (\d+) · 未找到 (\d+) · 未完成 (\d+)/.exec(p01Terminal.text);
+      let explicitCount = summaryMatch === null ? -1 : Number(summaryMatch[1]);
+      let foundCount = summaryMatch === null ? -1 : Number(summaryMatch[2]);
+      let notFoundCount = summaryMatch === null ? -1 : Number(summaryMatch[3]);
+      let unknownCount = summaryMatch === null ? -1 : Number(summaryMatch[4]);
+      const totalMatch = /已尝试 (\d+) 个公开平台/.exec(p01Terminal.text);
+      let attemptedTotal = totalMatch === null ? -1 : Number(totalMatch[1]);
+      let attemptedAll = attemptedTotal > 0 && explicitCount === foundCount + notFoundCount &&
+        foundCount + notFoundCount + unknownCount === attemptedTotal;
+      const candidateLayout = p01Terminal.layout === null ? null : p01Terminal.layout;
+      const candidateText = candidateLayout === null ? p01Terminal.text : collectLayoutText(candidateLayout).join('\n');
+      const candidateRows = candidateLayout === null ? [] : publicPersonaCandidateLayoutState(candidateLayout);
+      const candidateExists = candidateRows.length > 0 &&
+        !candidateText.includes('暂时没有能确认的公开账号') && !candidateText.includes('这次没有完成');
+      const seedHandle = publicPersonaUsername.replace(/^@/, '');
+      const seedCandidateVisible = seedHandle.length > 0 && (publicPersonaExpectedPlatform.length > 0 ?
+        candidateRows.some((row) => row.key === `${publicPersonaExpectedPlatform}:${seedHandle.toLowerCase()}`) :
+        candidateText.includes('@' + seedHandle));
+      const discoveryProviderLog = sanitizeExternalUrlLogs(discoveryLogs.join('\n'));
+      writeFileSync(join(outDir, 'public-persona-discovery.log'), discoveryProviderLog + '\n');
+      const probeStates = publicPersonaProbeStatesFromLog(discoveryProviderLog);
+      writeFileSync(join(outDir, 'public-persona-probe-states.json'), JSON.stringify(probeStates, null, 2));
+      const loggedStates = Object.values(probeStates);
+      const loggedTerminal = /completed=(\d+)\/\1(?:\D|$)/.exec(discoveryProviderLog);
+      if (!attemptedAll && loggedTerminal !== null && loggedStates.length === Number(loggedTerminal[1])) {
+        attemptedTotal = Number(loggedTerminal[1]);
+        foundCount = loggedStates.filter((state) => state === 'found').length;
+        notFoundCount = loggedStates.filter((state) => state === 'not_found').length;
+        unknownCount = loggedStates.filter((state) => state === 'unknown').length;
+        explicitCount = foundCount + notFoundCount;
+        attemptedAll = explicitCount + unknownCount === attemptedTotal;
+      }
+      const admissionMode = publicPersonaExpectedPlatform.length > 0 && publicPersonaExpectedState.length > 0;
+      const actualExpectedState = admissionMode ?
+        probeStates[publicPersonaExpectedPlatform] ||
+          publicPersonaProbeResultFromLog(discoveryProviderLog, publicPersonaExpectedPlatform) : '';
+      const expectedStateMatched = admissionMode && actualExpectedState === publicPersonaExpectedState;
+      const expectedCandidateMatched = publicPersonaExpectedState === 'found' ? seedCandidateVisible :
+        publicPersonaExpectedState === 'not_found' && !seedCandidateVisible;
+      clearHilog();
+      p02Baseline = hdc(['shell', 'hilog', '-d']);
+      const manualCandidateConfirmed = manualResume && candidateExists && await waitForPublicPersonaManualResume(
+        '请逐张核对候选卡的头像、平台 logo、显示名、@用户名和主页链接；确认无误后按 Enter：'
+      );
+      const candidateCardEvidence = {
+        avatar: manualCandidateConfirmed,
+        platformLogo: manualCandidateConfirmed,
+        displayName: manualCandidateConfirmed,
+        username: manualCandidateConfirmed,
+        profileUrl: manualCandidateConfirmed,
+        manualCandidateConfirmed
+      };
+      const candidateFieldsConfirmed = Object.values(candidateCardEvidence).every(Boolean);
+      selectionStepEvidence = manualCandidateConfirmed && seedCandidateVisible &&
+        await waitForPublicPersonaManualResume(
+          '请在当前确认页实际选择账号，并核对选中/排除列表后按 Enter：'
+        );
+      const configuredInput = publicPersonaSelectedUrls.length > 0 && publicPersonaUnselectedUrls.length > 0;
+      const requestedSelectedUrls = configuredInput ? publicPersonaSelectedUrls.slice() : [];
+      const requestedUnselectedUrls = publicPersonaUnselectedUrls.slice();
+      const expectedSelectedKeys = requestedSelectedUrls.map((url) => publicPersonaAccountKey(url));
+      const expectedUnselectedKeys = requestedUnselectedUrls.map((url) => publicPersonaAccountKey(url));
+      const invalidConfiguredAccount = expectedSelectedKeys.some((key) => key.length === 0) ||
+        expectedUnselectedKeys.some((key) => key.length === 0);
+      const uniqueExpectedSelectedKeys = [...new Set(expectedSelectedKeys)];
+      const uniqueExpectedUnselectedKeys = [...new Set(expectedUnselectedKeys)];
+      const selectionLayout = selectionStepEvidence ? dumpLayout('public-persona-p01-selection.json') : null;
+      selectionLayoutPath = selectionLayout === null ? null : join(outDir, 'public-persona-p01-selection.json');
+      const layoutCandidates = selectionLayout === null ? [] : publicPersonaCandidateLayoutState(selectionLayout);
+      const layoutKeys = layoutCandidates.map((row) => row.key);
+      const expectedKeys = [...new Set(uniqueExpectedSelectedKeys.concat(uniqueExpectedUnselectedKeys))];
+      const layoutKeySetMatches = expectedKeys.length > 0 && layoutCandidates.length === expectedKeys.length &&
+        layoutKeys.filter((key) => expectedKeys.includes(key)).length === expectedKeys.length;
+      const selectedStateMatches = uniqueExpectedSelectedKeys.length > 0 && uniqueExpectedUnselectedKeys.length > 0 &&
+        layoutCandidates.filter((row) => uniqueExpectedSelectedKeys.includes(row.key) && row.selected).length === uniqueExpectedSelectedKeys.length &&
+        layoutCandidates.filter((row) => uniqueExpectedUnselectedKeys.includes(row.key) && !row.selected).length === uniqueExpectedUnselectedKeys.length;
+      selectionSetsMatch = !invalidConfiguredAccount && uniqueExpectedSelectedKeys.length > 0 &&
+        uniqueExpectedUnselectedKeys.length > 0 &&
+        uniqueExpectedSelectedKeys.filter((key) => uniqueExpectedUnselectedKeys.includes(key)).length === 0 &&
+        layoutKeySetMatches && selectedStateMatches;
+      selectionLayoutEvidence = selectionStepEvidence && selectionSetsMatch;
+      const providerLog = discoveryProviderLog + '\n' + sanitizeExternalUrlLogs(hdc(['shell', 'hilog', '-d']));
+      const allSourcesTerminal = unknownCount === 0;
+      const providerBlocked = !allSourcesTerminal || candidateText.includes('模糊搜索未完成') ||
+        /AUTH_REQUIRED|needs_auth|blocked_by_site|credits_exhausted|timeout|调用失败|login wall/i.test(providerLog);
+      const admissionOk = admissionMode && attemptedAll && allSourcesTerminal && expectedStateMatched && expectedCandidateMatched;
+      const normalOk = attemptedAll && candidateExists && candidateFieldsConfirmed && !providerBlocked;
+      p01 = {
+        id: 'P01',
+        status: (admissionMode ? admissionOk : normalOk) ? 'PASS' : 'BLOCKED',
+        ok: admissionMode ? admissionOk : normalOk, manualGate: !admissionMode,
+        attemptedAll,
+        attemptedTotal,
+        explicitCount,
+        foundCount,
+        notFoundCount,
+        unknownCount,
+        allSourcesTerminal,
+        candidateCardEvidence,
+        candidateFieldsConfirmed,
+        seedCandidateVisible,
+        admissionMode,
+        expectedPlatform: publicPersonaExpectedPlatform,
+        expectedState: publicPersonaExpectedState,
+        actualExpectedState,
+        expectedStateMatched,
+        expectedCandidateMatched,
+        selectionStepEvidence,
+        selectionLayoutEvidence,
+        selectionSetsMatch,
+        selectionLayoutPath,
+        providerBlocked,
+        attempts: p01Terminal.attempts,
+        layoutPath: p01Terminal.path,
+        screenPath: captureScreen('P01-public-persona.png')
+      };
+      if (selectionLayoutEvidence && configuredInput) {
+        selectionMode = 'configured_urls';
+        selectedProfileUrls = publicPersonaSelectedUrls.slice();
+        knownUnselectedProfileUrls = publicPersonaUnselectedUrls.slice();
+      }
+    }
+    cases.push(p01);
+    snapshotCaseArtifacts('P01', 1, ['public-persona-p01'], p01);
+    if (publicPersonaExpectedPlatform.length > 0 && publicPersonaExpectedState.length > 0) {
+      const row = {
+        platform: publicPersonaExpectedPlatform,
+        fixtureClass: (process.env.AIPHONE_PUBLIC_PERSONA_FIXTURE_CLASS ||
+          (publicPersonaExpectedState === 'found' ? 'claimed' : 'unclaimed')).trim(),
+        username: '<redacted>',
+        hapSha256: publicPersonaHapSha256,
+        device: target,
+        status: p01.ok ? 'PASS' : 'BLOCKED',
+        bodyLength: null,
+        matchedRule: 'structured_progress',
+        state: p01.actualExpectedState,
+        timestamp: new Date().toISOString()
+      };
+      writeFileSync(join(outDir, 'public-persona-native-row.json'), JSON.stringify(row, null, 2));
+      const summary = {
+        mode: 'public-persona-native-admission', username: '<redacted>', searchMode: publicPersonaSearchMode,
+        cases: [p01], row, cleanup_required: false, ok: p01.ok
+      };
+      writeFileSync(join(outDir, 'public-persona-summary.json'), JSON.stringify(summary, null, 2));
+      return summary;
+    }
+
+    const p03 = {
+      id: 'P03', status: 'BLOCKED', ok: false, manualGate: true,
+      reason: 'no_safe_job_token', leaveWhileBusyEvidence: false,
+      taskContinuedEvidence: false, jobEvidence: 'unavailable', jobIdPresent: false
+    };
+    let p03Result = p03;
+    if (manualResume && p01.ok && selectionMode !== 'unavailable' && selectionStepEvidence && selectionLayoutEvidence &&
+      await waitForPublicPersonaManualResume(
+        '请在候选页点击“确认并生成画像”，等待画像终态可见后按 Enter：'
+      )) {
+      const terminal = await waitForPublicPersonaTerminal('public-persona-p02');
+      const afterRaw = hdc(['shell', 'hilog', '-d']);
+      const deltaResult = publicPersonaLogDelta(p02Baseline, afterRaw);
+      const deltaRaw = deltaResult.delta;
+      const baselineMismatch = deltaResult.baselineMismatch;
+      const profileMarkers = selectedProfileUrls.flatMap((url) => {
+        try {
+          const parsed = new URL(url);
+          return [url, `${parsed.hostname}${parsed.pathname}`];
+        } catch {
+          return [url];
+        }
+      });
+      const correlationMarker = profileMarkers.some((marker) => marker.length > 0 && deltaRaw.includes(marker));
+      const webPageReadObserved = /web\.page\.read/.test(deltaRaw);
+      const knownUnselectedPresent = knownUnselectedProfileUrls.filter((url) => {
+        if (deltaRaw.includes(url)) {
+          return true;
+        }
+        try {
+          const parsed = new URL(url);
+          return deltaRaw.includes(`${parsed.hostname}${parsed.pathname}`);
+        } catch {
+          return false;
+        }
+      });
+      const knownUnselectedAbsent = knownUnselectedProfileUrls.length > 0 && knownUnselectedPresent.length === 0;
+      const deltaLogPath = join(outDir, 'public-persona-p02-delta.log');
+      writeFileSync(deltaLogPath, JSON.stringify({
+        webPageReadObserved, correlationMarker, selectedProfileCount: selectedProfileUrls.length,
+        selectionMode, knownUnselectedCount: knownUnselectedProfileUrls.length, knownUnselectedAbsent,
+        baselineMismatch
+      }, null, 2));
+      const completedLayout = terminal.text.includes('你的画像') && !terminal.text.includes('确认这些账号');
+      snapshotCreatedThisRun = completedLayout && publicPersonaSnapshotExists();
+      const completedText = terminal.text.toLowerCase();
+      const selectedHandles = selectedProfileUrls.map((url) => publicPersonaSeedHandle(url).toLowerCase()).filter(Boolean);
+      const unselectedHandles = knownUnselectedProfileUrls.map((url) => publicPersonaSeedHandle(url).toLowerCase()).filter(Boolean);
+      const selectedSourcesVisible = selectedHandles.length > 0 && selectedHandles.every((handle) => completedText.includes('@' + handle));
+      const unselectedSourcesAbsent = unselectedHandles.length > 0 && unselectedHandles.every((handle) => !completedText.includes('@' + handle));
+      const selectedReadEvidence = selectionLayoutEvidence && selectionMode === 'configured_urls' &&
+        selectedSourcesVisible && unselectedSourcesAbsent && snapshotCreatedThisRun;
+      p02Result = {
+        id: 'P02', status: selectedReadEvidence && completedLayout ? 'PASS' : 'BLOCKED',
+        ok: selectedReadEvidence && completedLayout, manualGate: true,
+        selectedReadEvidence, completedLayout, snapshotCreatedThisRun,
+        selectedProfileUrls: selectedProfileUrls.length, selectionMode, correlationMarker,
+        selectedSourcesVisible, unselectedSourcesAbsent, webPageReadObserved,
+        knownUnselectedCount: knownUnselectedProfileUrls.length, knownUnselectedAbsent, baselineMismatch,
+        selectionLayoutEvidence, deltaLogPath,
+        screenPath: captureScreen('P02-public-persona.png')
+      };
+    }
+    cases.push(p02Result);
+    snapshotCaseArtifacts('P02', 1, ['public-persona-p02'], p02Result);
+    cases.push(p03Result);
+    snapshotCaseArtifacts('P03', 1, ['public-persona-p03'], p03Result);
+
+    let p04Result = {
+      id: 'P04', status: 'BLOCKED', ok: false, manualGate: true,
+      reason: 'requires manual edit/save/reload/reinfer/hide evidence',
+      oneMainAvatar: null, markdownPresent: null, mbtiPresent: null,
+      editSaveReload: false, saveExitEvidence: false, reenterReloadEvidence: false,
+      mbtiReinferred: false, mbtiHiddenReloaded: false,
+      screenPath: null
+    };
+    if (manualResume && p02Result.ok && await waitForPublicPersonaManualResume(
+      '请编辑 persona.md 加入 P04-smoke-edit，点击保存并退出编辑态；回到画像页后按 Enter：'
+    )) {
+      const afterSaveExitLayout = dumpLayout('public-persona-p04-after-save-exit.json');
+      const afterSaveExitText = collectLayoutText(afterSaveExitLayout).join('\n');
+      const saveExitEvidence = !publicPersonaLayoutContainsType(afterSaveExitLayout, /TextArea/i) &&
+        afterSaveExitText.includes('persona.md');
+      const reenterReady = saveExitEvidence && await waitForPublicPersonaManualResume(
+        '请离开画像页后重新进入画像页（可再进入编辑页），确认已保存内容后按 Enter：'
+      );
+      const savedReloadedLayout = reenterReady ? dumpLayout('public-persona-p04-saved-reloaded.json') : null;
+      const savedReloadedText = savedReloadedLayout === null ? '' : collectLayoutText(savedReloadedLayout).join('\n');
+      const reenterReloadEvidence = reenterReady && savedReloadedLayout !== null &&
+        savedReloadedText.includes('persona.md');
+      const editSaveReload = saveExitEvidence && reenterReloadEvidence &&
+        savedReloadedText.includes('P04-smoke-edit');
+      const mbtiBefore = publicPersonaMbtiLine(savedReloadedText);
+      const reinferReady = reenterReloadEvidence && await waitForPublicPersonaManualResume(
+        '请点击 MBTI 触发重新推测，等待结果可见后按 Enter：'
+      );
+      const reinferLayout = reinferReady ? dumpLayout('public-persona-p04-reinferred.json') : null;
+      const reinferText = reinferLayout === null ? '' : collectLayoutText(reinferLayout).join('\n');
+      const mbtiReinferred = reinferReady && publicPersonaMbtiLine(reinferText).length > 0 &&
+        publicPersonaMbtiLine(reinferText) !== mbtiBefore;
+      const hideReady = reinferReady && await waitForPublicPersonaManualResume(
+        '请点击隐藏 MBTI，离开再返回后按 Enter：'
+      );
+      const hiddenLayout = hideReady ? dumpLayout('public-persona-p04-hidden-reloaded.json') : null;
+      const hiddenText = hiddenLayout === null ? '' : collectLayoutText(hiddenLayout).join('\n');
+      const mbtiHiddenReloaded = hideReady && !/## MBTI 推测|[EI][NS][TF][JP] · \d+%/.test(hiddenText);
+      const oneMainAvatar = hiddenLayout !== null && publicPersonaMainAvatarEvidence(hiddenLayout);
+      const p04Ok = oneMainAvatar && editSaveReload && mbtiReinferred && mbtiHiddenReloaded;
+      p04Result = {
+        id: 'P04', status: p04Ok ? 'PASS' : 'BLOCKED', ok: p04Ok, manualGate: true,
+        oneMainAvatar, markdownPresent: savedReloadedText.includes('persona.md'),
+        mbtiPresent: mbtiBefore.length > 0, editSaveReload, saveExitEvidence, reenterReloadEvidence,
+        mbtiReinferred, mbtiHiddenReloaded,
+        afterSaveExitLayoutPath: join(outDir, 'public-persona-p04-after-save-exit.json'),
+        savedReloadedLayoutPath: savedReloadedLayout === null ? null : join(outDir, 'public-persona-p04-saved-reloaded.json'),
+        reinferLayoutPath: reinferLayout === null ? null : join(outDir, 'public-persona-p04-reinferred.json'),
+        hiddenLayoutPath: hiddenLayout === null ? null : join(outDir, 'public-persona-p04-hidden-reloaded.json'),
+        screenPath: hiddenLayout === null ? null : captureScreen('P04-public-persona.png')
+      };
+    }
+    cases.push(p04Result);
+    snapshotCaseArtifacts('P04', 1, ['public-persona-p04'], p04Result);
+
+    let p05Result = {
+      id: 'P05', status: 'BLOCKED', ok: false, manualGate: true,
+      reason: snapshotCreatedThisRun ? 'cleanup_required: explicit manual delete not evidenced' : 'snapshot_not_created_this_run',
+      localDeleteOk: null, promptPersonaAbsent: null, promptEvidence: 'not_attempted',
+      promptAssemblySafe: publicPersonaPromptAssemblySafe(),
+      cleanup_required: snapshotCreatedThisRun, screenPath: null
+    };
+    if (manualResume && snapshotCreatedThisRun && await waitForPublicPersonaManualResume(
+      '请手动点击“删除画像”并确认删除；返回首页后按 Enter：'
+    )) {
+      const localDeleteOk = !publicPersonaSnapshotExists();
+      snapshotDeleted = localDeleteOk;
+      let promptPersonaAbsent = null;
+      let promptEvidence = 'not_attempted';
+      let promptEvidencePath = null;
+      const p05PromptBaseline = localDeleteOk ? hdc(['shell', 'hilog', '-d']) : '';
+      if (localDeleteOk && await waitForPublicPersonaManualResume(
+        '删除后发送一条普通对话，确认请求未带入画像上下文；完成后按 Enter：'
+      )) {
+        const promptAfterRaw = hdc(['shell', 'hilog', '-d']);
+        const promptDeltaResult = publicPersonaStrictLogDelta(p05PromptBaseline, promptAfterRaw);
+        const promptDelta = promptDeltaResult.delta;
+        const requestMarker = publicPersonaRequestMarker(promptDelta);
+        const requestMarkerObserved = promptDeltaResult.matched && requestMarker.length > 0 &&
+          /model|chat|inference|prompt/i.test(promptDelta);
+        const personaMarkerObserved = /snapshot_v1|persona\.md|public persona|MBTI 推测/i.test(promptDelta);
+        const promptAssemblySafe = publicPersonaPromptAssemblySafe();
+        promptPersonaAbsent = requestMarkerObserved && promptAssemblySafe && !personaMarkerObserved;
+        promptEvidence = promptPersonaAbsent ? 'request_canary_absent' : 'request_canary_unproven';
+        promptEvidencePath = join(outDir, 'public-persona-p05-prompt-canary.log');
+        writeFileSync(promptEvidencePath, JSON.stringify({
+          requestMarkerObserved, personaMarkerObserved, requestMarker: requestMarker.length > 0 ? '<present>' : '<absent>'
+        }, null, 2));
+      }
+      const p05Ok = localDeleteOk && promptPersonaAbsent === true;
+      p05Result = {
+        id: 'P05', status: p05Ok ? 'PASS' : 'BLOCKED', ok: p05Ok, manualGate: true,
+        localDeleteOk, promptPersonaAbsent, promptEvidence, promptEvidencePath,
+        promptAssemblySafe: publicPersonaPromptAssemblySafe(),
+        cleanup_required: !localDeleteOk, screenPath: captureScreen('P05-public-persona.png')
+      };
+    }
+    cases.push(p05Result);
+    snapshotCaseArtifacts('P05', 1, ['public-persona-p05'], p05Result);
+    const summary = {
+      mode: 'public-persona', username: '<redacted>', searchMode: publicPersonaSearchMode, cases,
+      cleanup_required: snapshotCreatedThisRun && !snapshotDeleted,
+      ok: cases.every((item) => item.ok)
+    };
+    writeFileSync(join(outDir, 'public-persona-summary.json'), JSON.stringify(summary, null, 2));
+    return summary;
+  } finally {
+    try {
+      hdc(['shell', 'aa', 'force-stop', 'com.jiuwen.appless']);
+      clearHilog();
+      hdc(['shell', 'rm', '-f', '/data/local/tmp/aiphone-smoke-layout.json', '/data/local/tmp/aiphone-smoke-screen.png']);
+    } catch (error) {
+      console.warn(`Could not finalize public persona smoke process cleanup: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
+
 console.log(`cleanData: ${cleanData ? 'true' : 'false'}`);
+
+if (runPublicPersona) {
+  const summary = await runPublicPersonaSmoke();
+  console.log(JSON.stringify(summary, null, 2));
+  process.exit(summary.ok ? 0 : 1);
+}
 
 if (runComposioAuthCases) {
   const summary = await runComposioAuthSmoke();
@@ -4192,6 +5298,10 @@ const finalAggregateMediaVisibleOutput =
   finalSummary !== null &&
   finalSummary.expectedToolId === 'media.aggregate.search' &&
   hasVisibleAggregateMediaOutput(finalLayoutText);
+const finalDailyBriefVisibleOutput =
+  finalSummary !== null &&
+  finalSummary.expectedToolId === 'daily.brief.open' &&
+  finalSummary.dailyBriefDirectEvidence?.ok === true;
 const finalAllowsSourceFailure =
   finalAllowsPartialTravel &&
   finalSummary !== null &&
@@ -4216,6 +5326,9 @@ const finalLayoutBlockingHits = finalLayoutBlockingMarkers.filter((marker) => {
   if (finalAggregateMediaVisibleOutput && aggregateMediaTruthfulBlockingMarkers.includes(marker)) {
     return false;
   }
+  if (finalDailyBriefVisibleOutput && dailyBriefTruthfulStateMarkers.includes(marker)) {
+    return false;
+  }
   if (finalAllowsAggregateMailProviderFailure && /^(Gmail|QQ)/.test(marker)) {
     return false;
   }
@@ -4224,20 +5337,17 @@ const finalLayoutBlockingHits = finalLayoutBlockingMarkers.filter((marker) => {
 if (finalSummary !== null && finalSummary.expectedToolId === 'gmail.mail.search' && hasTechnicalGmailArgsCard(finalLayoutText)) {
   finalLayoutBlockingHits.push('gmail-technical-args-card');
 }
-for (const blockingPattern of finalLayoutBlockingPatterns) {
-  if (finalSummary !== null &&
-    (finalSummary.expectedToolId.startsWith('calendar.') || finalSummary.expectedToolId.startsWith('hotel.'))) {
-    continue;
-  }
-  if (finalSummary !== null &&
-    finalSummary.expectedToolId === 'dynamic.search' &&
-    finalSummary.expectedDiscoveredToolId === 'weather.query' &&
-    finalLayoutText.includes('高德天气')) {
-    continue;
-  }
-  if (blockingPattern.pattern.test(finalLayoutText)) {
-    finalLayoutBlockingHits.push(blockingPattern.name);
-  }
+const allowsVisibleDate = finalSummary !== null &&
+  (finalSummary.expectedToolId.startsWith('calendar.') || finalSummary.expectedToolId.startsWith('hotel.') ||
+    (finalSummary.expectedToolId === 'dynamic.search' &&
+      finalSummary.expectedDiscoveredToolId === 'weather.query' && finalLayoutText.includes('高德天气')));
+if (finalSummary !== null && finalSummary.expectedToolId === 'daily.brief.open') {
+  finalLayoutBlockingHits.push(...(finalSummary.dailyBriefDateBlockingHits || ['daily-brief-date']));
+} else if (!allowsVisibleDate) {
+  finalLayoutBlockingHits.push(...finalVisibleDateBlockingHits(
+    finalLayoutText,
+    finalSummary?.expectedToolId || ''
+  ));
 }
 if (finalSummary !== null && finalSummary.expectedToolId === 'gmail.draft.create') {
   for (const blockingPattern of forbiddenGmailSendSuccessPatterns) {
@@ -4285,7 +5395,7 @@ if (finalExpectsDirectText && typeof finalSummary.logPath === 'string' &&
 }
 const finalOutputPresent = finalExpectsDirectText ? finalDirectTextVisible.ok :
   (finalAllowsCorrelatedDynamicAuth || finalAllowsSocialHubTruthfulState ||
-    finalAllowsExternalGmailWeb || finalAllowsPersonaMemoryUpdate ||
+    finalAllowsExternalGmailWeb || finalAllowsPersonaMemoryUpdate || finalDailyBriefVisibleOutput ||
     finalLayoutDomainHits.length > 0 ||
     (finalSummary !== null &&
       !isSocialHubExpectedToolId(finalSummary.expectedToolId) &&
@@ -4315,6 +5425,7 @@ const summaryPath = join(outDir, 'summary.json');
 const screenshotIndexPath = writeScreenshotIndex();
 writeFileSync(summaryPath, JSON.stringify({
   target,
+  expectedDeviceLocalDate,
   timeoutMs,
   cleanData,
   modelHealth,

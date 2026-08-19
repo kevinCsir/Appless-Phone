@@ -637,6 +637,18 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     actions: []
   },
   {
+    toolId: 'daily.brief.open',
+    domain: 'productivity',
+    intent: 'daily.brief.open',
+    riskLevel: 'read',
+    backendPriority: ['system_intent'],
+    authModes: ['system'],
+    inputSchema: 'dailyBriefOpenRequest',
+    outputSchema: 'dailyBriefSnapshot',
+    a2uiComponent: 'DailyBrief',
+    actions: []
+  },
+  {
     toolId: 'youtube.mine.playlists',
     domain: 'youtube',
     intent: 'youtube.mine.playlists',
@@ -847,6 +859,18 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     actions: ['ride.driver.location.refresh', 'ride.order.cancel']
   },
   {
+    toolId: 'deep.search',
+    domain: 'research',
+    intent: 'deep.search',
+    riskLevel: 'read',
+    backendPriority: ['local_adapter'],
+    authModes: ['none'],
+    inputSchema: 'deepSearchQuery',
+    outputSchema: 'genericToolResults',
+    a2uiComponent: 'GenericToolResults',
+    actions: []
+  },
+  {
     toolId: 'web.research.search',
     domain: 'firecrawl',
     intent: 'web.research.search',
@@ -939,7 +963,8 @@ const DYNAMIC_SEARCH_PLANNING_PREFIX: string =
   'those fixed tool IDs instead of dynamic.search. Use dynamic.search for Outlook only when the user explicitly ' +
   'names Outlook or Composio Outlook; ordinary mailbox aggregation uses mail.search. World Cup page, schedule, ' +
   'next-match, preview, team, or player-card requests are covered by worldcup.open. First-party movie discovery, ' +
-  'now-showing, box-office, trailer, or star-update page requests are covered by movie.open, not dynamic.search. ';
+  'now-showing, box-office, trailer, or star-update page requests are covered by movie.open, not dynamic.search. ' +
+  'A personal daily brief request is covered by daily.brief.open, never dynamic.search. ';
 
 const DYNAMIC_SEARCH_PLANNING_SUFFIX: string =
   'Do not use Composio for payment, Gmail, Calendar, SocialHub, Maps, Food, Travel, World Cup page/schedule requests, or ' +
@@ -983,25 +1008,26 @@ export function toolPlanningDescriptionForToolId(
   let description = definition.intent + ' risk=' + definition.riskLevel +
     ' inputSchema=' + definition.inputSchema + ' outputSchema=' + definition.outputSchema;
   if (definition.toolId === 'travel.search') {
-    description += '. Use for general train/flight travel options. Do not use for ferry or boat tickets; use dynamic.search for those unsupported transport domains.';
+    description += '. Use for general train/flight travel options. Before selecting execute, the query must contain an exact departure date, origin, and destination grounded in the current message or standard conversation context. If any is missing or ambiguous, select clarify and ask the user in your own words instead of calling the tool. Do not use for ferry or boat tickets; use dynamic.search for those unsupported transport domains.';
   } else if (definition.toolId === 'time') {
     description += '. Use only when the current device date or time is explicitly required. Input must be {}. It reads the device clock and never calls a network provider.';
   } else if (definition.toolId === 'train.search') {
-    description += '. Use for railway, high-speed rail, bullet train, station-to-station, 12306, or train schedule requests.';
+    description += '. Use for railway, high-speed rail, bullet train, station-to-station, 12306, or train schedule requests. Before selecting execute, require an exact departure date, origin, and destination grounded in the standard conversation context; otherwise select clarify and ask naturally.';
   } else if (definition.toolId === 'flight.search') {
-    description += '. Use for flight, airline, airport, or flight-board requests.';
+    description += '. Use for flight, airline, airport, or flight-board requests. Before selecting execute, require an exact departure date, origin, and destination grounded in the standard conversation context; otherwise select clarify and ask naturally.';
   } else if (definition.toolId === 'hotel.search') {
     description += '. Use for real hotel discovery through RollingGo. Input must be JSON with originQuery, place, placeType, countryCode, checkInDate in YYYY-MM-DD, stayNights, adultCount, childCount, childAgeDetails, roomCount, currency, and optional size. Never omit place or dates: the provider otherwise defaults to unrelated inventory. This tool is read-only and does not create a reservation.';
   } else if (definition.toolId === 'hotel.detail') {
     description += '. Use only after hotel.search returns a real hotelId. Preserve hotelId, checkInDate, checkOutDate, countryCode, currency, adultCount, childCount, childAgeDetails, and roomCount. It returns live room ratePlanId, average price/currency, bed, meal, availability, and cancellation policy. It does not create, confirm, or track an order.';
   } else if (definition.toolId === 'food.search') {
+    description += '. Input remains backward-compatible with a single query/prompt string. It may also include optional structured fields: query, keyword, brandPreference, brandStrict, sweetness, and searchArea {longitude, latitude, radiusMeters, name, address}. When a valid searchArea is supplied, use it as the search center instead of extracting a place or coordinates from query text.';
     description += '. Use for restaurants, cafes, coffee, milk tea, drinks, McDonalds, menus, coupons, delivery, and food or beverage places near a location. Do not use for Luckin order placement; use luckin.order.preview for ordering Luckin coffee.';
   } else if (definition.toolId === 'luckin.order.preview') {
-    description += '. Use only when the current user message itself explicitly names Luckin/Ruixing and explicitly asks to place or prepare a real order, for example "点一杯瑞幸咖啡", "帮我买一杯瑞幸生椰拿铁", or "瑞幸下单". Do not infer Luckin ordering from saved brand preferences or memory. A Luckin brand mention, store discovery, menu browsing, product question, or price question is not an order and must use food.search instead. This is the first step for explicit Luckin ordering: it queries nearby stores, product SKU/options, and previewOrder pricing. Input must be JSON; at minimum pass {"prompt":"<original user request>"} or {"query":"<original user request>"}. Do not answer with note or food.search when the current message explicitly requests a Luckin order.';
+    description += '. Use only when the current user message itself explicitly names Luckin/Ruixing and explicitly asks to place or prepare a real order, for example "点一杯瑞幸咖啡", "帮我买一杯瑞幸生椰拿铁", or "瑞幸下单". Do not infer Luckin ordering from saved brand preferences or memory. A Luckin brand mention, store discovery, menu browsing, product question, or price question is not an order and must use food.search instead. This is the first step for explicit Luckin ordering: it queries nearby stores, product SKU/options, and previewOrder pricing, but does not create or pay for an order. Input must be JSON; at minimum pass {"prompt":"<original user request>"} or {"query":"<original user request>"}. Do not answer with note or food.search when the current message explicitly requests a Luckin order.';
   } else if (definition.toolId === 'luckin.order.create') {
-    description += '. Use only after a Luckin order preview card returned real deptId, productId, and skuCode, and the user confirms creating the order. Do not use directly from an initial "order coffee" request.';
+    description += '. Use only from the exact current Luckin order preview page action after that preview returned real deptId, productId, and skuCode and the user explicitly confirms creating the order. Do not use directly from an initial "order coffee" request, do not invent identifiers, and never claim or initiate payment.';
   } else if (definition.toolId === 'luckin.order.status') {
-    description += '. Use when the user asks to check, refresh, or view a Luckin order status, pickup code, or existing orderId.';
+    description += '. Use when the user asks to check, refresh, or view a Luckin order status or pickup code and a real existing orderId is available from provider output or the exact current order page action. Never invent an orderId.';
   } else if (definition.toolId === 'social.feed.search') {
     description += '. Use for every SocialHub inbox, received-message, recent-message, private-message, or connection-state request involving X/Twitter, Slack, WeCom, Discord, LinkedIn, WhatsApp, or Instagram, including when the user mentions Composio or authorization. The tool argument object must contain exactly one key named platforms: LeaderDecision uses dataTasks[].input.platforms; legacy ToolCall uses args.platforms. Do not add date, query, or limit. Use one named platform such as ["whatsapp"] for a single-source request, named platforms such as ["x","slack"] for a combined request, or ["all"] for the complete SocialHub. Do not use for public X/Twitter posts; use x.post.search for explicit public post searches. This tool reports unsupported read capabilities as limitations and never fabricates social messages.';
   } else if (definition.toolId === 'social.community.search') {
@@ -1044,6 +1070,8 @@ export function toolPlanningDescriptionForToolId(
     description += '. Use when the user wants to open the World Cup experience, view World Cup schedules, next match time, previews, highlights, teams, players, or matchup cards. Use media tools instead for explicit YouTube-only, Bilibili-only, or mixed-content search requests.';
   } else if (definition.toolId === 'movie.open') {
     description += '. Use when the user wants the first-party movie experience with current theatrical movies, box-office snapshot, trailers, or movie-star updates. Use media tools instead for explicit YouTube-only, Bilibili-only, or mixed-content search requests.';
+  } else if (definition.toolId === 'daily.brief.open') {
+    description += '. Use for the App-internal personal daily brief. Pass exactly one boolean regenerate field. It updates Home in place and never opens a URL or another route.';
   } else if (definition.toolId === 'youtube.video.search') {
     description += '. Use only for explicit YouTube-only public video search; use media.video.search for Bilibili or multi-source video requests.';
   } else if (definition.toolId === 'calendar.events.search') {
@@ -1074,6 +1102,8 @@ export function toolPlanningDescriptionForToolId(
     description += '. Input must provide pages max 5 XOR queries max 3, required goal, and optional name, scheduleText, timezone, email. The first call is preview only.';
   } else if (definition.toolId === 'web.monitor.list') {
     description += '. Read cloud state; monitor mutations come only from exact visible actions with current IDs.';
+  } else if (definition.toolId === 'deep.search') {
+    description += '. Use for complex research questions that require comprehensive web search, multi-source synthesis, and in-depth analysis. This tool performs iterative web searches, reads multiple sources, and generates a structured research report with cited sources. Use when the user asks for detailed research, comparative analysis, market research, technical deep-dives, or any query that benefits from thorough investigation across multiple web sources. Do not use for simple factual lookups or when other specialized tools (travel, food, calendar, etc.) are more appropriate. Input must be JSON with a single query field containing the research question.';
   }
   return description;
 }

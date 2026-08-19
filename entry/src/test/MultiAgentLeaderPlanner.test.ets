@@ -12,7 +12,8 @@ import {
   LocalModelCompletionOptions,
   ObservationDigest,
   ToolDefinition,
-  actionAgentToolDefinitions
+  actionAgentToolDefinitions,
+  toolPlanningDescriptionForToolId
 } from '@loop/agent-core';
 import { MultiAgentLeaderPlanner } from '../main/ets/pages/A2uiHome/agent/MultiAgentLeaderPlanner';
 
@@ -31,6 +32,17 @@ const TRAVEL_DECISION: string = '{"personaId":"travel_companion","skillId":"",' 
   '"query":"我明天要从北京去上海，帮我搜索出行方案"},"required":true}],' +
   '"uiIntent":{"purpose":"展示综合出行方案","preferredDensity":"comfortable",' +
   '"requiredSections":["travel"]},"reasonCode":"travel_search"}';
+const CONTEXTUAL_TRAVEL_DECISION: string = '{"personaId":"travel_companion","skillId":"",' +
+  '"requestedCapabilityIds":["travel.search"],"roundAction":"execute","continuationMode":"complete",' +
+  '"dataTasks":[{"localId":"travel","goal":"查询深圳到上海的出行方案",' +
+  '"allowedToolIds":["travel.search"],"toolId":"travel.search",' +
+  '"input":{"query":"8月28从深圳出发去上海"},"required":true}],' +
+  '"uiIntent":{"purpose":"展示综合出行方案","preferredDensity":"comfortable",' +
+  '"requiredSections":["travel"]},"reasonCode":"travel_search"}';
+const TRAVEL_CLARIFY_DECISION: string = '{"personaId":"travel_companion","skillId":"",' +
+  '"requestedCapabilityIds":[],"roundAction":"clarify","continuationMode":"complete","dataTasks":[],' +
+  '"uiIntent":{"purpose":"补充出行条件","preferredDensity":"comfortable",' +
+  '"requiredSections":[]},"answer":"你从哪座城市出发？另外，下周具体哪一天出发？"}';
 const FLIGHT_DECISION: string = '{"personaId":"travel_companion","skillId":"",' +
   '"requestedCapabilityIds":["flight.search"],"roundAction":"execute","continuationMode":"complete",' +
   '"dataTasks":[{"localId":"flight","goal":"帮我查明天北京到上海的航班",' +
@@ -535,6 +547,11 @@ const rejectedHotelInputNormalizer: LeaderDataTaskInputNormalizer = (
   return task.input;
 };
 
+const passthroughInputNormalizer: LeaderDataTaskInputNormalizer = (
+  _input: InputUserPayload,
+  task: LeaderDecisionDataTask
+): Object => task.input;
+
 class TravelPromptAwareModel implements LocalModel {
   prompts: string[] = [];
 
@@ -919,7 +936,8 @@ function actionOwnerContext(): LeaderPlanningContext {
       registeredBackends: definition.backendPriority.slice(),
       inputSchema: definition.inputSchema,
       outputSchema: definition.outputSchema,
-      actions: []
+      actions: [],
+      planningHint: toolPlanningDescriptionForToolId(definition.toolId)
     });
   }
   for (let index = 0; index < context.tools.length; index++) {
@@ -1078,6 +1096,67 @@ async function failsAtRound(output: string, round: number): Promise<boolean> {
 
 export default function multiAgentLeaderPlannerTest() {
   describe('multiAgentLeaderPlanner', () => {
+    it('uses standard recent messages to preflight a travel follow-up', 0, async () => {
+      const model = new QueueLocalModel([CONTEXTUAL_TRAVEL_DECISION]);
+      const input: InputUserPayload = {
+        text: '8月28从深圳出发',
+        recentMessages: [{ role: 'user', content: '我下周要去上海出差' }]
+      };
+
+      const decision = await new MultiAgentLeaderPlanner(
+        model, undefined, passthroughInputNormalizer
+      ).plan(
+        inputMessage(), input, planningContext(), 1, undefined, '2026-08-12'
+      );
+
+      expect(decision.roundAction).assertEqual('execute');
+      expect(decision.dataTasks.length).assertEqual(1);
+      expect(model.conversations.length).assertEqual(1);
+      expect(model.conversations[0][0]).assertEqual('user:我下周要去上海出差');
+    });
+
+    it('preserves a model-authored travel clarification', 0, async () => {
+      const model = new QueueLocalModel([TRAVEL_CLARIFY_DECISION]);
+      const decision = await new MultiAgentLeaderPlanner(
+        model, undefined, passthroughInputNormalizer
+      ).plan(
+        inputMessage(),
+        { text: '我下周要去上海出差' },
+        planningContext(),
+        1,
+        undefined,
+        '2026-08-12'
+      );
+
+      expect(decision.roundAction).assertEqual('clarify');
+      expect(decision.reasonCode).assertEqual('host_clarify');
+      expect(decision.requestedCapabilityIds.length).assertEqual(0);
+      expect(decision.dataTasks.length).assertEqual(0);
+      expect(decision.answer)
+        .assertEqual('你从哪座城市出发？另外，下周具体哪一天出发？');
+      expect(model.prompts.length).assertEqual(1);
+    });
+
+    it('keeps complete model-selected travel execution without rewriting its task input', 0, async () => {
+      const model = new QueueLocalModel([TRAVEL_DECISION]);
+      const decision = await new MultiAgentLeaderPlanner(
+        model, undefined, passthroughInputNormalizer
+      ).plan(
+        inputMessage(),
+        { text: '我下周五从深圳到上海出差' },
+        planningContext(),
+        1,
+        undefined,
+        '2026-08-12'
+      );
+      const taskInput = decision.dataTasks[0].input as Record<string, Object | string | number | boolean | null>;
+
+      expect(decision.roundAction).assertEqual('execute');
+      expect(decision.dataTasks.length).assertEqual(1);
+      expect(taskInput['query'])
+        .assertEqual('我明天要从北京去上海，帮我搜索出行方案');
+    });
+
     it('passes prior conversation messages to the Leader model', 0, async () => {
       const model = new QueueLocalModel([LIVE_ANSWER_WITHOUT_REASON_CODE]);
       await new MultiAgentLeaderPlanner(model).plan(
@@ -1314,6 +1393,90 @@ export default function multiAgentLeaderPlannerTest() {
 
       expect(decision.requestedCapabilityIds.join(',')).assertEqual('memory.update');
       expect(decision.actionIntent!.allowedActionIds.join(',')).assertEqual('memory.update');
+      expect(decision.bimSuggestion === undefined).assertTrue();
+    });
+
+    it('teaches the Leader to route only stable content preferences to entertainment memory', 0, async () => {
+      const model = new QueueLocalModel([actionDecision('memory.update')]);
+      await new MultiAgentLeaderPlanner(model).plan(
+        inputMessage(),
+        { text: '以后多推荐 AI 视频' },
+        actionOwnerContext(),
+        1
+      );
+
+      expect(model.systemPrompts[0].indexOf(
+        'Stable content-recommendation preferences such as 以后多推荐..., 不要推荐..., 少给我看...'
+      )).assertLarger(-1);
+      expect(model.systemPrompts[0].indexOf(
+        'A one-off search or ordinary topic mention is not a stable preference.'
+      )).assertLarger(-1);
+    });
+
+    it('keeps snapshot-only BIM creation out of the foreground tool plan', 0, async () => {
+      const model = new QueueLocalModel([LIVE_ANSWER_WITHOUT_REASON_CODE]);
+      const decision = await new MultiAgentLeaderPlanner(model).plan(
+        inputMessage(),
+        {
+          text: '[BIM_SNAPSHOTS]\n## 东京旅行\n后续每周跟进准备进度\n[/BIM_SNAPSHOTS]\n\n' +
+            '请帮我记在心上，标题是双机验收。'
+        },
+        actionOwnerContext(),
+        1
+      );
+
+      expect(model.prompts.length).assertEqual(1);
+      expect(model.prompts[0].indexOf('"toolId":"memory.update"')).assertEqual(-1);
+      expect(model.prompts[0].indexOf('asynchronous BIM Curator')).assertLarger(-1);
+      expect(model.prompts[0].indexOf('Do not claim the matter is saved before host confirmation')).assertLarger(-1);
+      expect(decision.requestedCapabilityIds.length).assertEqual(0);
+      expect(decision.bimSuggestion === undefined).assertTrue();
+      expect(decision.bimContextUpdate === undefined).assertTrue();
+    });
+
+    it('ignores BIM fields in every snapshot-only foreground decision without another model call', 0, async () => {
+      const prefix = LIVE_ANSWER_WITHOUT_REASON_CODE.substring(
+        0, LIVE_ANSWER_WITHOUT_REASON_CODE.length - 1
+      );
+      const invalid = prefix +
+        ',"bimSuggestion":{"title":"东京旅行","summary":"继续旅行",' +
+        '"reason":"稍后处理","keywords":["东京"]},' +
+        '"bimContextUpdate":{"summary":"继续旅行","facts":[],"constraints":[],' +
+        '"decisions":[],"entities":["东京"],"timeAnchors":[],"locations":["东京"],' +
+        '"commitments":[],"keywords":["东京"]}}';
+      const model = new QueueLocalModel([invalid]);
+
+      const decision = await new MultiAgentLeaderPlanner(model).plan(
+        inputMessage(),
+        { text: '[BIM_SNAPSHOTS]\n## 东京旅行\n待确认酒店\n[/BIM_SNAPSHOTS]\n\n继续安排' },
+        planningContext(),
+        1,
+        (): boolean => true
+      );
+
+      expect(model.prompts.length).assertEqual(1);
+      expect(decision.bimSuggestion === undefined).assertTrue();
+      expect(decision.bimContextUpdate === undefined).assertTrue();
+    });
+
+    it('preserves a snapshot-only foreground tool plan while ignoring BIM fields', 0, async () => {
+      const invalid = TRAVEL_DECISION.substring(0, TRAVEL_DECISION.length - 1) +
+        ',"bimSuggestion":{"title":"东京旅行","summary":"继续旅行",' +
+        '"reason":"稍后处理","keywords":["东京"]}}';
+      const model = new QueueLocalModel([invalid]);
+
+      const decision = await new MultiAgentLeaderPlanner(model).plan(
+        inputMessage(),
+        { text: '[BIM_SNAPSHOTS]\n## 东京旅行\n待确认酒店\n[/BIM_SNAPSHOTS]\n\n' +
+          '我明天要从北京去上海，帮我搜索出行方案' },
+        planningContext(),
+        1,
+        (): boolean => true
+      );
+
+      expect(model.prompts.length).assertEqual(1);
+      expect(decision.requestedCapabilityIds.join(',')).assertEqual('travel.search');
+      expect(decision.dataTasks[0].toolId).assertEqual('travel.search');
       expect(decision.bimSuggestion === undefined).assertTrue();
     });
 
@@ -2084,6 +2247,26 @@ export default function multiAgentLeaderPlannerTest() {
       expect(luckinOrder.dataTasks.length).assertEqual(0);
       expect(luckinOrder.actionIntent!.allowedActionIds.join(',')).assertEqual('luckin.order.preview');
       expect(model.prompts[0].indexOf('C10/C11 selection contract:')).assertLarger(-1);
+    });
+
+    it('accepts the Leader model Luckin preview selection with tool guidance in the prompt', 0,
+      async () => {
+      const model = new QueueLocalModel([actionDecision('luckin.order.preview')]);
+      const planner = new MultiAgentLeaderPlanner(model);
+      const decision = await planner.plan(
+        inputMessage(),
+        { text: '帮我点一杯瑞幸生椰拿铁，少甜热' },
+        c10C11Context(),
+        1
+      );
+
+      expect(decision.requestedCapabilityIds.join(',')).assertEqual('luckin.order.preview');
+      expect(decision.roundAction).assertEqual('execute');
+      expect(decision.actionIntent!.allowedActionIds.join(',')).assertEqual('luckin.order.preview');
+      expect(model.prompts.length).assertEqual(1);
+      expect(model.prompts[0].indexOf('luckin.order.preview')).assertLarger(-1);
+      expect(model.prompts[0].indexOf('Use only when the current user message itself explicitly names Luckin/Ruixing')).assertLarger(-1);
+      expect(model.prompts[0].indexOf('user explicitly confirms creating the order')).assertLarger(-1);
     });
 
     it('asks the Leader model once to correct an explicit Google Maps selection without host rewriting', 0,

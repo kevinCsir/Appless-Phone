@@ -1,4 +1,4 @@
-import { aiLogInfo } from '@loop/agent-core';
+import { aiLogInfo, buildFoodPhoneUri } from '@loop/agent-core';
 import {
   A2UI_COMPONENT_ACTION_BAR,
   A2UI_COMPONENT_AGGREGATE_SEARCH,
@@ -23,6 +23,7 @@ import {
   A2uiComponent,
   A2uiDynamicToolConnectData,
   A2uiFoodData,
+  A2uiFoodSearchContext,
   A2uiFlightData,
   A2uiGenericToolResultData,
   A2uiLabelValueData,
@@ -72,6 +73,11 @@ import { gmailOpenDraftAction, gmailReplyDraftAction } from '@loop/agent-core';
 import { mailReplyDraftAction } from '@loop/agent-core';
 import { isMediaVideoResult, mediaVideoPlaybackAction, officialMediaVideoPlaybackUrl } from '@loop/agent-core';
 import {
+  travelCalendarActionForFlight,
+  travelCalendarActionForOption,
+  travelCalendarActionForTrain
+} from '../travel/TravelCalendarAction';
+import {
   SocialHubConnectionData,
   SocialHubDraftData,
   SocialHubItemData,
@@ -91,6 +97,8 @@ import {
   HtmlHomeStripeReceiving,
   HtmlHomeTimelineItem
 } from './HtmlHomeTypes';
+import { DailyBriefItem, DailyBriefPreference, DailyBriefSnapshot } from '../dailybrief/DailyBriefTypes';
+import { isValidDailyBriefAction } from '../dailybrief/DailyBriefStore';
 
 const HTML_HOME_VERSION: number = 1;
 const HISTORY_LIMIT: number = 6;
@@ -126,6 +134,17 @@ interface MailDetailActionArgs {
   threadId: string;
   messageId: string;
   subject: string;
+}
+
+export interface MailTerminalPresentation {
+  bodyText: string;
+  errorText: string;
+  shouldRequestDetail: boolean;
+}
+
+interface DailyBriefHomeDataModel {
+  dailyBrief?: DailyBriefSnapshot;
+  dailyBriefPreference?: DailyBriefPreference;
 }
 
 export interface CreateHtmlHomeDocumentParams {
@@ -207,6 +226,26 @@ export function createHtmlHomeDocument(params: CreateHtmlHomeDocumentParams): Ht
     generatedAt: new Date().toISOString()
   };
   const document: HtmlHomeDocument = withBusy(baseDocument, params.isBusy);
+  if (kind === 'food') {
+    const foodSearchContext = resolveData(surface, '/foodSearchContext') as A2uiFoodSearchContext;
+    if (foodSearchContext !== undefined && foodSearchContext !== null) {
+      document.foodSearchContext = foodSearchContext;
+    }
+  }
+  if (kind === 'daily-brief') {
+    const model = dailyBriefHomeDataModel(surface);
+    const snapshot = model === null ? undefined : model.dailyBrief;
+    const visiblePreference = model === null ? undefined : model.dailyBriefPreference;
+    if (snapshot !== undefined && isDailyBriefSnapshot(snapshot)) {
+      document.dailyBrief = snapshot;
+      document.dailyBriefPreference = !isDailyBriefPreference(visiblePreference)
+        ? snapshot.profile
+        : visiblePreference;
+      document.generatedAt = snapshot.generatedAt;
+      document.actions = htmlActions(snapshot.actions, root === null ? 'root' : root.id);
+    }
+    return document;
+  }
   if (aggregate !== null && aggregate.waterfall !== undefined) {
     document.waterfall = aggregate.waterfall;
   }
@@ -227,6 +266,87 @@ export function createHtmlHomeDocument(params: CreateHtmlHomeDocumentParams): Ht
 
   dropCompletedThinkingBlocks(document, params.isBusy);
   return document;
+}
+
+function dailyBriefHomeDataModel(surface: A2uiSurfaceState): DailyBriefHomeDataModel | null {
+  try {
+    return JSON.parse(surface.dataModelJson) as DailyBriefHomeDataModel;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function isDailyBriefSnapshot(value: DailyBriefSnapshot | null | undefined): boolean {
+  if (value === undefined || value === null || typeof value !== 'object' || Array.isArray(value) ||
+    value.schemaVersion !== 1 || typeof value.date !== 'string' || value.date.length === 0 ||
+    typeof value.generatedAt !== 'string' || value.generatedAt.length === 0 ||
+    value.status !== 'complete' && value.status !== 'partial' || !isDailyBriefPreference(value.profile) ||
+    !Array.isArray(value.topThree) || !Array.isArray(value.sections) || !Array.isArray(value.discovery) ||
+    !Array.isArray(value.sources) || !Array.isArray(value.actions)) {
+    return false;
+  }
+  for (let index = 0; index < value.topThree.length; index += 1) {
+    const highlight = value.topThree[index];
+    if (highlight === null || typeof highlight !== 'object' || typeof highlight.slot !== 'string' ||
+      !isDailyBriefItem(highlight.item)) {
+      return false;
+    }
+  }
+  for (let index = 0; index < value.sections.length; index += 1) {
+    const section = value.sections[index];
+    if (section === null || typeof section !== 'object' || typeof section.id !== 'string' ||
+      typeof section.title !== 'string' || typeof section.state !== 'string' ||
+      typeof section.message !== 'string' || !Array.isArray(section.items)) {
+      return false;
+    }
+    for (let itemIndex = 0; itemIndex < section.items.length; itemIndex += 1) {
+      if (!isDailyBriefItem(section.items[itemIndex])) {
+        return false;
+      }
+    }
+  }
+  for (let index = 0; index < value.discovery.length; index += 1) {
+    const item = value.discovery[index];
+    if (item === null || typeof item !== 'object' || typeof item.source !== 'string' ||
+      typeof item.title !== 'string' || typeof item.summary !== 'string' || typeof item.url !== 'string' ||
+      typeof item.reason !== 'string' || typeof item.timeBudgetLabel !== 'string') {
+      return false;
+    }
+  }
+  for (let index = 0; index < value.actions.length; index += 1) {
+    if (!isValidDailyBriefAction(value.actions[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isDailyBriefPreference(value: DailyBriefPreference | null | undefined): boolean {
+  return value !== undefined && value !== null && typeof value === 'object' && !Array.isArray(value) &&
+    isStringArray(value.topics) && typeof value.language === 'string' &&
+    typeof value.timeBudgetMinutes === 'number' && Number.isFinite(value.timeBudgetMinutes) &&
+    isStringArray(value.formats) && typeof value.negativePreference === 'string' &&
+    typeof value.targetTime === 'string';
+}
+
+function isDailyBriefItem(value: DailyBriefItem | null | undefined): boolean {
+  return value !== undefined && value !== null && typeof value === 'object' && !Array.isArray(value) &&
+    typeof value.id === 'string' && typeof value.sourceId === 'string' &&
+    typeof value.title === 'string' && typeof value.summary === 'string' &&
+    typeof value.timeLabel === 'string' &&
+    (value.action === undefined || isValidDailyBriefAction(value.action));
+}
+
+function isStringArray(value: string[]): boolean {
+  if (!Array.isArray(value)) {
+    return false;
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    if (typeof value[index] !== 'string') {
+      return false;
+    }
+  }
+  return true;
 }
 
 function welcomeDocument(params: CreateHtmlHomeDocumentParams): HtmlHomeDocument {
@@ -343,6 +463,12 @@ function buildEmbeddedDocumentFromSurface(
     rawSurfaceRoot: root,
     generatedAt: new Date().toISOString()
   };
+  if (kind === 'food') {
+    const foodSearchContext = resolveData(embedded, '/foodSearchContext') as A2uiFoodSearchContext;
+    if (foodSearchContext !== undefined && foodSearchContext !== null) {
+      document.foodSearchContext = foodSearchContext;
+    }
+  }
   embedded.components.forEach((component: A2uiComponent) => {
     appendComponentActions(document.actions, component);
     appendBlocksForComponent(document, embedded, component);
@@ -547,8 +673,12 @@ function appendTravelBlocks(document: HtmlHomeDocument, surface: A2uiSurfaceStat
   options.forEach((item: A2uiTravelOptionData, index: number) => {
     const block = newBlock(component.id + '-' + index.toString(), 'travel-option', firstText(item.title, item.id, component.id));
     block.subtitle = joinText([item.from, item.to], ' -> ');
-    block.status = item.status;
+    block.status = item.selected === true ? '已选择' :
+      (item.recommendationLabels !== undefined && item.recommendationLabels.length > 0 ?
+        item.recommendationLabels[0] : item.status);
     block.source = firstText(item.sourceTag, item.source);
+    block.calendarConflict = item.calendarConflict === true;
+    block.calendarConflictTitle = textOf(item.calendarConflictTitle);
     appendMetric(block.metrics, 'source', item.source);
     appendMetric(block.metrics, 'from', item.from);
     appendMetric(block.metrics, 'to', item.to);
@@ -558,6 +688,11 @@ function appendTravelBlocks(document: HtmlHomeDocument, surface: A2uiSurfaceStat
     appendMetric(block.metrics, 'price', item.price);
     appendMetric(block.metrics, 'price', item.price);
     appendMetric(block.metrics, 'availability', item.availability);
+    appendMetric(block.metrics, 'recommendation', item.recommendationLabels?.join(' · '));
+    appendMetric(block.metrics, 'doorToDoorDuration', item.doorToDoorDuration);
+    appendMetric(block.metrics, 'leaveOriginAt', item.leaveOriginAt);
+    appendMetric(block.metrics, 'finalArrivalAt', item.finalArrivalAt);
+    appendMetric(block.metrics, 'feasibilityReason', item.feasibilityReason);
     appendMetric(block.rows, 'detail', item.detail);
     if (item.source === 'train') {
       const trainCode = textOf(item.trainCode);
@@ -582,6 +717,36 @@ function appendTravelBlocks(document: HtmlHomeDocument, surface: A2uiSurfaceStat
         appendTrainBookingActions(block, component.id, item.bookingUrl);
       }
     }
+    if (item.source === 'flight') {
+      const flightActionPayload = JSON.stringify({
+        index: index,
+        id: textOf(item.id),
+        source: textOf(item.source),
+        flightNo: textOf(item.title),
+        depTime: textOf(item.depart),
+        dep: textOf(item.from),
+        arr: textOf(item.to),
+        depart: textOf(item.depart),
+        from: textOf(item.from),
+        to: textOf(item.to),
+        fromCode: textOf(item.fromCode),
+        toCode: textOf(item.toCode),
+        travelDate: textOf(item.travelDate)
+      });
+      const bookingAction = clientAction(
+        'flight.booking.ctrip.open', '去携程订票', flightActionPayload, component.id
+      );
+      bookingAction.variant = 'primary';
+      block.actions.push(bookingAction);
+    }
+    if (item.source === 'train' || item.source === 'flight') {
+      const calendarAction = travelCalendarActionForOption(item, component.id);
+      const htmlCalendarAction = clientAction(
+        calendarAction.id, calendarAction.label, calendarAction.prompt, component.id
+      );
+      htmlCalendarAction.variant = calendarAction.variant;
+      block.actions.push(htmlCalendarAction);
+    }
     block.actions.push(clientAction('html_pin_travel', '固定到桌面', JSON.stringify({
       index: index,
       id: textOf(item.id),
@@ -604,6 +769,8 @@ function appendTrainBlocks(document: HtmlHomeDocument, surface: A2uiSurfaceState
     const block = newBlock(component.id + '-' + index.toString(), 'train-option', firstText(item.trainCode, component.id));
     block.subtitle = joinText([item.from, item.to], ' -> ');
     block.status = item.status;
+    block.calendarConflict = item.calendarConflict === true;
+    block.calendarConflictTitle = textOf(item.calendarConflictTitle);
     appendMetric(block.metrics, 'from', item.from);
     appendMetric(block.metrics, 'to', item.to);
     appendMetric(block.metrics, 'depart', item.depart);
@@ -632,6 +799,12 @@ function appendTrainBlocks(document: HtmlHomeDocument, surface: A2uiSurfaceState
     } else {
       appendTrainBookingActions(block, component.id, item.bookingUrl);
     }
+    const calendarAction = travelCalendarActionForTrain(item, component.id);
+    const htmlCalendarAction = clientAction(
+      calendarAction.id, calendarAction.label, calendarAction.prompt, component.id
+    );
+    htmlCalendarAction.variant = calendarAction.variant;
+    block.actions.push(htmlCalendarAction);
     block.actions.push(clientAction('html_pin_train', '固定到桌面', JSON.stringify({
       index: index,
       trainCode: textOf(item.trainCode),
@@ -653,6 +826,8 @@ function appendFlightBlocks(document: HtmlHomeDocument, surface: A2uiSurfaceStat
     const block = newBlock(component.id + '-' + index.toString(), 'flight-option', firstText(item.flightNo, item.airline, component.id));
     block.subtitle = joinText([item.dep, item.arr], ' -> ');
     block.status = item.status;
+    block.calendarConflict = item.calendarConflict === true;
+    block.calendarConflictTitle = textOf(item.calendarConflictTitle);
     const retryDate = firstDateText(
       componentTitleOf(component),
       componentBodyOf(component),
@@ -669,19 +844,38 @@ function appendFlightBlocks(document: HtmlHomeDocument, surface: A2uiSurfaceStat
     appendMetric(block.metrics, 'depTime', item.depTime);
     appendMetric(block.metrics, 'arrTime', item.arrTime);
     appendMetric(block.metrics, 'price', item.price);
-    block.actions.push(clientAction('html_pin_flight', '固定到桌面', JSON.stringify({
+    const actionPayload = JSON.stringify({
       index: index,
       flightNo: textOf(item.flightNo),
       depTime: textOf(item.depTime),
       dep: textOf(item.dep),
-      arr: textOf(item.arr)
-    }), component.id));
+      arr: textOf(item.arr),
+      fromCode: textOf(item.depCode),
+      toCode: textOf(item.arrCode),
+      travelDate: textOf(item.travelDate)
+    });
+    const bookingAction = clientAction('flight.booking.ctrip.open', '去携程订票', actionPayload, component.id);
+    bookingAction.variant = 'primary';
+    block.actions.push(bookingAction);
+    const calendarAction = travelCalendarActionForFlight(item, component.id);
+    const htmlCalendarAction = clientAction(
+      calendarAction.id, calendarAction.label, calendarAction.prompt, component.id
+    );
+    htmlCalendarAction.variant = calendarAction.variant;
+    block.actions.push(htmlCalendarAction);
+    block.actions.push(clientAction('html_pin_flight', '固定到桌面', actionPayload, component.id));
     document.blocks.push(block);
   });
 }
 
 function appendFoodBlocks(document: HtmlHomeDocument, surface: A2uiSurfaceState, component: A2uiComponent): void {
   const foods = foodOptions(surface, component);
+  const hoursHits = foods.filter((item: A2uiFoodData): boolean =>
+    (item.openHoursToday !== undefined && item.openHoursToday.trim().length > 0) ||
+    (item.openHoursWeek !== undefined && item.openHoursWeek.trim().length > 0)
+  ).length;
+  aiLogInfo('[AIPhone][FoodHoursHtmlProjection] foods=' + foods.length.toString() +
+    ' hoursHits=' + hoursHits.toString());
   foods.forEach((item: A2uiFoodData, index: number) => {
     const block = newBlock(component.id + '-' + index.toString(), 'food-result', firstText(item.name, component.id));
     block.subtitle = item.category;
@@ -690,7 +884,22 @@ function appendFoodBlocks(document: HtmlHomeDocument, surface: A2uiSurfaceState,
     appendMetric(block.metrics, 'address', item.address);
     appendMetric(block.metrics, 'distance', item.distance);
     appendMetric(block.metrics, 'location', item.location === undefined ? '' : item.location);
+    appendMetric(block.metrics, 'openHoursToday', item.openHoursToday);
+    appendMetric(block.metrics, 'openHoursWeek', item.openHoursWeek);
+    appendMetric(block.metrics, 'pricePerPerson', item.pricePerPerson);
+    appendMetric(block.metrics, 'priceText', item.priceText);
+    appendMetric(block.metrics, 'priceSource', item.priceSource);
+    appendMetric(block.metrics, 'rating', item.rating);
+    appendMetric(block.metrics, 'ratingText', item.ratingText);
+    appendMetric(block.metrics, 'ratingSource', item.ratingSource);
+    appendMetric(block.metrics, 'businessStatus', item.businessStatus);
+    appendMetric(block.metrics, 'businessStatusLabel', item.businessStatusLabel);
     appendMetric(block.metrics, 'source', block.source === undefined ? '' : block.source);
+    const phoneUri = buildFoodPhoneUri(textOf(item.phone));
+    if (phoneUri.length > 0) {
+      appendMetric(block.metrics, 'phone', item.phone);
+      appendMetric(block.metrics, 'phoneSource', item.phoneSource);
+    }
     const payload = JSON.stringify({
       index: index,
       name: textOf(item.name),
@@ -700,6 +909,9 @@ function appendFoodBlocks(document: HtmlHomeDocument, surface: A2uiSurfaceState,
     });
     block.actions.push(clientAction('html_pin_food', '固定到桌面', payload, component.id));
     block.actions.push(clientAction('html_open_food_map', '导航去', payload, component.id));
+    if (phoneUri.length > 0) {
+      block.actions.push(clientAction('html_call_food', '拨打电话', payload, component.id));
+    }
     document.blocks.push(block);
   });
 }
@@ -740,7 +952,9 @@ function appendGenericToolResultBlocks(document: HtmlHomeDocument, surface: A2ui
     appendRideToolPanelBlock(document, results, component);
     return;
   }
+  const sourceToolId = summaryToolName(surface);
   results.forEach((item: A2uiGenericToolResultData, index: number) => {
+    const mailTerminal = mailTerminalPresentation(sourceToolId, item);
     const block = newBlock(component.id + '-' + index.toString(), 'generic-tool-result', firstText(item.title, item.toolName, component.id));
     block.subtitle = item.summary;
     block.status = item.status;
@@ -752,6 +966,12 @@ function appendGenericToolResultBlocks(document: HtmlHomeDocument, surface: A2ui
     });
     if (item.rawPreview.length > 0) {
       block.rawPreview = item.rawPreview;
+    }
+    if (mailTerminal.bodyText.length > 0) {
+      block.mailTerminalBody = mailTerminal.bodyText;
+    }
+    if (mailTerminal.errorText.length > 0) {
+      block.mailTerminalError = mailTerminal.errorText;
     }
     const mediaEmbed = mediaEmbedForResult(item);
     if (mediaEmbed !== null) {
@@ -773,7 +993,7 @@ function appendGenericToolResultBlocks(document: HtmlHomeDocument, surface: A2ui
     if (gmailOpenDraft !== null) {
       block.actions = block.actions.concat(htmlActions([gmailOpenDraft], component.id));
     }
-    const mailDetailRead = mailDetailReadAction(item);
+    const mailDetailRead = mailTerminal.shouldRequestDetail ? mailDetailReadAction(item) : null;
     if (mailDetailRead !== null) {
       block.actions = block.actions.concat(htmlActions([mailDetailRead], component.id));
     }
@@ -1207,6 +1427,32 @@ function genericResultRowValue(result: A2uiGenericToolResultData, label: string)
   return '';
 }
 
+export function mailTerminalPresentation(
+  sourceToolId: string,
+  result: A2uiGenericToolResultData
+): MailTerminalPresentation {
+  const terminal = sourceToolId === 'mail.thread.read' || sourceToolId === 'gmail.thread.read';
+  if (!terminal) {
+    return {
+      bodyText: '',
+      errorText: '',
+      shouldRequestDetail: true
+    };
+  }
+  if (result.status === 'success') {
+    return {
+      bodyText: result.summary,
+      errorText: '',
+      shouldRequestDetail: false
+    };
+  }
+  return {
+    bodyText: '',
+    errorText: firstText(result.summary, genericResultRowValue(result, 'Error'), ''),
+    shouldRequestDetail: false
+  };
+}
+
 function mailDetailReadAction(result: A2uiGenericToolResultData): A2uiAction | null {
   const source = result.sourceTag.toLowerCase();
   const rowProvider = genericResultRowValue(result, 'Provider').toLowerCase();
@@ -1352,6 +1598,9 @@ function isThinkingBlock(block: HtmlHomeBlock): boolean {
 }
 
 function kindOf(surface: A2uiSurfaceState): HtmlHomeKind {
+  if (surface.intent === 'daily-brief') {
+    return 'daily-brief';
+  }
   if (surface.intent === 'multi-task' || hasComponent(surface, A2UI_COMPONENT_MULTI_TASK_BOARD)) {
     return 'multi-task';
   }
@@ -1403,7 +1652,7 @@ function sourceOf(kind: HtmlHomeKind, surface: A2uiSurfaceState, isBusy: boolean
   if (kind === 'thinking' || isBusy && surface.status !== 'ready') {
     return 'pending';
   }
-  if (kind === 'travel' || kind === 'hotel' || kind === 'food' || kind === 'social' || kind === 'dynamic-tools' || kind === 'gmail' || kind === 'media' || kind === 'payment' || kind === 'aggregate-search' || kind === 'luckin' || kind === 'multi-task') {
+  if (kind === 'travel' || kind === 'hotel' || kind === 'food' || kind === 'social' || kind === 'dynamic-tools' || kind === 'gmail' || kind === 'media' || kind === 'payment' || kind === 'aggregate-search' || kind === 'luckin' || kind === 'multi-task' || kind === 'daily-brief') {
     return 'tool';
   }
   return 'model';
@@ -1707,6 +1956,11 @@ function firstDateText(...values: HtmlHomeTextValue[]): string {
 function summaryText(surface: A2uiSurfaceState): string {
   const summary = resolveData(surface, '/summary') as A2uiSummaryData;
   return summary === undefined || summary === null ? '' : textOf(summary.text);
+}
+
+function summaryToolName(surface: A2uiSurfaceState): string {
+  const summary = resolveData(surface, '/summary') as A2uiSummaryData;
+  return summary === undefined || summary === null ? '' : textOf(summary.toolName);
 }
 
 function aggregateVideoResult(item: AggregateSearchVideo): A2uiGenericToolResultData {

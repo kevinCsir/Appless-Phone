@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const rootDir = dirname(dirname(fileURLToPath(import.meta.url)));
-const envPath = join(rootDir, 'tool-gateway', '.env.local');
+const explicitEnvPath = process.env.AIPHONE_PROVIDER_ENV_PATH?.trim() || '';
+const envPath = explicitEnvPath.length > 0 ? resolve(explicitEnvPath) : join(rootDir, 'tool-gateway', '.env.local');
 const outPath = join(rootDir, 'entry', 'src', 'main', 'resources', 'rawfile', 'aiphone_provider_config.json');
 const composioOutPath = join(rootDir, 'entry', 'src', 'main', 'resources', 'rawfile', 'composio_config.json');
 const defaultComposioBaseUrl = 'https://backend.composio.dev/api/v3.1';
@@ -13,6 +14,7 @@ const providerKeys = [
   'TOOL_GATEWAY_API_KEY',
   'DASHSCOPE_API_KEY',
   'DEEPSEEK_API_KEY',
+  'DEEPSEEK_BASE_URL',
   'FLIGHT_MCP_KEY',
   'VARIFLIGHT_API_KEY',
   'X_VARIFLIGHT_KEY',
@@ -160,6 +162,7 @@ console.log(maskedStatus(config, [
   'TOOL_GATEWAY_API_KEY',
   'DASHSCOPE_API_KEY',
   'DEEPSEEK_API_KEY',
+  'DEEPSEEK_BASE_URL',
   'FLIGHT_MCP_KEY',
   'VARIFLIGHT_API_KEY',
   'ROLLINGGO_HOTEL_MCP_KEY',

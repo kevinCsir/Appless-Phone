@@ -81,9 +81,17 @@ import {
   HotelVisibility,
   MonotonicHotelIds
 } from '../main/ets/pages/A2uiHome/agent/MultiAgentHotelSupport';
-import { BimRouteDecision, BimTurnGate } from '../main/ets/pages/A2uiHome/bim/BimRuntime';
 
 const SEARCH_TEXT: string = '帮我找深圳酒店';
+function bimSnapshotPrompt(query: string): string {
+  return '[BIM_SNAPSHOTS]\n## 展会计划\n- bimId: bim-expo\n- version: 1\n' +
+    '- lifecycle: active\n\n展会行程待跟进。\n[/BIM_SNAPSHOTS]\n\n' + query;
+}
+function bimTravelSnapshotPrompt(query: string): string {
+  return '[BIM_SNAPSHOTS]\n## 展会计划\n- bimId: bim-expo\n- version: 1\n' +
+    '- lifecycle: active\n\n计划于2026年8月30日从深圳出发去杭州出差。\n' +
+    '[/BIM_SNAPSHOTS]\n\n' + query;
+}
 const SEARCH_INPUT: string = '{"originQuery":"帮我找深圳酒店","place":"深圳",' +
   '"placeType":"CITY","countryCode":"CN","checkInDate":"2026-08-15",' +
   '"stayNights":2,"adultCount":2,"childCount":0,"childAgeDetails":[],' +
@@ -139,6 +147,31 @@ const TWO_TOOL_DONE_DECISION: string = '{"personaId":"travel_companion","skillId
   '"dataTasks":[],"uiIntent":{"purpose":"travel.compare",' +
   '"preferredDensity":"comfortable","requiredSections":[]},' +
   '"answer":"出行结果已就绪","reasonCode":"two_tool_ready"}';
+const INCOMPLETE_TRAVEL_DECISION: string = '{"personaId":"travel_companion","skillId":"",' +
+  '"requestedCapabilityIds":["travel.search"],"roundAction":"execute","continuationMode":"complete",' +
+  '"dataTasks":[{"localId":"travel","goal":"查询下周去上海的综合出行方案",' +
+  '"allowedToolIds":["travel.search"],"toolId":"travel.search",' +
+  '"input":{"query":"下周去上海出差"},"required":true}],' +
+  '"uiIntent":{"purpose":"出行方案","preferredDensity":"medium",' +
+  '"requiredSections":["出行方案"]}}';
+const TRAVEL_REPAIR_CLARIFY_DECISION: string = '{"personaId":"travel_companion","skillId":"",' +
+  '"requestedCapabilityIds":["travel.search"],"roundAction":"clarify","continuationMode":"complete",' +
+  '"dataTasks":[],"uiIntent":{"purpose":"补充出行条件","preferredDensity":"comfortable",' +
+  '"requiredSections":[]},"answer":"你从哪座城市出发？另外，下周具体哪一天出发？"}';
+const CONTEXTUAL_TRAVEL_DECISION: string = '{"personaId":"travel_companion","skillId":"",' +
+  '"requestedCapabilityIds":["travel.search"],"roundAction":"execute","continuationMode":"complete",' +
+  '"dataTasks":[{"localId":"travel","goal":"查询深圳到上海的出行方案",' +
+  '"allowedToolIds":["travel.search"],"toolId":"travel.search",' +
+  '"input":{"query":"从深圳到上海，出发日期 2026-08-21，查询高铁和航班"},"required":true}],' +
+  '"uiIntent":{"purpose":"travel.search","preferredDensity":"comfortable",' +
+  '"requiredSections":["travel"]}}';
+const CONTEXTUAL_TRAVEL_FIELDS_DECISION: string = '{"personaId":"travel_companion","skillId":"",' +
+  '"requestedCapabilityIds":["travel.search"],"roundAction":"execute","continuationMode":"complete",' +
+  '"dataTasks":[{"localId":"travel","goal":"查询深圳到上海的出行方案",' +
+  '"allowedToolIds":["travel.search"],"toolId":"travel.search",' +
+  '"input":{"origin":"深圳","destination":"上海","departureDate":"2026-08-21"},"required":true}],' +
+  '"uiIntent":{"purpose":"travel.search","preferredDensity":"comfortable",' +
+  '"requiredSections":["travel"]}}';
 const TIME_DECISION: string = '{"personaId":"default_companion","skillId":"",' +
   '"requestedCapabilityIds":["time"],"roundAction":"execute","continuationMode":"complete",' +
   '"dataTasks":[{"localId":"current-time","goal":"查询当前设备时间",' +
@@ -171,7 +204,7 @@ const C02_QUERY_DECISION: string = '{"personaId":"travel_companion","skillId":""
   '"dataTasks":[{"localId":"travel","goal":"搜索从北京到上海的出行方案",' +
   '"allowedToolIds":["travel.search"],"toolId":"travel.search",' +
   '"input":{"origin":"北京","destination":"上海","departureDate":"2026-07-23",' +
-  '"query":"模型伪造的后天广州到深圳"},"required":true}],' +
+  '"query":"我明天要从北京去上海，帮我搜索出行方案"},"required":true}],' +
   '"uiIntent":{"purpose":"travel.search","preferredDensity":"comfortable",' +
   '"requiredSections":["travel"]}}';
 const C02_QUERY_DONE: string = '{"personaId":"travel_companion","skillId":"",' +
@@ -1210,8 +1243,9 @@ function canaryOptions(
       surfaces.push(surface);
       return true;
     },
-    onMemoryUpdate: (update: PersonaMemoryUpdateRequest): void => {
+    onMemoryUpdate: (update: PersonaMemoryUpdateRequest): boolean => {
       updates.push(update);
+      return true;
     },
     dataPlanner: new PassthroughDataPlanner(),
     dataExecutor: executor,
@@ -1418,7 +1452,7 @@ function currentGmailReplySurface(sequence: number): A2uiSurfaceState {
     rawPreview: ''
   };
   const parsed = parseA2uiJsonl(
-    gmailThreadResultsA2ui('gmail-reply-surface', 'gmail.thread.read', [result])
+    gmailThreadResultsA2ui('gmail-reply-surface', 'gmail.mail.search', [result])
   );
   const store = new A2uiSurfaceStore();
   parsed.envelopes.forEach((envelope) => store.apply(envelope));
@@ -1537,7 +1571,7 @@ export default function multiAgentCanaryRuntimeTest() {
       expect(legacyComponents[4].catalogFieldsJson === undefined).assertTrue();
     });
 
-    it('keeps the existing runtime behavior when turnGate is undefined', 0, async () => {
+    it('keeps the existing runtime behavior', 0, async () => {
       const options = canaryOptions(
         new QueueModel([ANSWER_DECISION]),
         new CanaryHotelExecutor(),
@@ -1545,50 +1579,12 @@ export default function multiAgentCanaryRuntimeTest() {
         [],
         []
       );
-      options.turnGate = undefined;
       const runtime = new MultiAgentCanaryRuntime(options);
 
       const outcome = await runtime.submit('你好', { text: '' }) as MultiAgentSettledOutcome;
 
       expect(outcome.status).assertEqual('success');
       expect(outcome.message).assertEqual('你好');
-      runtime.dispose();
-    });
-
-    it('binds the host generation before Leader can publish matched BIM work', 0, async () => {
-      const model = new QueueModel([HOTEL_DECISION]);
-      const executor = new CanaryHotelExecutor();
-      const bus = new TrackingBus();
-      const gate: BimTurnGate = new BimTurnGate();
-      const decision: BimRouteDecision = {
-        status: 'matched',
-        primaryBimId: 'bim-trip',
-        secondaryBimIds: [],
-        reason: 'matched'
-      };
-      gate.begin(41, Promise.resolve(decision));
-      const options = canaryOptions(
-        model,
-        executor,
-        new RecordingOpener(),
-        [],
-        [],
-        bus
-      );
-      options.turnGate = gate;
-      const runtime = new MultiAgentCanaryRuntime(options);
-
-      const outcome = await runtime.submit(SEARCH_TEXT, { text: '' }, 41) as MultiAgentSettledOutcome;
-      const errors = bus.messages.filter((message: AgentMessage): boolean =>
-        message.type === AgentMessageType.TASK_ERROR
-      );
-
-      expect(outcome.status).assertEqual('error');
-      expect(model.prompts.length).assertEqual(1);
-      expect(executor.calls.length).assertEqual(0);
-      expect(bus.count(AgentMessageType.TASK_CREATE_DATA)).assertEqual(0);
-      expect(errors.length).assertEqual(1);
-      expect((errors[0].payload as TaskErrorPayload).message).assertEqual('BIM_MAIN_TURN_NOT_ADMITTED');
       runtime.dispose();
     });
 
@@ -2047,7 +2043,7 @@ export default function multiAgentCanaryRuntimeTest() {
         bus
       ));
 
-      const outcome = await runtime.submit('比较北京到上海的出行和高铁', {
+      const outcome = await runtime.submit('比较明天北京到上海的出行和高铁', {
         text: ''
       }) as MultiAgentSettledOutcome;
 
@@ -2056,6 +2052,91 @@ export default function multiAgentCanaryRuntimeTest() {
       expect(executor.calls.sort().join(',')).assertEqual('train.search,travel.search');
       expect(bus.count(AgentMessageType.TASK_CREATE_DATA)).assertEqual(2);
       expect(model.prompts.length).assertEqual(1);
+      runtime.dispose();
+    });
+
+    it('repairs an incomplete travel execution into a model-authored clarification', 0, async () => {
+      const executor = new TwoToolExecutor();
+      const bus = new TrackingBus();
+      const model = new QueueModel([INCOMPLETE_TRAVEL_DECISION, TRAVEL_REPAIR_CLARIFY_DECISION]);
+      const runtime = new MultiAgentCanaryRuntime(canaryOptions(
+        model,
+        executor,
+        new RecordingOpener(),
+        [],
+        [],
+        bus
+      ));
+
+      const outcome = await runtime.submit(
+        '我下周要去上海出差', { text: '' }
+      ) as MultiAgentSettledOutcome;
+
+      expect(outcome.status).assertEqual('success');
+      expect(outcome.message).assertEqual('你从哪座城市出发？另外，下周具体哪一天出发？');
+      expect(executor.calls.length).assertEqual(0);
+      expect(bus.count(AgentMessageType.TASK_CREATE_DATA)).assertEqual(0);
+      expect(model.prompts.length).assertEqual(2);
+      runtime.dispose();
+    });
+
+    it('rejects a complete model travel query whose route and date are not grounded', 0, async () => {
+      const executor = new TwoToolExecutor();
+      const model = new QueueModel([CONTEXTUAL_TRAVEL_DECISION, TRAVEL_REPAIR_CLARIFY_DECISION]);
+      const options = canaryOptions(model, executor, new RecordingOpener(), [], []);
+      options.currentLocalDate = (): string => '2026-08-13';
+      const runtime = new MultiAgentCanaryRuntime(options);
+
+      const outcome = await runtime.submit(
+        '我下周要去上海出差', { text: '' }
+      ) as MultiAgentSettledOutcome;
+
+      expect(outcome.status).assertEqual('success');
+      expect(outcome.message).assertEqual('你从哪座城市出发？另外，下周具体哪一天出发？');
+      expect(executor.calls.length).assertEqual(0);
+      expect(model.prompts.length).assertEqual(2);
+      runtime.dispose();
+    });
+
+    it('rejects model travel fields whose route and date are not grounded', 0, async () => {
+      const executor = new TwoToolExecutor();
+      const model = new QueueModel([CONTEXTUAL_TRAVEL_FIELDS_DECISION, TRAVEL_REPAIR_CLARIFY_DECISION]);
+      const options = canaryOptions(model, executor, new RecordingOpener(), [], []);
+      options.currentLocalDate = (): string => '2026-08-13';
+      const runtime = new MultiAgentCanaryRuntime(options);
+
+      const outcome = await runtime.submit(
+        '我下周要去上海出差', { text: '' }
+      ) as MultiAgentSettledOutcome;
+
+      expect(outcome.status).assertEqual('success');
+      expect(executor.calls.length).assertEqual(0);
+      expect(model.prompts.length).assertEqual(2);
+      runtime.dispose();
+    });
+
+    it('repairs an incomplete travel execution when foreground BIM snapshots wrap the query', 0, async () => {
+      const executor = new TwoToolExecutor();
+      const bus = new TrackingBus();
+      const model = new QueueModel([INCOMPLETE_TRAVEL_DECISION, TRAVEL_REPAIR_CLARIFY_DECISION]);
+      const runtime = new MultiAgentCanaryRuntime(canaryOptions(
+        model,
+        executor,
+        new RecordingOpener(),
+        [],
+        [],
+        bus
+      ));
+
+      const outcome = await runtime.submit(
+        '[BIM_SNAPSHOTS]\n\n[/BIM_SNAPSHOTS]\n\n我下周要去上海出差', { text: '' }
+      ) as MultiAgentSettledOutcome;
+
+      expect(outcome.status).assertEqual('success');
+      expect(outcome.message).assertEqual('你从哪座城市出发？另外，下周具体哪一天出发？');
+      expect(executor.calls.length).assertEqual(0);
+      expect(bus.count(AgentMessageType.TASK_CREATE_DATA)).assertEqual(0);
+      expect(model.prompts.length).assertEqual(2);
       runtime.dispose();
     });
 
@@ -2073,7 +2154,7 @@ export default function multiAgentCanaryRuntimeTest() {
           bus
         ));
 
-        const pending = runtime.submit('比较北京到上海的航班和高铁', { text: '' });
+        const pending = runtime.submit('比较明天北京到上海的航班和高铁', { text: '' });
         await executor.bothStarted.promise;
 
         expect(executor.started.join(',')).assertEqual('flight.search,train.search');
@@ -2178,6 +2259,46 @@ export default function multiAgentCanaryRuntimeTest() {
         expect(dynamicArgs['qualifiedName']).assertEqual('NOTION_SEARCH');
         runtime.dispose();
       });
+
+    it('uses the model query produced from standard recent context before calling the provider', 0, async () => {
+      const calls: StructuredToolCallRecord[] = [];
+      const model = new QueueModel([CONTEXTUAL_TRAVEL_DECISION]);
+      const options = canaryOptions(
+        model,
+        new CanaryHotelExecutor(),
+        new RecordingOpener(),
+        [],
+        []
+      );
+      options.dataExecutor = undefined;
+      options.currentLocalDate = (): string => '2026-08-13';
+      options.structuredToolCall = async (
+        toolId: string,
+        prompt: string,
+        args: Object
+      ): Promise<DataResult> => {
+        calls.push({ toolId, prompt, args });
+        return canaryStructuredResult(toolId, 'travelOptions');
+      };
+      const runtime = new MultiAgentCanaryRuntime(options);
+
+      const outcome = await runtime.submit('深圳，8月21号', {
+        text: '深圳，8月21号',
+        recentMessages: [
+          { role: 'user', content: '我下周要去上海出差' },
+          { role: 'assistant', content: '你从哪座城市出发？另外，下周具体哪一天出发？' },
+          { role: 'user', content: '深圳，8月21号' }
+        ]
+      }) as MultiAgentSettledOutcome;
+
+      expect(outcome.status).assertEqual('success');
+      expect(calls.length).assertEqual(1);
+      expect(calls[0].toolId).assertEqual('travel.search');
+      expect(calls[0].prompt).assertEqual('从深圳到上海，出发日期 2026-08-21，查询高铁和航班');
+      const args = calls[0].args as Record<string, Object | string | number | boolean>;
+      expect(args['query']).assertEqual('从深圳到上海，出发日期 2026-08-21，查询高铁和航班');
+      runtime.dispose();
+    });
 
     it('executes C02 travel Data only once without opening a repeat round', 0, async () => {
       const model = new QueueModel([C02_QUERY_DECISION]);
@@ -2561,9 +2682,7 @@ export default function multiAgentCanaryRuntimeTest() {
         [],
         []
       ));
-      const bimPrompt = '[BIM_CONTEXT]\nContinue the primary matter.\n' +
-        '{"primary":{"id":"bim-trip","title":"东京旅行","contextJson":"{}",' +
-        '"appliedSurfaceDigest":{}},"secondary":[],"query":"' + SEARCH_TEXT + '"}';
+      const bimPrompt = bimSnapshotPrompt(SEARCH_TEXT);
 
       const outcome = await runtime.submit(
         bimPrompt, { text: SEARCH_TEXT }
@@ -2597,9 +2716,7 @@ export default function multiAgentCanaryRuntimeTest() {
       };
       const runtime = new MultiAgentCanaryRuntime(options);
       const originalQuery = '帮我查去展会的机票';
-      const bimPrompt = '[BIM_CONTEXT]\nContinue the primary matter.\n' +
-        '{"primary":{"id":"bim-expo","title":"展会计划","contextJson":"{}",' +
-        '"appliedSurfaceDigest":{}},"secondary":[],"query":"' + originalQuery + '"}';
+      const bimPrompt = bimTravelSnapshotPrompt(originalQuery);
 
       const outcome = await runtime.submit(bimPrompt, { text: originalQuery }) as MultiAgentSettledOutcome;
 
@@ -2632,9 +2749,7 @@ export default function multiAgentCanaryRuntimeTest() {
       };
       const runtime = new MultiAgentCanaryRuntime(options);
       const originalQuery = F01_QUERY;
-      const bimPrompt = '[BIM_CONTEXT]\nContinue the primary matter.\n' +
-        '{"primary":{"id":"bim-trip","title":"东京旅行","contextJson":"{}",' +
-        '"appliedSurfaceDigest":{}},"secondary":[],"query":"' + originalQuery + '"}';
+      const bimPrompt = bimSnapshotPrompt(originalQuery);
 
       const outcome = await runtime.submit(
         bimPrompt, { text: originalQuery }
@@ -2668,9 +2783,7 @@ export default function multiAgentCanaryRuntimeTest() {
       };
       const runtime = new MultiAgentCanaryRuntime(options);
       const originalQuery = '帮我查从深圳出发去展会的机票';
-      const bimPrompt = '[BIM_CONTEXT]\nContinue the primary matter.\n' +
-        '{"primary":{"id":"bim-expo","title":"展会计划","contextJson":"{}",' +
-        '"appliedSurfaceDigest":{}},"secondary":[],"query":"' + originalQuery + '"}';
+      const bimPrompt = bimTravelSnapshotPrompt(originalQuery);
 
       const outcome = await runtime.submit(
         bimPrompt, { text: originalQuery }
@@ -2705,9 +2818,7 @@ export default function multiAgentCanaryRuntimeTest() {
       };
       const runtime = new MultiAgentCanaryRuntime(options);
       const originalQuery = '帮我查去展会的高铁';
-      const bimPrompt = '[BIM_CONTEXT]\nContinue the primary matter.\n' +
-        '{"primary":{"id":"bim-expo","title":"展会计划","contextJson":"{}",' +
-        '"appliedSurfaceDigest":{}},"secondary":[],"query":"' + originalQuery + '"}';
+      const bimPrompt = bimTravelSnapshotPrompt(originalQuery);
 
       const outcome = await runtime.submit(bimPrompt, { text: originalQuery }) as MultiAgentSettledOutcome;
 
@@ -2739,9 +2850,7 @@ export default function multiAgentCanaryRuntimeTest() {
         return canaryStructuredResult('flight.search', 'flights');
       };
       const runtime = new MultiAgentCanaryRuntime(options);
-      const bimPrompt = '[BIM_CONTEXT]\nContinue the primary matter.\n' +
-        '{"primary":{"id":"bim-expo","title":"展会计划","contextJson":"{}",' +
-        '"appliedSurfaceDigest":{}},"secondary":[],"query":"帮我查去展会的机票"}';
+      const bimPrompt = bimSnapshotPrompt('帮我查去展会的机票');
 
       const outcome = await runtime.submit(
         bimPrompt, { text: '帮我查去展会的机票' }
@@ -2772,9 +2881,7 @@ export default function multiAgentCanaryRuntimeTest() {
       };
       const runtime = new MultiAgentCanaryRuntime(options);
       const originalQuery = '帮我查从北京到上海 2026年8月的航班';
-      const bimPrompt = '[BIM_CONTEXT]\nContinue the primary matter.\n' +
-        '{"primary":{"id":"bim-expo","title":"展会计划","contextJson":"{}",' +
-        '"appliedSurfaceDigest":{}},"secondary":[],"query":"' + originalQuery + '"}';
+      const bimPrompt = bimSnapshotPrompt(originalQuery);
 
       const outcome = await runtime.submit(
         bimPrompt, { text: originalQuery }
@@ -2785,7 +2892,7 @@ export default function multiAgentCanaryRuntimeTest() {
       runtime.dispose();
     });
 
-    it('projects Luckin order tools only for explicit order or status intent', 0, async () => {
+    it('always projects Luckin order tool descriptions for model selection', 0, async () => {
       const priceModel = new QueueModel([ANSWER_DECISION]);
       const priceRuntime = new MultiAgentCanaryRuntime(canaryOptions(
         priceModel,
@@ -2800,15 +2907,10 @@ export default function multiAgentCanaryRuntimeTest() {
         '\nPersonas: ', priceCatalogStart
       );
       const priceCatalog = priceModel.prompts[0].substring(priceCatalogStart, priceCatalogEnd);
-      const pricePersonasStart = priceModel.prompts[0].indexOf('\nPersonas: ');
-      const pricePersonas = priceModel.prompts[0].substring(pricePersonasStart);
       expect(priceCatalog.indexOf('"toolId":"food.search"')).assertLarger(-1);
-      expect(priceCatalog.indexOf('"toolId":"luckin.order.preview"')).assertEqual(-1);
-      expect(priceCatalog.indexOf('"toolId":"luckin.order.create"')).assertEqual(-1);
-      expect(priceCatalog.indexOf('"toolId":"luckin.order.status"')).assertEqual(-1);
-      expect(pricePersonas.indexOf('luckin.order.preview')).assertEqual(-1);
-      expect(pricePersonas.indexOf('luckin.order.create')).assertEqual(-1);
-      expect(pricePersonas.indexOf('luckin.order.status')).assertEqual(-1);
+      expect(priceCatalog.indexOf('"toolId":"luckin.order.preview"')).assertLarger(-1);
+      expect(priceCatalog.indexOf('"toolId":"luckin.order.create"')).assertLarger(-1);
+      expect(priceCatalog.indexOf('"toolId":"luckin.order.status"')).assertLarger(-1);
       priceRuntime.dispose();
 
       const orderModel = new QueueModel([ANSWER_DECISION]);
@@ -2844,7 +2946,7 @@ export default function multiAgentCanaryRuntimeTest() {
         '\nPersonas: ', statusCatalogStart
       );
       const statusCatalog = statusModel.prompts[0].substring(statusCatalogStart, statusCatalogEnd);
-      expect(statusCatalog.indexOf('"toolId":"luckin.order.preview"')).assertEqual(-1);
+      expect(statusCatalog.indexOf('"toolId":"luckin.order.preview"')).assertLarger(-1);
       expect(statusCatalog.indexOf('"toolId":"luckin.order.create"')).assertLarger(-1);
       expect(statusCatalog.indexOf('"toolId":"luckin.order.status"')).assertLarger(-1);
       statusRuntime.dispose();
@@ -3478,6 +3580,77 @@ export default function multiAgentCanaryRuntimeTest() {
       runtime.dispose();
     });
 
+    it('does not publish memory success when durable persistence fails', 0, async () => {
+      const surfaces: A2uiSurfaceState[] = [];
+      const bus = new TrackingBus();
+      const options = canaryOptions(
+        new QueueModel([MEMORY_DECISION]),
+        new CanaryHotelExecutor(),
+        new RecordingOpener(),
+        surfaces,
+        [],
+        bus
+      );
+      options.onMemoryUpdate = (_update: PersonaMemoryUpdateRequest): boolean => false;
+      const runtime = new MultiAgentCanaryRuntime(options);
+
+      await runtime.submit('我只喝瑞幸咖啡', {
+        text: '',
+        previousPersonaId: 'food_companion'
+      });
+      const actionResults = bus.messages.filter((message: AgentMessage): boolean =>
+        message.type === AgentMessageType.ACTION_RESULT);
+      const terminal = actionResults[0].payload as ActionResultPayload;
+
+      expect(surfaces.length).assertEqual(0);
+      expect(terminal.status).assertEqual('error');
+      expect(terminal.errorCode).assertEqual('MEMORY_UPDATE_PERSIST_FAILED');
+      runtime.dispose();
+    });
+
+    it('routes stable content recommendation memory to the entertainment companion', 0, async () => {
+      const updates: PersonaMemoryUpdateRequest[] = [];
+      const runtime = new MultiAgentCanaryRuntime(canaryOptions(
+        new QueueModel([MEMORY_DECISION]),
+        new CanaryHotelExecutor(),
+        new RecordingOpener(),
+        [],
+        updates
+      ));
+
+      await runtime.submit('以后多推荐 AI 视频', {
+        text: '',
+        previousPersonaId: 'food_companion'
+      });
+
+      expect(updates.length).assertEqual(1);
+      expect(updates[0].personaId).assertEqual('entertainment_companion');
+      runtime.dispose();
+    });
+
+    it('keeps BIM snapshots out of stable content recommendation memory', 0, async () => {
+      const updates: PersonaMemoryUpdateRequest[] = [];
+      const runtime = new MultiAgentCanaryRuntime(canaryOptions(
+        new QueueModel([MEMORY_DECISION]),
+        new CanaryHotelExecutor(),
+        new RecordingOpener(),
+        [],
+        updates
+      ));
+
+      const prompt = bimSnapshotPrompt('以后多推荐 AI 视频');
+      await runtime.submit(prompt, {
+        text: prompt,
+        previousPersonaId: 'food_companion'
+      });
+
+      expect(updates.length).assertEqual(1);
+      expect(updates[0].personaId).assertEqual('entertainment_companion');
+      expect(updates[0].summary).assertEqual('以后多推荐 AI 视频');
+      expect(updates[0].memoryText).assertEqual('以后多推荐 AI 视频');
+      runtime.dispose();
+    });
+
     it('keeps a reentrant virtual memory surface on its captured host generation', 0, async () => {
       const surfaceGenerations: number[] = [];
       const updateGenerations: number[] = [];
@@ -3497,12 +3670,13 @@ export default function multiAgentCanaryRuntimeTest() {
       options.onMemoryUpdate = (
         _update: PersonaMemoryUpdateRequest,
         runtimeGeneration: number
-      ): void => {
+      ): boolean => {
         updateGenerations.push(runtimeGeneration);
         if (newerTurn === null) {
           newerTurn = runtime.submit('newer turn', { text: '' }, 202) as
             Promise<MultiAgentSettledOutcome>;
         }
+        return true;
       };
       runtime = new MultiAgentCanaryRuntime(options);
 
@@ -3597,7 +3771,7 @@ export default function multiAgentCanaryRuntimeTest() {
       const runtime = new MultiAgentCanaryRuntime(options);
 
       const outcome = await runtime.submit(
-        '查询北京到上海的出行方案并打开世界杯页面',
+        '查询明天北京到上海的出行方案并打开世界杯页面',
         { text: '' },
         1
       ) as MultiAgentSettledOutcome;
@@ -4581,10 +4755,11 @@ export default function multiAgentCanaryRuntimeTest() {
         [],
         updates
       );
-      options.onMemoryUpdate = (update: PersonaMemoryUpdateRequest): void => {
+      options.onMemoryUpdate = (update: PersonaMemoryUpdateRequest): boolean => {
         updates.push(update);
         const pack = personaPackForId(update.personaId);
         updatePersonaPackText(update.personaId, pack.soul, update.memoryText);
+        return true;
       };
       const runtime = new MultiAgentCanaryRuntime(options);
       try {
@@ -4891,7 +5066,7 @@ export default function multiAgentCanaryRuntimeTest() {
       runtime.dispose();
     });
 
-    it('does not block Gmail send from the exact current reply surface', 0, async () => {
+    it('does not block Gmail send from the exact current search result reply surface', 0, async () => {
       const calls: RecordedPageAction[] = [];
       const bus = new TrackingBus();
       const surface = currentGmailReplySurface(29);

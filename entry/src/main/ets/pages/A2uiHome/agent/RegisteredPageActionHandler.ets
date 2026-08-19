@@ -30,6 +30,11 @@ interface ExperiencePageActionOutput {
   status: string;
 }
 
+interface DailyBriefPageActionOutput {
+  actionId: string;
+  status: string;
+}
+
 interface RegisteredToolPageActionOutput {
   actionId: string;
   pageActionId: string;
@@ -318,13 +323,24 @@ function providerError(model: A2uiRuntimeDataModel): string {
   return '';
 }
 
+function looksLikeToolIdPrompt(value: string): boolean {
+  return /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/.test(value.trim());
+}
+
 function promptFor(actionId: string, pageActionId: string, args: Object): string {
   const values = args as HandlerArgRecord;
   const originalQuery = values['originalQuery'];
   if (typeof originalQuery === 'string' && originalQuery.trim().length > 0) {
     return originalQuery.trim();
   }
-  return pageActionId.length > 0 ? pageActionId : actionId;
+  const previewPrompt = values['previewPrompt'];
+  if (typeof previewPrompt === 'string' && previewPrompt.trim().length > 0) {
+    return previewPrompt.trim();
+  }
+  if (pageActionId.length > 0 && !looksLikeToolIdPrompt(pageActionId)) {
+    return pageActionId;
+  }
+  return actionId;
 }
 
 export class RegisteredPageActionHandler {
@@ -346,7 +362,8 @@ export class RegisteredPageActionHandler {
         message: 'Registered page operation identity is missing.'
       };
     }
-    if (actionId !== 'worldcup.open' && actionId !== 'movie.open' && !pageRoute(actionId)) {
+    if (actionId !== 'worldcup.open' && actionId !== 'movie.open' &&
+      actionId !== 'daily.brief.open' && !pageRoute(actionId)) {
       return {
         status: 'error',
         errorCode: 'ACTION_PAGE_ROUTE_UNSUPPORTED',
@@ -375,6 +392,13 @@ export class RegisteredPageActionHandler {
         };
       }
     }
+    if (actionId === 'daily.brief.open' && context.pageActionId !== 'daily.brief.open') {
+      return {
+        status: 'error',
+        errorCode: 'ACTION_PAGE_ARGS_INVALID',
+        message: 'Daily brief page action identity is invalid.'
+      };
+    }
     const invocation = await this.invoker.invoke(
       actionId,
       promptFor(actionId, context.pageActionId, args),
@@ -401,6 +425,13 @@ export class RegisteredPageActionHandler {
       const output: ExperiencePageActionOutput = {
         actionId,
         route: 'pages/A2uiHome/MovieDemo',
+        status: 'opened'
+      };
+      return { status: 'success', output };
+    }
+    if (actionId === 'daily.brief.open') {
+      const output: DailyBriefPageActionOutput = {
+        actionId,
         status: 'opened'
       };
       return { status: 'success', output };

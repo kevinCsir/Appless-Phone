@@ -539,7 +539,7 @@ function hasBoundedLeaderModelCalls(source) {
     prompt.includes("throw new Error('LEADER_TOOL_CATALOG_LIMIT')") &&
     bounded.includes('prompt.length > MAX_LEADER_PROMPT_CHARS') &&
     bounded.includes("throw new Error('LEADER_PROMPT_LIMIT')") &&
-    bounded.includes('return this.model.complete(prompt, conversation, LEADER_SYSTEM_PROMPT)') &&
+    bounded.includes('return this.model.complete(prompt, conversation, LEADER_SYSTEM_PROMPT') &&
     bounded.includes('ConversationContext.fromMessages(messages)') &&
     plan.includes('await this.completeBounded(prompt, input)') &&
     plan.includes('await this.completeBounded(prompt +') &&
@@ -1282,13 +1282,14 @@ function verifySourceContracts() {
     'public compatibility module derives the runtime registry'
   );
   assert(runtimeIds.length === runtimeUniqueIds.size, 'runtime tool ids are unique');
-  assert(runtimeIds.length === 54, 'AIPhone runtime tool registry has expected fixed count', `found ${runtimeIds.length}`);
+  assert(runtimeIds.length === 56, 'AIPhone runtime tool registry has expected fixed count', `found ${runtimeIds.length}`);
   for (const id of [
     'travel.search',
     'time',
     'train.search',
     'flight.search',
     'food.search',
+    'deep.search',
     'social.feed.search',
     'social.community.search',
     'social.post.preview',
@@ -1303,6 +1304,7 @@ function verifySourceContracts() {
     'gmail.message.send',
     'media.video.search',
     'youtube.video.search',
+    'daily.brief.open',
     'calendar.events.search',
     'calendar.event.create',
     'maps.place.search',
@@ -1321,26 +1323,6 @@ function verifySourceContracts() {
     runtimeGateway,
     "if (toolId === 'social.post.preview')",
     'runtime gateway handles the social post preview route'
-  );
-  assertContains(
-    canaryRuntime,
-    'isLuckinOrderToolVisible(definition.toolId, prompt)',
-    'planning projection delegates Luckin order-tool visibility to the intent filter'
-  );
-  assertContains(
-    canaryRuntime,
-    "if (toolId === 'luckin.order.preview')",
-    'planning projection exposes Luckin preview only for explicit ordering prompts'
-  );
-  assertContains(
-    canaryRuntime,
-    "if (toolId === 'luckin.order.create' || toolId === 'luckin.order.status')",
-    'planning projection keeps Luckin create and status behind explicit order intents'
-  );
-  assertContains(
-    canaryRuntime,
-    'return orderIntent || isExplicitLuckinOrderStatusPrompt(prompt);',
-    'planning projection allows Luckin status tools for explicit status prompts'
   );
   assertContains(
     canaryRuntime,

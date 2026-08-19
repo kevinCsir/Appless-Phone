@@ -8,6 +8,8 @@ import {
   A2uiEnvelope,
   A2uiFlightData,
   A2uiFoodData,
+  A2uiFoodSearchArea,
+  A2uiFoodSearchContext,
   A2uiGenericToolResultData,
   A2uiLabelValueData,
   A2uiSummaryData,
@@ -117,7 +119,12 @@ import {
   parseHotelSearchRequest
 } from './HotelToolTypes';
 import { callGmailApiTool, gmailMailDetailFromComposioObservation, gmailMailDetailFromPayload, readGmailMailDetail } from './GmailApiClient';
-import { callYouTubeVideoSearch, defaultYouTubeSearchOptions, YouTubeSearchOptions } from './YouTubeApiClient';
+import {
+  callYouTubeMostPopularVideos,
+  callYouTubeVideoSearch,
+  defaultYouTubeSearchOptions,
+  YouTubeSearchOptions
+} from './YouTubeApiClient';
 import { callMediaVideoSearch, mediaVideoQueryFromArgs } from './MediaVideoClient';
 import { mediaVideoPlaybackUrl, mediaVideoStructuredDataA2ui } from './MediaVideoToolA2ui';
 import {
@@ -177,8 +184,26 @@ import {
   refreshComposioConnections
 } from './ComposioDynamicBackend';
 import { aggregateSearchA2ui, aggregateSearchA2uiRenderState } from './AggregateSearchA2ui';
-import { AggregateSearchPartialObserver, callAggregateSearch } from './AggregateSearchClient';
-import { AggregateSearchResult, AggregateSearchSourceStatus } from './AggregateSearchTypes';
+import {
+  AggregateSearchBatchObserver,
+  AggregateSearchPartialObserver,
+  aggregateMediaCandidates,
+  aggregateVideoSourceBatchFromDynamicResults,
+  callAggregateSearch,
+  callAggregateSearchContinuation
+} from './AggregateSearchClient';
+import {
+  AggregateSearchResult,
+  AggregateSearchSource,
+  AggregateSearchSourceBatch,
+  AggregateSearchSourceStatus
+} from './AggregateSearchTypes';
+import { normalizeFoodPhoneNumber } from './FoodNavigation';
+import {
+  WaterfallCandidate,
+  WaterfallInterestRecallRequest,
+  WaterfallLoadRequest
+} from './WaterfallAnythingCore';
 import { discoverDynamicToolForPrompt, DynamicToolDiscoveryResult } from './DynamicToolDiscovery';
 import { DynamicToolRegistry, isBuiltInToolId, isUnsafeMcpTool, selectBestRemoteTransport } from './DynamicToolRegistry';
 import { sampleManifestForToolId, sampleRecordsForDiscovery } from './DynamicToolSamples';
@@ -789,7 +814,7 @@ interface FlightProviderPayload extends FlightProviderData {
   status?: string | number;
 }
 
-interface AmapPoi {
+export interface AmapPoi {
   name?: string;
   type?: string;
   address?: string;
@@ -798,6 +823,18 @@ interface AmapPoi {
   pname?: string;
   cityname?: string;
   adname?: string;
+  tel?: string;
+  business?: AmapPoiBusiness;
+}
+
+interface AmapPoiBusiness {
+  business_area?: string;
+  opentime_today?: string;
+  opentime_week?: string;
+  rating?: string | number;
+  cost?: string | number;
+  tag?: string;
+  tel?: string;
 }
 
 interface AmapGeocode {
@@ -868,6 +905,8 @@ export interface TencentMapPlace {
   _distance?: string | number;
   distance?: string | number;
   location?: FoodMapPoint;
+  tel?: string;
+  telephone?: string;
 }
 
 interface TencentMapPayload {
@@ -880,6 +919,10 @@ export interface BaiduPlaceDetailInfo {
   tag?: string;
   distance?: string | number;
   overall_rating?: string | number;
+  taste_rating?: string | number;
+  service_rating?: string | number;
+  environment_rating?: string | number;
+  shop_hours?: string;
   price?: string | number;
 }
 
@@ -888,6 +931,7 @@ export interface BaiduPlace {
   address?: string;
   location?: FoodMapPoint;
   detail_info?: BaiduPlaceDetailInfo;
+  telephone?: string;
 }
 
 interface BaiduPlacePayload {
@@ -926,7 +970,8 @@ export interface FoodProviderPartialSnapshot {
 
 interface FoodProviderAdapter {
   name: string;
-  search(prompt: string, query: FoodQuery, keyword: string, location: string, locationSource: string): Promise<FoodProviderResult>;
+  search(prompt: string, query: FoodQuery, keyword: string, location: string, locationSource: string,
+    radiusMeters: string): Promise<FoodProviderResult>;
 }
 
 export interface MeituanUnionBrandInfo {
@@ -1306,7 +1351,7 @@ interface LuckinProductAttr {
 interface LuckinProductSubAttr {
   attributeId?: number;
   attributeName?: string;
-  selected?: boolean | null;
+  selected?: boolean | number | string | null;
   canSelected?: number | null;
   price?: number | null;
 }
@@ -1585,9 +1630,13 @@ interface RideRouteArgs {
   origin?: ToolArgValue;
   from?: ToolArgValue;
   start?: ToolArgValue;
+  originLocation?: ToolArgValue;
+  fromLocation?: ToolArgValue;
   destination?: ToolArgValue;
   to?: ToolArgValue;
   end?: ToolArgValue;
+  destinationLocation?: ToolArgValue;
+  toLocation?: ToolArgValue;
   city?: ToolArgValue;
 }
 
@@ -3002,6 +3051,8 @@ interface RideRoute {
   origin: string;
   destination: string;
   city: string;
+  originLocation: string;
+  destinationLocation: string;
 }
 
 interface RidePoint {
@@ -3041,10 +3092,14 @@ function rideRouteFromArgs(args: Object | null): RideRoute {
   const origin = rideArgText(parsed, ['origin', 'from', 'start']);
   const destination = rideArgText(parsed, ['destination', 'to', 'end']);
   const city = rideArgText(parsed, ['city']);
+  const originLocation = rideArgText(parsed, ['originLocation', 'fromLocation']);
+  const destinationLocation = rideArgText(parsed, ['destinationLocation', 'toLocation']);
   return {
     origin: origin,
     destination: destination,
-    city: city
+    city: city,
+    originLocation: originLocation,
+    destinationLocation: destinationLocation
   };
 }
 
@@ -3317,6 +3372,45 @@ function ridePointFromSearchPayload(name: string, payload: Object): RidePoint {
   };
 }
 
+function ridePointFromLocation(name: string, location: string, city: string): RidePoint | null {
+  const normalized = location.trim();
+  const parts = normalized.split(',');
+  if (parts.length !== 2) return null;
+  const longitude = Number(parts[0]);
+  const latitude = Number(parts[1]);
+  if (!Number.isFinite(longitude) || !Number.isFinite(latitude) ||
+    longitude < -180 || longitude > 180 || latitude < -90 || latitude > 90) {
+    return null;
+  }
+  return {
+    name,
+    lng: longitude.toString(),
+    lat: latitude.toString(),
+    location: longitude.toString() + ',' + latitude.toString(),
+    city: city
+  };
+}
+
+function rideAmapResolutionTargets(
+  originPoint: RidePoint | null,
+  destinationPoint: RidePoint | null
+): string[] {
+  const targets: string[] = [];
+  if (originPoint === null) targets.push('origin');
+  if (destinationPoint === null) targets.push('destination');
+  return targets;
+}
+
+export function rideAmapResolutionTargetsForTest(
+  originLocation: string,
+  destinationLocation: string
+): string[] {
+  return rideAmapResolutionTargets(
+    ridePointFromLocation('起点', originLocation, '深圳'),
+    ridePointFromLocation('终点', destinationLocation, '深圳')
+  );
+}
+
 function ridePointFromAmapResolution(name: string, resolution: AmapLocationResolution): RidePoint {
   const parts = resolution.location.split(',');
   return {
@@ -3356,8 +3450,9 @@ function rideKnownMockLocation(name: string, fallback: string): string {
   return fallback;
 }
 
-function rideMockPoint(name: string, fallbackLocation: string): RidePoint {
-  const location = rideKnownMockLocation(name, fallbackLocation);
+function rideMockPoint(name: string, fallbackLocation: string, preferredLocation: string = ''): RidePoint {
+  const direct = ridePointFromLocation(name, preferredLocation, '深圳');
+  const location = direct === null ? rideKnownMockLocation(name, fallbackLocation) : direct.location;
   const parts = location.split(',');
   return {
     name: name,
@@ -4205,8 +4300,8 @@ async function callMockRideEstimateResults(toolId: string, args: Object | null):
       rideErrorResult('模拟打车', toolId, '需要补充起点和终点', '请同时提供打车起点和终点；模拟数据也需要明确路线。')
     ];
   }
-  const originPoint = rideMockPoint(route.origin, '114.066231,22.657805');
-  const destinationPoint = rideMockPoint(route.destination, '114.060432,22.548829');
+  const originPoint = rideMockPoint(route.origin, '114.066231,22.657805', route.originLocation);
+  const destinationPoint = rideMockPoint(route.destination, '114.060432,22.548829', route.destinationLocation);
   const traceId = rideMockTraceId(originPoint, destinationPoint);
   const estimatePayload = rideMockEstimatePayload(traceId);
   const results: DynamicGenericToolResult[] = [
@@ -4295,10 +4390,19 @@ async function callStructuredRideReadResults(toolId: string, args: Object | null
   let amapLink = '';
   let didiUrl = '';
   let amapResolveError = '';
-  if (amapGeocodeKey.length > 0) {
+  originPoint = ridePointFromLocation(route.origin, route.originLocation, route.city);
+  destinationPoint = ridePointFromLocation(route.destination, route.destinationLocation, route.city);
+  amapOriginPoint = originPoint;
+  amapDestinationPoint = destinationPoint;
+  const amapResolutionTargets = rideAmapResolutionTargets(amapOriginPoint, amapDestinationPoint);
+  if (amapGeocodeKey.length > 0 && amapResolutionTargets.length > 0) {
     try {
-      amapOriginPoint = await resolveAmapRidePoint(route.origin, route.city, amapGeocodeKey);
-      amapDestinationPoint = await resolveAmapRidePoint(route.destination, route.city, amapGeocodeKey);
+      if (amapResolutionTargets.indexOf('origin') >= 0) {
+        amapOriginPoint = await resolveAmapRidePoint(route.origin, route.city, amapGeocodeKey);
+      }
+      if (amapResolutionTargets.indexOf('destination') >= 0) {
+        amapDestinationPoint = await resolveAmapRidePoint(route.destination, route.city, amapGeocodeKey);
+      }
     } catch (error) {
       amapResolveError = describeThrown(error);
     }
@@ -4317,8 +4421,12 @@ async function callStructuredRideReadResults(toolId: string, args: Object | null
   } else {
     try {
       didiUrl = rideDidiQueryMcpUrl();
-      originPoint = await resolveDidiRidePoint(didiUrl, route.origin, didiCity);
-      destinationPoint = await resolveDidiRidePoint(didiUrl, route.destination, didiCity);
+      if (originPoint === null) {
+        originPoint = await resolveDidiRidePoint(didiUrl, route.origin, didiCity);
+      }
+      if (destinationPoint === null) {
+        destinationPoint = await resolveDidiRidePoint(didiUrl, route.destination, didiCity);
+      }
     } catch (error) {
       results.push(rideErrorResult('滴滴', toolId, '滴滴 MCP 调用失败', describeThrown(error)));
     }
@@ -6123,7 +6231,10 @@ function flightToTravelOption(item: A2uiFlightData, index: number): A2uiTravelOp
     price: item.price,
     availability: '',
     status: item.status.length > 0 ? item.status : '计划',
-    detail: item.airline
+    detail: item.airline,
+    travelDate: item.travelDate,
+    fromCode: item.depCode,
+    toCode: item.arrCode
   };
 }
 
@@ -6221,6 +6332,13 @@ function foodDataSignature(foods: A2uiFoodData[]): string {
   return JSON.stringify(foods);
 }
 
+function foodHoursHitCount(foods: A2uiFoodData[]): number {
+  return foods.filter((food: A2uiFoodData): boolean =>
+    (food.openHoursToday !== undefined && food.openHoursToday.trim().length > 0) ||
+    (food.openHoursWeek !== undefined && food.openHoursWeek.trim().length > 0)
+  ).length;
+}
+
 function foodRowsSignature(rows: A2uiLabelValueData[]): string {
   return JSON.stringify(rows);
 }
@@ -6238,7 +6356,13 @@ function foodSummarySignature(summary: A2uiSummaryData): string {
   return summary.text + '|' + summary.toolName + '|' + summary.dataLabel + '|' + summary.count.toString();
 }
 
-export function foodA2uiRenderState(surfaceId: string, title: string, body: string, summaryText: string, foods: A2uiFoodData[], rows: A2uiLabelValueData[] = [], status: string = 'ready'): A2uiPartialRenderState {
+export function foodA2uiRenderState(surfaceId: string, title: string, body: string, summaryText: string,
+  foods: A2uiFoodData[], rows: A2uiLabelValueData[] = [], status: string = 'ready',
+  foodSearchContext?: A2uiFoodSearchContext): A2uiPartialRenderState {
+  aiLogInfo('[AIPhone][FoodHoursA2uiModel] surfaceId=' + surfaceId +
+    ' foods=' + foods.length.toString() +
+    ' hoursHits=' + foodHoursHitCount(foods).toString() +
+    ' status=' + status);
   const components: A2uiComponent[] = [];
   components.push({
     id: 'root',
@@ -6298,6 +6422,13 @@ export function foodA2uiRenderState(surfaceId: string, title: string, body: stri
       signature: foodSummarySignature(summary)
     }
   ];
+  if (foodSearchContext !== undefined) {
+    dataPatches.push({
+      path: '/foodSearchContext',
+      value: foodSearchContext,
+      signature: JSON.stringify(foodSearchContext)
+    });
+  }
   return {
     surfaceId: surfaceId,
     root: 'root',
@@ -6313,7 +6444,7 @@ export function foodA2uiRenderState(surfaceId: string, title: string, body: stri
 
 export function foodStructuredDataA2ui(surfaceId: string, data: FoodStructuredData): string {
   return planA2uiPartialUpdate(null, foodA2uiRenderState(
-    surfaceId, data.title, data.body, data.summary, data.foods, data.rows, 'ready'
+    surfaceId, data.title, data.body, data.summary, data.foods, data.rows, 'ready', data.foodSearchContext
   )).jsonl;
 }
 
@@ -6467,6 +6598,9 @@ function parseFlightTextToA2ui(text: string): A2uiFlightData {
     airline: airline,
     dep: routeMatch === null ? '' : routeMatch[1],
     arr: routeMatch === null ? '' : routeMatch[2],
+    depCode: routeMatch !== null && routeMatch[1].length === 3 ? routeMatch[1] : '',
+    arrCode: routeMatch !== null && routeMatch[2].length === 3 ? routeMatch[2] : '',
+    travelDate: timeMatch === null ? '' : timeMatch[1].substring(0, 10),
     depTime: timeMatch === null ? '' : timeMatch[1],
     arrTime: timeMatch === null ? '' : timeMatch[2],
     status: statusMatch === null ? '计划' : statusMatch[1],
@@ -6487,12 +6621,19 @@ export function flightRecordForA2ui(item: FlightProviderRecord | string): A2uiFl
     return parseFlightTextToA2ui(trimmed);
   }
   const flightNo = firstText([item.FlightNo, item.flightNo, item.flight_no, item.fnum, item.Fnum, item.flightNumber, item.flight_number, item.flight]);
+  const departureTime = firstText([item.FlightDeptimePlanDate, item.FlightDeptimeReadyDate,
+    item.FlightDeptimeDate, item.FlightDepTime, item.depTime, item.dep_time, item.departureTime,
+    item.std, item.scheduleDepTime]);
+  const dateMatch = /\d{4}-\d{2}-\d{2}/.exec(departureTime);
   return {
     flightNo: flightNo,
     airline: firstText([item.FlightCompany, item.airline, item.airlineName, item.AirlineName, item.carrier, item.carrierName]),
     dep: firstText([item.FlightDepAirport, item.depAirportName, item.depAirport, item.departureAirport, item.departure, item.dep, item.dep_city, item.FlightDepcode]),
     arr: firstText([item.FlightArrAirport, item.arrAirportName, item.arrAirport, item.arrivalAirport, item.arrival, item.arr, item.arr_city, item.FlightArrcode]),
-    depTime: firstText([item.FlightDeptimePlanDate, item.FlightDeptimeReadyDate, item.FlightDeptimeDate, item.FlightDepTime, item.depTime, item.dep_time, item.departureTime, item.std, item.scheduleDepTime]),
+    depCode: firstText([item.FlightDepcode]).toUpperCase(),
+    arrCode: firstText([item.FlightArrcode]).toUpperCase(),
+    travelDate: dateMatch === null ? '' : dateMatch[0],
+    depTime: departureTime,
     arrTime: firstText([item.FlightArrtimePlanDate, item.FlightArrtimeReadyDate, item.FlightArrtimeDate, item.FlightArrTime, item.arrTime, item.arr_time, item.arrivalTime, item.sta, item.scheduleArrTime]),
     status: firstText([item.FlightState, item.FlightStatus, item.status, item.flightStatus, item.state]),
     price: firstText([item.price, item.Price, item.lowestPrice, item.LowestPrice, item.fare, item.amount])
@@ -6867,7 +7008,10 @@ export function flightDataResultFromProviderResponse(
   source: DataSource,
   wantsPrice: boolean,
   routeText: string,
-  requestDiagnostic: string = ''
+  requestDiagnostic: string = '',
+  fallbackDepCode: string = '',
+  fallbackArrCode: string = '',
+  fallbackTravelDate: string = ''
 ): DataResult {
   const sources: DataSource[] = [source];
   let payload: FlightProviderPayload = {};
@@ -6903,6 +7047,15 @@ export function flightDataResultFromProviderResponse(
   const count = results.length > 8 ? 8 : results.length;
   for (let index = 0; index < count; index++) {
     const record = flightRecordForA2ui(results[index]);
+    if ((record.depCode === undefined || record.depCode.length === 0) && fallbackDepCode.length > 0) {
+      record.depCode = fallbackDepCode;
+    }
+    if ((record.arrCode === undefined || record.arrCode.length === 0) && fallbackArrCode.length > 0) {
+      record.arrCode = fallbackArrCode;
+    }
+    if ((record.travelDate === undefined || record.travelDate.length === 0) && fallbackTravelDate.length > 0) {
+      record.travelDate = fallbackTravelDate;
+    }
     if (record.status.length === 0) {
       record.status = '计划';
     }
@@ -7003,7 +7156,10 @@ async function callStructuredFlightTool(prompt: string): Promise<DataResult> {
     localAdapterSource('飞常准', operation),
     wantsPrice,
     routeText,
-    requestBody
+    requestBody,
+    flightRoute.depCode,
+    flightRoute.arrCode,
+    date
   );
 }
 
@@ -7249,15 +7405,33 @@ async function resolveFoodSearchLocation(place: string, key: string): Promise<Am
   return emptyAmapLocationResolution();
 }
 
-function foodRecordForA2ui(item: AmapPoi): A2uiFoodData {
+export function foodRecordFromAmapPoi(item: AmapPoi): A2uiFoodData {
   const distance = textOf(item.distance);
+  const business = item.business;
+  const price = safeFoodPrice(business === undefined ? undefined : business.cost);
+  const rating = safeFoodRating(business === undefined ? undefined : business.rating);
+  const openHoursToday = business === undefined ? '' : textOf(business.opentime_today);
+  const status = foodBusinessStatus(openHoursToday);
+  const phone = normalizeFoodPhoneNumber(firstText([item.tel, business === undefined ? '' : business.tel]));
   return {
     name: textOf(item.name),
     category: textOf(item.type),
     address: textOf(item.address),
     distance: distance.length > 0 ? distance + '米' : '',
     location: textOf(item.location),
-    sourceTags: ['高德']
+    sourceTags: ['高德'],
+    phone: phone,
+    phoneSource: phone.length > 0 ? '高德' : undefined,
+    openHoursToday: openHoursToday,
+    openHoursWeek: business === undefined ? undefined : textOf(business.opentime_week),
+    pricePerPerson: price,
+    priceText: price === undefined ? undefined : '人均¥' + formatFoodNumber(price),
+    priceSource: price === undefined ? undefined : '高德',
+    rating: rating,
+    ratingText: rating === undefined ? undefined : formatFoodNumber(rating) + '分',
+    ratingSource: rating === undefined ? undefined : '高德',
+    businessStatus: status,
+    businessStatusLabel: foodBusinessStatusLabel(status)
   };
 }
 
@@ -7274,32 +7448,114 @@ function mapPointLocation(point: FoodMapPoint | undefined): string {
 }
 
 export function foodRecordFromTencentMapPlace(item: TencentMapPlace): A2uiFoodData {
+  const phone = normalizeFoodPhoneNumber(firstText([item.tel, item.telephone]));
   return {
     name: textOf(item.title),
     category: textOf(item.category),
     address: textOf(item.address),
     distance: meterDistanceText(firstText([item._distance, item.distance])),
     location: mapPointLocation(item.location),
-    sourceTags: ['腾讯地图']
+    sourceTags: ['腾讯地图'],
+    phone: phone,
+    phoneSource: phone.length > 0 ? '腾讯地图' : undefined
   };
 }
 
 export function foodRecordFromBaiduPlace(item: BaiduPlace): A2uiFoodData {
   const detail = item.detail_info === undefined ? null : item.detail_info;
-  const rating = detail === null ? '' : textOf(detail.overall_rating);
-  const price = detail === null ? '' : textOf(detail.price);
+  const rating = safeFoodRating(detail === null ? undefined : detail.overall_rating);
+  const price = safeFoodPrice(detail === null ? undefined : detail.price);
+  const openHoursToday = detail === null ? '' : textOf(detail.shop_hours);
+  const status = foodBusinessStatus(openHoursToday);
+  const phone = normalizeFoodPhoneNumber(textOf(item.telephone));
   return {
     name: textOf(item.name),
     category: detail === null ? '' : textOf(detail.tag),
     address: joinFoodParts([
       textOf(item.address),
-      rating.length > 0 ? '评分' + rating : '',
-      price.length > 0 ? '人均¥' + price : ''
+      rating === undefined ? '' : '评分' + formatFoodNumber(rating),
+      price === undefined ? '' : '人均¥' + formatFoodNumber(price)
     ]),
+    openHoursToday: openHoursToday,
+    openHoursWeek: openHoursToday,
     distance: meterDistanceText(detail === null ? '' : detail.distance),
     location: mapPointLocation(item.location),
-    sourceTags: ['百度地图']
+    sourceTags: ['百度地图'],
+    phone: phone,
+    phoneSource: phone.length > 0 ? '百度地图' : undefined,
+    pricePerPerson: price,
+    priceText: price === undefined ? undefined : '人均¥' + formatFoodNumber(price),
+    priceSource: price === undefined ? undefined : '百度地图',
+    rating: rating,
+    ratingText: rating === undefined ? undefined : formatFoodNumber(rating) + '分',
+    ratingSource: rating === undefined ? undefined : '百度地图',
+    businessStatus: status,
+    businessStatusLabel: foodBusinessStatusLabel(status)
   };
+}
+
+function safeFoodNumber(value: string | number | undefined): number | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  const normalized = textOf(value).trim().replace(/,/g, '').replace(/^人均/, '').replace(/^¥/, '').replace(/元$/, '').replace(/分$/, '').trim();
+  if (!/^\d+(?:\.\d+)?$/.test(normalized)) {
+    return undefined;
+  }
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function safeFoodPrice(value: string | number | undefined): number | undefined {
+  const parsed = safeFoodNumber(value);
+  return parsed !== undefined && parsed > 0 ? parsed : undefined;
+}
+
+function safeFoodRating(value: string | number | undefined): number | undefined {
+  const parsed = safeFoodNumber(value);
+  return parsed !== undefined && parsed >= 0 && parsed <= 5 ? parsed : undefined;
+}
+
+function formatFoodNumber(value: number): string {
+  return value.toString();
+}
+
+function foodBusinessStatusLabel(status: string): string {
+  if (status === 'open') { return '营业中'; }
+  if (status === 'closed') { return '休息中'; }
+  return '营业状态未知';
+}
+
+function foodBusinessStatus(openHoursToday: string): string {
+  const hours = openHoursToday.trim();
+  if (hours.length === 0) { return 'unknown'; }
+  if (/休息|停业|歇业|暂停营业/.test(hours)) { return 'closed'; }
+  if (/24\s*小时|全天营业|全天开放/.test(hours)) { return 'open'; }
+  if (/周|星期|礼拜/.test(hours)) { return 'unknown'; }
+  const normalized = hours.replace(/：/g, ':');
+  const pattern = /([01]?\d|2[0-3]):([0-5]\d)\s*[-~至—–]\s*([01]?\d|2[0-3]):([0-5]\d)/g;
+  const now = new Date();
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  let matched = false;
+  let match: RegExpExecArray | null = pattern.exec(normalized);
+  while (match !== null) {
+    matched = true;
+    const start = Number(match[1]) * 60 + Number(match[2]);
+    const end = Number(match[3]) * 60 + Number(match[4]);
+    let isOpen = false;
+    if (start === end) {
+      isOpen = true;
+    } else if (start < end) {
+      if (currentMinutes >= start && currentMinutes < end) {
+        isOpen = true;
+      }
+    } else if (currentMinutes >= start || currentMinutes < end) {
+      isOpen = true;
+    }
+    if (isOpen) { return 'open'; }
+    match = pattern.exec(normalized);
+  }
+  return matched ? 'closed' : 'unknown';
 }
 
 function joinFoodParts(parts: string[]): string {
@@ -7845,12 +8101,23 @@ function selectedLuckinAttrs(attrs: LuckinProductAttr[] | undefined): string {
     const children = attr.productSubAttrs === undefined ? [] : attr.productSubAttrs;
     for (let childIndex = 0; childIndex < children.length; childIndex++) {
       const child = children[childIndex];
-      if (child.selected === true) {
+      if (luckinAttrIsSelected(child.selected)) {
         appendUniqueText(parts, textOf(attr.attributeName) + ':' + textOf(child.attributeName));
       }
     }
   }
   return parts.join(' · ');
+}
+
+function luckinAttrIsSelected(value: boolean | number | string | null | undefined): boolean {
+  if (value === true || value === 1) {
+    return true;
+  }
+  if (value === false || value === 0 || value === null || value === undefined) {
+    return false;
+  }
+  const text = textOf(value).trim().toLowerCase();
+  return text === '1' || text === 'true' || text === 'yes';
 }
 
 function luckinAttrSelectionsMapFromProduct(product: LuckinProductRecord): Record<string, string> {
@@ -7865,7 +8132,7 @@ function luckinAttrSelectionsMapFromProduct(product: LuckinProductRecord): Recor
     const children = attr.productSubAttrs === undefined ? [] : attr.productSubAttrs;
     for (let childIndex = 0; childIndex < children.length; childIndex += 1) {
       const child = children[childIndex];
-      if (child.selected === true) {
+      if (luckinAttrIsSelected(child.selected)) {
         const choiceName = textOf(child.attributeName).trim();
         if (choiceName.length > 0) {
           result[groupName] = choiceName;
@@ -7909,7 +8176,7 @@ function luckinAttrOptionRows(product: LuckinProductRecord): A2uiLabelValueData[
       if (canSelected !== undefined && canSelected !== null && Number(canSelected) === 0) {
         continue;
       }
-      parts.push(choiceName + ':' + (child.selected === true ? '1' : '0'));
+      parts.push(choiceName + ':' + (luckinAttrIsSelected(child.selected) ? '1' : '0'));
     }
     if (parts.length > 0) {
       rows.push({ label: '选项·' + groupName, value: parts.join('|') });
@@ -7933,7 +8200,7 @@ function luckinApplySelectedChoices(
       const children = searchAttr.productSubAttrs === undefined ? [] : searchAttr.productSubAttrs;
       for (let childIndex = 0; childIndex < children.length; childIndex++) {
         const child = children[childIndex];
-        if (child.selected === true) {
+        if (luckinAttrIsSelected(child.selected)) {
           selectedByGroup.push(groupName + '|' + textOf(child.attributeName));
         }
       }
@@ -7957,7 +8224,7 @@ function luckinApplySelectedChoices(
       const choiceName = textOf(child.attributeName);
       const selected = selectedChoice.length > 0 ?
         choiceName === selectedChoice :
-        child.selected === true;
+        luckinAttrIsSelected(child.selected);
       mergedChildren.push({
         attributeName: child.attributeName,
         selected: selected,
@@ -8013,7 +8280,7 @@ function luckinApplyAttrChoice(
     for (let childIndex = 0; childIndex < children.length; childIndex += 1) {
       const child = children[childIndex];
       const childName = textOf(child.attributeName);
-      const selected = name === groupName ? childName === choiceName : child.selected === true;
+      const selected = name === groupName ? childName === choiceName : luckinAttrIsSelected(child.selected);
       mergedChildren.push({
         attributeId: child.attributeId,
         attributeName: child.attributeName,
@@ -8323,7 +8590,12 @@ async function luckinLoadProductForOptionSwitch(
     if (switched !== null) {
       product = luckinFinalizeSwitchedProduct(detailProduct, switched, selections, groupName, choiceName);
     } else {
+      // Keep UI selection even when MCP switchProduct fails; previewOrder still
+      // revalidates price against the locally applied attrs/sku.
+      aiLogInfo('[AIPhone][LuckinSwitchProduct] local_attr_fallback group=' + groupName +
+        ' choice=' + choiceName);
       product = luckinApplyAttrSelections(product, selections, '');
+      product = luckinApplyAttrChoice(product, groupName, choiceName);
     }
   }
   const pinnedPicture = luckinPinnedProductPicture(request, product, detailProduct);
@@ -8356,8 +8628,8 @@ async function luckinLoadProductForPreview(
     const detailProduct = detailProducts.length > 0 ? detailProducts[0] : null;
     return luckinProductForPreview(searchProduct, detailProduct);
   } catch (error) {
-    const message = error instanceof Error ? error.message : JSON.stringify(error);
-    aiLogInfo('[AIPhone][LuckinProductDetail] fallback=search reason=' + message);
+    const reasonChars = describeThrown(error).length;
+    aiLogInfo('[AIPhone][LuckinProductDetail] fallback=search reasonChars=' + reasonChars.toString());
     return searchProduct;
   }
 }
@@ -8374,7 +8646,7 @@ function luckinPreviewPromptFromProduct(prompt: string, product: LuckinProductRe
     const children = attr.productSubAttrs === undefined ? [] : attr.productSubAttrs;
     for (let childIndex = 0; childIndex < children.length; childIndex++) {
       const child = children[childIndex];
-      if (child.selected === true) {
+      if (luckinAttrIsSelected(child.selected)) {
         const choiceName = textOf(child.attributeName);
         if (choiceName.length > 0) {
           parts.push(choiceName);
@@ -8382,7 +8654,7 @@ function luckinPreviewPromptFromProduct(prompt: string, product: LuckinProductRe
       }
     }
   }
-  const remark = luckinRemarkFromPrompt(prompt);
+  const remark = luckinRemarkFromPrompt(prompt, parts);
   if (remark.length > 0) {
     parts.push(remark);
   }
@@ -8476,6 +8748,7 @@ interface LuckinOrderActionArgs {
   productName?: string;
   skuCode?: string;
   pictureUrl?: string;
+  originalQuery?: string;
   previewPrompt?: string;
   attrGroup?: string;
   attrChoice?: string;
@@ -8502,16 +8775,23 @@ function luckinMoney(value: Object | string | number | boolean | null | undefine
 }
 
 function luckinPromptKeyword(prompt: string): string {
-  const preset = /(生椰拿铁|冰美式|拿铁|美式|葡萄冰萃|澳瑞白|厚乳拿铁|橙C美式|椰云拿铁|丝绒拿铁)/u.exec(prompt);
+  const trimmed = prompt.trim();
+  if (trimmed.length === 0 || /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/.test(trimmed)) {
+    return '生椰拿铁';
+  }
+  const preset = /(生椰拿铁|冰美式|拿铁|美式|葡萄冰萃|澳瑞白|厚乳拿铁|橙C美式|椰云拿铁|丝绒拿铁)/u.exec(trimmed);
   if (preset !== null) {
     return preset[0];
   }
-  const cleaned = prompt
+  const cleaned = trimmed
     .replace(/瑞幸|luckin|ruixing/ig, '')
     .replace(/帮我|请|来|点|下一杯|下单|咖啡|饮品|一杯|两杯|2杯|杯|自取|外送|配送|附近|门店|使用优惠券|用优惠券/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-  return cleaned.length > 0 ? cleaned : '生椰拿铁';
+  if (cleaned.length === 0 || /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/.test(cleaned) || cleaned.charAt(0) === '.') {
+    return '生椰拿铁';
+  }
+  return cleaned;
 }
 
 function luckinQuantityFromPrompt(prompt: string): number {
@@ -8526,14 +8806,203 @@ function luckinQuantityFromPrompt(prompt: string): number {
   return 1;
 }
 
-function luckinRemarkFromPrompt(prompt: string): string {
+const LUCKIN_PROMPT_PREFERENCE_WORDS: string[] = [
+  '少少甜', '标准甜', '正常冰', '热饮', '冰饮',
+  '无糖', '少甜', '半糖', '全糖', '少糖',
+  '少冰', '去冰', '多冰', '少奶', '加奶',
+  '热', '冰'
+];
+
+function luckinPreferenceWordsFromPrompt(prompt: string): string[] {
+  const found: string[] = [];
+  let remaining = prompt;
+  for (let index = 0; index < LUCKIN_PROMPT_PREFERENCE_WORDS.length; index += 1) {
+    const word = LUCKIN_PROMPT_PREFERENCE_WORDS[index];
+    if (remaining.indexOf(word) < 0) {
+      continue;
+    }
+    found.push(word);
+    remaining = remaining.split(word).join(' ');
+  }
+  return found;
+}
+
+function luckinPreferenceChoiceAliases(word: string): string[] {
+  if (word === '少糖') {
+    return ['少糖', '少甜'];
+  }
+  if (word === '热') {
+    return ['热', '热饮'];
+  }
+  if (word === '冰') {
+    return ['冰', '冰饮'];
+  }
+  if (word === '热饮') {
+    return ['热饮', '热'];
+  }
+  if (word === '冰饮') {
+    return ['冰饮', '冰'];
+  }
+  return [word];
+}
+
+function luckinChoiceMatchesPreference(choiceName: string, word: string): boolean {
+  const aliases = luckinPreferenceChoiceAliases(word);
+  for (let index = 0; index < aliases.length; index += 1) {
+    if (choiceName === aliases[index]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function luckinAttrChoiceAlreadySelected(
+  product: LuckinProductRecord,
+  groupName: string,
+  choiceName: string
+): boolean {
+  const attrs = product.productAttrs === undefined ? [] : product.productAttrs;
+  for (let index = 0; index < attrs.length; index += 1) {
+    const attr = attrs[index];
+    if (textOf(attr.attributeName) !== groupName) {
+      continue;
+    }
+    const children = attr.productSubAttrs === undefined ? [] : attr.productSubAttrs;
+    for (let childIndex = 0; childIndex < children.length; childIndex += 1) {
+      const child = children[childIndex];
+      if (textOf(child.attributeName) === choiceName) {
+        return luckinAttrIsSelected(child.selected);
+      }
+    }
+  }
+  return false;
+}
+
+function luckinMatchPromptPreferences(product: LuckinProductRecord, prompt: string): string[][] {
+  const words = luckinPreferenceWordsFromPrompt(prompt);
+  if (words.length === 0) {
+    return [];
+  }
+  const attrs = product.productAttrs === undefined ? [] : product.productAttrs;
+  const selections: string[][] = [];
+  const usedGroups: string[] = [];
+  for (let wordIndex = 0; wordIndex < words.length; wordIndex += 1) {
+    const word = words[wordIndex];
+    let matched = false;
+    for (let attrIndex = 0; attrIndex < attrs.length && !matched; attrIndex += 1) {
+      const attr = attrs[attrIndex];
+      const groupName = textOf(attr.attributeName).trim();
+      if (groupName.length === 0 || usedGroups.indexOf(groupName) >= 0) {
+        continue;
+      }
+      const children = attr.productSubAttrs === undefined ? [] : attr.productSubAttrs;
+      for (let childIndex = 0; childIndex < children.length; childIndex += 1) {
+        const child = children[childIndex];
+        const choiceName = textOf(child.attributeName).trim();
+        if (choiceName.length === 0 || !luckinChoiceMatchesPreference(choiceName, word)) {
+          continue;
+        }
+        const canSelected = child.canSelected;
+        if (canSelected !== undefined && canSelected !== null && Number(canSelected) === 0) {
+          continue;
+        }
+        selections.push([groupName, choiceName]);
+        usedGroups.push(groupName);
+        matched = true;
+        break;
+      }
+    }
+  }
+  return selections;
+}
+
+function luckinRemarkFromPrompt(prompt: string, appliedChoices: string[] = []): string {
   const remarks: string[] = [];
-  ['无糖', '少少甜', '少甜', '半糖', '标准甜', '热饮', '热', '少冰', '去冰', '正常冰', '多冰', '少奶', '加奶'].forEach((word: string) => {
-    if (prompt.indexOf(word) >= 0 && remarks.indexOf(word) < 0) {
+  const words = luckinPreferenceWordsFromPrompt(prompt);
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index];
+    let applied = false;
+    for (let choiceIndex = 0; choiceIndex < appliedChoices.length; choiceIndex += 1) {
+      if (luckinChoiceMatchesPreference(appliedChoices[choiceIndex], word) ||
+        luckinChoiceMatchesPreference(word, appliedChoices[choiceIndex])) {
+        applied = true;
+        break;
+      }
+    }
+    if (!applied && remarks.indexOf(word) < 0) {
       remarks.push(word);
     }
-  });
+  }
   return remarks.join('，');
+}
+
+async function luckinApplyPromptPreferences(
+  shop: LuckinShopRecord,
+  product: LuckinProductRecord,
+  prompt: string,
+  quantity: number,
+  token: string
+): Promise<LuckinProductRecord> {
+  const preferred = luckinMatchPromptPreferences(product, prompt);
+  if (preferred.length === 0) {
+    return product;
+  }
+  const detailProduct = product;
+  let current = product;
+  const applied: string[][] = [];
+  for (let index = 0; index < preferred.length; index += 1) {
+    const groupName = preferred[index][0];
+    const choiceName = preferred[index][1];
+    if (luckinAttrChoiceAlreadySelected(current, groupName, choiceName)) {
+      applied.push([groupName, choiceName]);
+      continue;
+    }
+    const switched = await luckinTrySwitchProduct(shop, current, groupName, choiceName, quantity, token);
+    applied.push([groupName, choiceName]);
+    if (switched !== null) {
+      current = luckinFinalizeSwitchedProduct(detailProduct, switched, applied, groupName, choiceName);
+    } else {
+      current = luckinApplyAttrSelections(current, applied, '');
+      aiLogInfo('[AIPhone][LuckinPromptPreference] local_attr group=' + groupName +
+        ' choice=' + choiceName);
+    }
+  }
+  aiLogInfo('[AIPhone][LuckinPromptPreference] applied=' + applied.map((pair: string[]): string => {
+    return pair[0] + ':' + pair[1];
+  }).join('|'));
+  return current;
+}
+
+export function luckinMatchPromptPreferencesForTest(
+  prompt: string,
+  groups: string[][]
+): string[][] {
+  const attrs: LuckinProductAttr[] = [];
+  for (let index = 0; index < groups.length; index += 1) {
+    const group = groups[index];
+    if (group.length < 2) {
+      continue;
+    }
+    const children: LuckinProductSubAttr[] = [];
+    for (let childIndex = 1; childIndex < group.length; childIndex += 1) {
+      children.push({
+        attributeId: childIndex,
+        attributeName: group[childIndex],
+        selected: childIndex === 1,
+        canSelected: 1
+      });
+    }
+    attrs.push({
+      attributeId: index + 1,
+      attributeName: group[0],
+      productSubAttrs: children
+    });
+  }
+  return luckinMatchPromptPreferences({ productAttrs: attrs }, prompt);
+}
+
+export function luckinRemarkFromPromptForTest(prompt: string, appliedChoices: string[] = []): string {
+  return luckinRemarkFromPrompt(prompt, appliedChoices);
 }
 
 function luckinProductName(item: LuckinProductRecord): string {
@@ -8737,7 +9206,7 @@ function luckinPayDiagnosticsLog(tag: string, orderId: string, payOrderUrl: stri
   const hasPayOrderUrl = payOrderUrl.length > 0;
   const hasPayOrderQrCodeUrl = payOrderQrCodeUrl.length > 0;
   const hasPay = hasPayOrderUrl || hasPayOrderQrCodeUrl;
-  aiLogInfo('[AIPhone][' + tag + '] orderId=' + orderId +
+  aiLogInfo('[AIPhone][' + tag + '] orderIdChars=' + orderId.length.toString() +
     ' hasPayOrderUrl=' + (hasPayOrderUrl ? 'true' : 'false') +
     ' payOrderUrlChars=' + payOrderUrl.length.toString() +
     ' hasPayOrderQrCodeUrl=' + (hasPayOrderQrCodeUrl ? 'true' : 'false') +
@@ -8815,8 +9284,63 @@ export function resolveLuckinLocationForTest(requestLocation: string, prompt: st
   return parseCoordinatePair(defaultLocation);
 }
 
+export function resolveLuckinUserPromptForTest(
+  rawPrompt: string,
+  originalQuery: string = '',
+  previewPrompt: string = ''
+): string {
+  const request: LuckinOrderActionArgs = {};
+  if (originalQuery.length > 0) {
+    request.originalQuery = originalQuery;
+  }
+  if (previewPrompt.length > 0) {
+    request.previewPrompt = previewPrompt;
+  }
+  return resolveLuckinUserPrompt(rawPrompt, request);
+}
+
+export function luckinPromptKeywordForTest(prompt: string): string {
+  return luckinPromptKeyword(prompt);
+}
+
 function resolveLuckinLocation(request: LuckinOrderActionArgs, prompt: string): string {
   return resolveLuckinLocationForTest(textOf(request.location), prompt, localProviderConfig.amapDefaultLocation);
+}
+
+function looksLikeRegisteredToolIdPrompt(value: string): boolean {
+  return /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/.test(value.trim());
+}
+
+function looksLikeLuckinPlannerGoalPrompt(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.indexOf('查询附近') >= 0 && trimmed.indexOf('门店') >= 0 &&
+    trimmed.indexOf('商品') >= 0;
+}
+
+function isUsableLuckinUserPrompt(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.length > 0 && !looksLikeRegisteredToolIdPrompt(trimmed) &&
+    !looksLikeLuckinPlannerGoalPrompt(trimmed);
+}
+
+function resolveLuckinUserPrompt(rawPrompt: string, request: LuckinOrderActionArgs): string {
+  const fromOriginal = textOf(request.originalQuery).trim();
+  if (isUsableLuckinUserPrompt(fromOriginal)) {
+    return fromOriginal;
+  }
+  const trimmed = rawPrompt.trim();
+  if (isUsableLuckinUserPrompt(trimmed)) {
+    return trimmed;
+  }
+  const fromPreview = textOf(request.previewPrompt).trim();
+  if (isUsableLuckinUserPrompt(fromPreview)) {
+    return fromPreview;
+  }
+  return '';
+}
+
+export function resolveLuckinActionPrompt(rawPrompt: string, args: Object | null = null): string {
+  return resolveLuckinUserPrompt(rawPrompt, luckinActionArgs(args));
 }
 
 function luckinShopSelectActions(shops: LuckinShopRecord[], location: string, prompt: string): A2uiAction[] {
@@ -8830,7 +9354,8 @@ function luckinShopSelectActions(shops: LuckinShopRecord[], location: string, pr
       address: luckinShopAddress(shop),
       distance: kmNumberDistanceText(firstText([shop.distanceDesc, shop.distance])),
       location: luckinShopLocation(shop, location),
-      status: luckinShopStatus(shop)
+      status: luckinShopStatus(shop),
+      originalQuery: prompt
     };
     actions.push({
       id: 'luckin.order.preview',
@@ -8950,7 +9475,21 @@ function luckinDynamicResultA2ui(surfaceId: string, result: DynamicGenericToolRe
   return a2uiJsonl(envelopes);
 }
 
+const LUCKIN_ORDER_TRACE_TAG: string = '[AIPhone][LuckinOrderTrace]';
+
+function luckinTrace(stage: string, result: string, toolId: string, fields: string = ''): void {
+  aiLogInfo(LUCKIN_ORDER_TRACE_TAG + ' stage=' + stage + ' result=' + result + ' toolId=' + toolId +
+    (fields.length > 0 ? ' ' + fields : ''));
+}
+
+function luckinSafeKeyword(value: string): string {
+  const token = localProviderConfig.luckinMcpToken;
+  const withoutToken = token.length > 0 ? value.split(token).join('[redacted]') : value;
+  return withoutToken.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 60);
+}
+
 function luckinErrorA2ui(surfaceId: string, toolId: string, title: string, message: string): string {
+  luckinTrace('error', 'failed', toolId, 'title=' + title + ' messageChars=' + message.length.toString());
   return luckinDynamicResultA2ui(surfaceId, {
     sourceTag: '瑞幸',
     toolName: toolId,
@@ -8962,13 +9501,24 @@ function luckinErrorA2ui(surfaceId: string, toolId: string, title: string, messa
   });
 }
 
-async function callLocalLuckinPreview(prompt: string, surfaceId: string, args: Object | null = null): Promise<string> {
+async function callLocalLuckinPreview(rawPrompt: string, surfaceId: string, args: Object | null = null): Promise<string> {
   const token = localProviderConfig.luckinMcpToken;
   const request = luckinActionArgs(args);
+  const prompt = resolveLuckinUserPrompt(rawPrompt, request);
+  const requestedDeptId = textOf(request.deptId);
+  const optionSwitch = textOf(request.attrGroup).length > 0 && textOf(request.attrChoice).length > 0 &&
+    textOf(request.productId).length > 0;
+  luckinTrace('preview_start', 'started', 'luckin.order.preview',
+    'tokenConfigured=' + (token.length > 0 ? 'true' : 'false') +
+    ' resolvedPromptChars=' + prompt.length.toString() +
+    ' hasDeptId=' + (requestedDeptId.length > 0 ? 'true' : 'false') +
+    ' optionSwitch=' + (optionSwitch ? 'true' : 'false'));
   if (token.length === 0) {
     return luckinErrorA2ui(surfaceId, 'luckin.order.preview', '瑞幸点单需要登录', '未配置 LUCKIN_MCP_TOKEN。请在瑞幸 AI 开放平台登录复制 Token 后同步到 HAP rawfile。');
   }
   const location = resolveLuckinLocation(request, prompt);
+  luckinTrace('location_validation', location.length > 0 ? 'valid' : 'invalid', 'luckin.order.preview',
+    'hasLocation=' + (location.length > 0 ? 'true' : 'false'));
   if (location.length === 0) {
     return luckinErrorA2ui(surfaceId, 'luckin.order.preview', '瑞幸点单缺少位置', '瑞幸下单需要当前经纬度。请允许定位权限后重试。');
   }
@@ -8979,10 +9529,14 @@ async function callLocalLuckinPreview(prompt: string, surfaceId: string, args: O
   };
   const shopPayload = await callReadonlyBrandMcpTool('瑞幸', localProviderConfig.luckinMcpUrl, token, 'queryShopList', shopArgs);
   const shops = luckinShopsFromData(mcpPayloadData(shopPayload as LuckinPayload) as LuckinShopRecord[] | LuckinShopContainer | undefined);
+  luckinTrace('shop_query', shops.length > 0 ? 'found' : 'empty', 'luckin.order.preview',
+    'count=' + shops.length.toString());
   if (shops.length === 0) {
     return luckinErrorA2ui(surfaceId, 'luckin.order.preview', '没有找到可下单门店', '瑞幸 MCP 没有返回可用门店。请换一个地点或门店名称。');
   }
   if (textOf(request.deptId).length === 0) {
+    luckinTrace('awaiting_shop_selection', 'needs_input', 'luckin.order.preview',
+      'count=' + shops.length.toString());
     const shopRows: A2uiLabelValueData[] = [];
     const previewCount = shops.length > 5 ? 5 : shops.length;
     for (let index = 0; index < previewCount; index++) {
@@ -8998,6 +9552,8 @@ async function callLocalLuckinPreview(prompt: string, surfaceId: string, args: O
   if (shop === null || textOf(shop.deptId).length === 0) {
     return luckinErrorA2ui(surfaceId, 'luckin.order.preview', '没有找到可下单门店', '瑞幸 MCP 没有返回可用门店。请换一个地点或门店名称。');
   }
+  luckinTrace('selected_shop', 'selected', 'luckin.order.preview',
+    'hasDeptId=true shopNameChars=' + luckinShopName(shop).length.toString());
   const quantity = luckinQuantityFromPrompt(prompt);
   const groupName = textOf(request.attrGroup);
   const choiceName = textOf(request.attrChoice);
@@ -9009,29 +9565,54 @@ async function callLocalLuckinPreview(prompt: string, surfaceId: string, args: O
       return luckinErrorA2ui(surfaceId, 'luckin.order.preview', '规格切换失败', '暂时无法切换「' + groupName + '」到「' + choiceName + '」。请稍后重试。');
     }
     product = switchedProduct;
+    luckinTrace('prompt_preferences', 'applied', 'luckin.order.preview',
+      'selectionCount=' + luckinAttrSelectionsFromRequest(request).length.toString());
   } else {
     const keyword = luckinProductSearchQuery(prompt, request);
+    luckinTrace('product_search_query', 'started', 'luckin.order.preview',
+      'keyword=' + luckinSafeKeyword(keyword));
     const productSearchArgs: LuckinProductSearchArgs = {
       deptId: Number(textOf(shop.deptId)),
       query: keyword
     };
     const productPayload = await callReadonlyBrandMcpTool('瑞幸', localProviderConfig.luckinMcpUrl, token, 'searchProductForMcp', productSearchArgs);
     const products = luckinProductsFromPayload(productPayload);
-    if (products.length === 0 || textOf(products[0].productId).length === 0 || luckinProductSku(products[0]).length === 0) {
+    const hasProductId = products.length > 0 && textOf(products[0].productId).length > 0;
+    const hasSku = products.length > 0 && luckinProductSku(products[0]).length > 0;
+    luckinTrace('product_query', products.length > 0 ? 'found' : 'empty', 'luckin.order.preview',
+      'count=' + products.length.toString() +
+      ' hasProductId=' + (hasProductId ? 'true' : 'false') +
+      ' hasSku=' + (hasSku ? 'true' : 'false'));
+    if (products.length === 0 || !hasProductId || !hasSku) {
       return luckinErrorA2ui(surfaceId, 'luckin.order.preview', '没有找到可下单商品', '瑞幸 MCP 没有返回可创建订单的商品或 skuCode。关键词：' + keyword);
     }
     const searchProduct = products[0];
     product = await luckinLoadProductForPreview(shop, searchProduct, token);
+    const preferenceCount = luckinMatchPromptPreferences(product, prompt).length;
+    product = await luckinApplyPromptPreferences(shop, product, prompt, quantity, token);
+    luckinTrace('prompt_preferences', 'applied', 'luckin.order.preview',
+      'selectionCount=' + preferenceCount.toString());
+  }
+  const appliedChoiceNames: string[] = [];
+  const selectedMap = luckinAttrSelectionsMapFromProduct(product);
+  const selectedKeys = Object.keys(selectedMap);
+  for (let keyIndex = 0; keyIndex < selectedKeys.length; keyIndex += 1) {
+    appliedChoiceNames.push(selectedMap[selectedKeys[keyIndex]]);
   }
   const previewArgs: LuckinOrderRequestArgs = {
     deptId: Number(textOf(shop.deptId)),
     productList: [luckinOrderProduct(product, quantity)],
     longitude: Number(locationLongitude(location)),
     latitude: Number(locationLatitude(location)),
-    remark: luckinRemarkFromPrompt(prompt)
+    remark: luckinRemarkFromPrompt(prompt, appliedChoiceNames)
   };
   const previewPayload = await callReadonlyBrandMcpTool('瑞幸', localProviderConfig.luckinMcpUrl, token, 'previewOrder', previewArgs);
   const preview = luckinOrderRecordFromPayload(previewPayload);
+  luckinTrace('preview_order', 'completed', 'luckin.order.preview',
+    'hasInitialPrice=' + (textOf(preview.totalInitialPrice).length > 0 ? 'true' : 'false') +
+    ' hasDiscountPrice=' + (textOf(preview.discountPrice).length > 0 ? 'true' : 'false') +
+    ' hasPrivilegeMoney=' + (textOf(preview.privilegeMoney).length > 0 ? 'true' : 'false') +
+    ' actionCount=1');
   const productPictureUrl = isOptionSwitch ?
     luckinPinnedProductPicture(request, product) :
     luckinProductPictureUrl(product);
@@ -9074,6 +9655,7 @@ async function callLocalLuckinPreview(prompt: string, surfaceId: string, args: O
     kind: 'prompt',
     args: createArgs as Object
   };
+  luckinTrace('preview_ready', 'ready', 'luckin.order.preview', 'actionCount=1');
   return luckinGenericResultA2ui(surfaceId, 'luckin.order.preview', '确认瑞幸订单', '请确认后再创建真实瑞幸订单。', rows, JSON.stringify(previewPayload).substring(0, 1200), [action]);
 }
 
@@ -9132,7 +9714,15 @@ async function callLocalLuckinCreate(surfaceId: string, args: Object | null): Pr
   const token = localProviderConfig.luckinMcpToken;
   const request = luckinActionArgs(args);
   const location = resolveLuckinLocation(request, '');
-  if (token.length === 0 || textOf(request.deptId).length === 0 || textOf(request.productId).length === 0 || textOf(request.skuCode).length === 0) {
+  const createValid = token.length > 0 && textOf(request.deptId).length > 0 &&
+    textOf(request.productId).length > 0 && textOf(request.skuCode).length > 0;
+  luckinTrace('create_start', 'started', 'luckin.order.create',
+    'tokenConfigured=' + (token.length > 0 ? 'true' : 'false') +
+    ' hasDeptId=' + (textOf(request.deptId).length > 0 ? 'true' : 'false') +
+    ' hasProductId=' + (textOf(request.productId).length > 0 ? 'true' : 'false') +
+    ' hasSku=' + (textOf(request.skuCode).length > 0 ? 'true' : 'false'));
+  luckinTrace('create_validation', createValid ? 'valid' : 'invalid', 'luckin.order.create');
+  if (!createValid) {
     return luckinErrorA2ui(surfaceId, 'luckin.order.create', '瑞幸订单参数不足', '创建订单需要登录 Token、门店、商品和 skuCode。请先重新预览订单。');
   }
   const createArgs: LuckinOrderRequestArgs = {
@@ -9152,7 +9742,13 @@ async function callLocalLuckinCreate(surfaceId: string, args: Object | null): Pr
   }
   const createPayload = await callReadonlyBrandMcpTool('瑞幸', localProviderConfig.luckinMcpUrl, token, 'createOrder', createArgs);
   const createError = luckinPayloadErrorMessage(createPayload);
-  if (!luckinOrderCreateSucceededForTest(createPayload)) {
+  const createSucceeded = luckinOrderCreateSucceededForTest(createPayload);
+  const providerCreated = luckinOrderRecordFromPayload(createPayload);
+  const providerOrderId = firstText([providerCreated.orderIdStr, providerCreated.orderId]);
+  luckinTrace('create_order', createSucceeded ? 'success' : 'failed', 'luckin.order.create',
+    'hasOrderId=' + (providerOrderId.length > 0 ? 'true' : 'false') +
+    ' orderIdChars=' + providerOrderId.length.toString());
+  if (!createSucceeded) {
     const failure = createError.length > 0 ? createError : 'Provider 未返回订单号，本次不能视为创建成功。';
     return luckinErrorA2ui(surfaceId, 'luckin.order.create', '瑞幸订单创建失败', failure);
   }
@@ -9178,11 +9774,11 @@ async function callLocalLuckinCreate(surfaceId: string, args: Object | null): Pr
         payOrderUrl: payOrderUrl,
         payOrderQrCodeUrl: payOrderQrCodeUrl
       };
-      aiLogInfo('[AIPhone][LuckinOrderCreateDetailFallback] orderId=' + orderId +
+      aiLogInfo('[AIPhone][LuckinOrderCreateDetailFallback] orderIdChars=' + orderId.length.toString() +
         ' payOrderUrlChars=' + payOrderUrl.length.toString() +
         ' payOrderQrCodeUrlChars=' + payOrderQrCodeUrl.length.toString());
     } catch (error) {
-      aiLogInfo('[AIPhone][LuckinOrderCreateDetailFallbackError] ' + textOf(error));
+      aiLogInfo('[AIPhone][LuckinOrderCreateDetailFallbackError] reasonChars=' + describeThrown(error).length.toString());
     }
   }
   const rows: A2uiLabelValueData[] = [
@@ -9222,9 +9818,10 @@ async function callLocalLuckinCreate(surfaceId: string, args: Object | null): Pr
   };
   const createActions: A2uiAction[] = [payAction, luckinDemoAlipayAction(orderId), luckinDemoGooglePayAction(orderId), statusAction];
   luckinPayDiagnosticsLog('LuckinOrderCreate', orderId, payOrderUrl, payOrderQrCodeUrl, createActions.length);
+  luckinTrace('create_ready', 'ready', 'luckin.order.create',
+    'orderIdChars=' + orderId.length.toString() + ' actionCount=' + createActions.length.toString());
   if (payOrderUrl.length === 0 && payOrderQrCodeUrl.length === 0) {
-    aiLogInfo('[AIPhone][LuckinOrderCreateMissingPay] mcpDataKeys=' + luckinMcpPayFieldKeys(createPayload) +
-      ' payloadPreview=' + JSON.stringify(createPayload).substring(0, 400));
+    aiLogInfo('[AIPhone][LuckinOrderCreateMissingPay] mcpDataKeys=' + luckinMcpPayFieldKeys(createPayload));
   }
   return luckinGenericResultA2ui(
     surfaceId, 'luckin.order.create', '瑞幸订单已创建',
@@ -9237,7 +9834,12 @@ async function callStructuredLuckinStatusResult(args: Object | null): Promise<Dy
   const token = localProviderConfig.luckinMcpToken;
   const request = luckinActionArgs(args);
   const orderId = textOf(request.orderId);
-  if (token.length === 0 || orderId.length === 0) {
+  const statusValid = token.length > 0 && orderId.length > 0;
+  luckinTrace('status_start', 'started', 'luckin.order.status',
+    'tokenConfigured=' + (token.length > 0 ? 'true' : 'false') +
+    ' orderIdChars=' + orderId.length.toString());
+  luckinTrace('status_validation', statusValid ? 'valid' : 'invalid', 'luckin.order.status');
+  if (!statusValid) {
     const message = token.length === 0 ? '未配置 LUCKIN_MCP_TOKEN。' : '缺少订单号。';
     return {
       sourceTag: '瑞幸',
@@ -9256,6 +9858,8 @@ async function callStructuredLuckinStatusResult(args: Object | null): Promise<Dy
   try {
     payload = await callReadonlyBrandMcpTool('瑞幸', localProviderConfig.luckinMcpUrl, token, 'queryOrderDetailInfo', detailArgs);
   } catch (error) {
+    luckinTrace('error', 'failed', 'luckin.order.status',
+      'title=瑞幸订单状态查询失败 messageChars=' + describeThrown(error).length.toString());
     return {
       sourceTag: '瑞幸',
       toolName: 'luckin.order.status',
@@ -9268,6 +9872,10 @@ async function callStructuredLuckinStatusResult(args: Object | null): Promise<Dy
     };
   }
   const detail = luckinOrderRecordFromPayload(payload);
+  const providerStatus = firstText([detail.orderStatusName, detail.orderStatus]);
+  luckinTrace('status_provider', providerStatus.length > 0 ? 'success' : 'empty', 'luckin.order.status',
+    'hasStatus=' + (providerStatus.length > 0 ? 'true' : 'false') +
+    ' orderIdChars=' + orderId.length.toString());
   const traceId = rideOrderPayloadText(payload, ['traceId', 'trace_id', 'requestId', 'request_id']);
   const rows: A2uiLabelValueData[] = [
     { label: '订单号', value: firstText([detail.orderIdStr, detail.orderId, orderId]) },
@@ -9323,6 +9931,9 @@ async function callStructuredLuckinStatusResult(args: Object | null): Promise<Dy
     aiLogInfo('[AIPhone][LuckinOrderStatusMissingPay] mcpDataKeys=' + luckinMcpPayFieldKeys(payload));
   }
   const providerError = luckinPayloadErrorMessage(payload);
+  luckinTrace('status_ready', providerError.length > 0 ? 'failed' : 'ready', 'luckin.order.status',
+    'hasStatus=' + (providerStatus.length > 0 ? 'true' : 'false') +
+    ' actionCount=' + statusActions.length.toString());
   return {
     sourceTag: '瑞幸',
     toolName: 'luckin.order.status',
@@ -9349,8 +9960,11 @@ async function callLocalLuckinTool(
   actionId: string,
   args: Object | null = null
 ): Promise<string> {
+  luckinTrace('gateway_dispatch', 'received', toolId,
+    'actionId=' + actionId + ' promptChars=' + prompt.length.toString());
   if (toolId === 'luckin.order.create') {
     if (actionId !== 'luckin.order.create') {
+      luckinTrace('blocked', 'blocked', toolId, 'reason=unsafe_action_id');
       return luckinErrorA2ui(
         surfaceId, toolId, '需要当前瑞幸订单确认', '请从当前订单预览点击确认下单。'
       );
@@ -9495,13 +10109,26 @@ function foodTags(item: A2uiFoodData, fallbackProvider: string): string[] {
 }
 
 function cloneFood(item: A2uiFoodData, fallbackProvider: string): A2uiFoodData {
+  const phone = normalizeFoodPhoneNumber(item.phone === undefined ? '' : item.phone);
   return {
     name: item.name,
     category: item.category,
     address: item.address,
     distance: item.distance,
     location: item.location,
-    sourceTags: foodTags(item, fallbackProvider)
+    sourceTags: foodTags(item, fallbackProvider),
+    phone: phone,
+    phoneSource: phone.length > 0 ? (item.phoneSource === undefined || item.phoneSource.length === 0 ? fallbackProvider : item.phoneSource) : undefined,
+    openHoursToday: item.openHoursToday,
+    openHoursWeek: item.openHoursWeek,
+    pricePerPerson: item.pricePerPerson,
+    priceText: item.priceText,
+    priceSource: item.priceSource,
+    rating: item.rating,
+    ratingText: item.ratingText,
+    ratingSource: item.ratingSource,
+    businessStatus: item.businessStatus,
+    businessStatusLabel: item.businessStatusLabel
   };
 }
 
@@ -9514,6 +10141,32 @@ function mergeFoodInto(target: A2uiFoodData, item: A2uiFoodData, fallbackProvide
     }
   }
   target.sourceTags = targetTags;
+  const itemPhone = normalizeFoodPhoneNumber(item.phone === undefined ? '' : item.phone);
+  const targetPhone = normalizeFoodPhoneNumber(target.phone === undefined ? '' : target.phone);
+  if (targetPhone.length === 0 && itemPhone.length > 0) {
+    target.phone = itemPhone;
+    target.phoneSource = item.phoneSource === undefined || item.phoneSource.length === 0 ? fallbackProvider : item.phoneSource;
+  } else if (targetPhone.length > 0) {
+    target.phone = targetPhone;
+  }
+  if ((target.openHoursToday === undefined || target.openHoursToday.length === 0) && item.openHoursToday !== undefined && item.openHoursToday.length > 0) {
+    target.openHoursToday = item.openHoursToday;
+  }
+  if ((target.openHoursWeek === undefined || target.openHoursWeek.length === 0) && item.openHoursWeek !== undefined && item.openHoursWeek.length > 0) {
+    target.openHoursWeek = item.openHoursWeek;
+  }
+  if (target.pricePerPerson === undefined && item.pricePerPerson !== undefined) { target.pricePerPerson = item.pricePerPerson; }
+  if ((target.priceText === undefined || target.priceText.length === 0) && item.priceText !== undefined && item.priceText.length > 0) { target.priceText = item.priceText; }
+  if ((target.priceSource === undefined || target.priceSource.length === 0) && item.priceSource !== undefined && item.priceSource.length > 0) { target.priceSource = item.priceSource; }
+  if (target.rating === undefined && item.rating !== undefined) { target.rating = item.rating; }
+  if ((target.ratingText === undefined || target.ratingText.length === 0) && item.ratingText !== undefined && item.ratingText.length > 0) { target.ratingText = item.ratingText; }
+  if ((target.ratingSource === undefined || target.ratingSource.length === 0) && item.ratingSource !== undefined && item.ratingSource.length > 0) { target.ratingSource = item.ratingSource; }
+  if ((target.businessStatus === undefined || target.businessStatus.length === 0 || target.businessStatus === 'unknown') && item.businessStatus !== undefined && item.businessStatus.length > 0 && item.businessStatus !== 'unknown') {
+    target.businessStatus = item.businessStatus;
+    target.businessStatusLabel = item.businessStatusLabel;
+  } else if ((target.businessStatusLabel === undefined || target.businessStatusLabel.length === 0) && item.businessStatusLabel !== undefined && item.businessStatusLabel.length > 0) {
+    target.businessStatusLabel = item.businessStatusLabel;
+  }
   if (target.category.length === 0 && item.category.length > 0) {
     target.category = item.category;
   }
@@ -9576,6 +10229,66 @@ export interface FoodPreferenceArgs {
   brandPreference?: string;
   brandStrict?: boolean;
   sweetness?: string;
+}
+
+interface FoodSearchAreaArgs {
+  longitude?: Object | string | number | boolean | null;
+  latitude?: Object | string | number | boolean | null;
+  radiusMeters?: Object | string | number | boolean | null;
+  name?: Object | string | number | boolean | null;
+  address?: Object | string | number | boolean | null;
+}
+
+interface FoodSearchArgsRecord {
+  query?: Object | string | number | boolean | null;
+  keyword?: Object | string | number | boolean | null;
+  brandPreference?: Object | string | number | boolean | null;
+  brandStrict?: Object | string | number | boolean | null;
+  sweetness?: Object | string | number | boolean | null;
+  searchArea?: FoodSearchAreaArgs;
+}
+
+function foodSearchArgs(args: Object | null): FoodSearchArgsRecord {
+  if (args === null || Array.isArray(args)) {
+    return {};
+  }
+  return args as FoodSearchArgsRecord;
+}
+
+export function foodCoordinateForTest(value: Object | string | number | boolean | null | undefined,
+  min: number, max: number): number | null {
+  const raw = textOf(value).trim();
+  if (raw.length === 0) {
+    return null;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= min && parsed <= max ? parsed : null;
+}
+
+function normalizedFoodRadius(value: Object | string | number | boolean | null | undefined): number {
+  const parsed = Number(textOf(value).trim());
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return Number(localProviderConfig.amapRadius);
+  }
+  return Math.max(100, Math.min(50000, Math.round(parsed)));
+}
+
+function structuredFoodSearchArea(args: FoodSearchArgsRecord): A2uiFoodSearchArea | null {
+  if (args.searchArea === undefined || args.searchArea === null || Array.isArray(args.searchArea)) {
+    return null;
+  }
+  const longitude = foodCoordinateForTest(args.searchArea.longitude, -180, 180);
+  const latitude = foodCoordinateForTest(args.searchArea.latitude, -90, 90);
+  if (longitude === null || latitude === null) {
+    return null;
+  }
+  return {
+    longitude: longitude,
+    latitude: latitude,
+    radiusMeters: normalizedFoodRadius(args.searchArea.radiusMeters),
+    name: textOf(args.searchArea.name).trim(),
+    address: textOf(args.searchArea.address).trim()
+  };
 }
 
 function foodPreferenceArgs(args: Object | null): FoodPreferenceArgs {
@@ -9691,8 +10404,14 @@ export function aggregateFoodProviderResults(results: FoodProviderResult[], pref
       }
     }
   }
+  const mergedFoods = selectVisibleFoodResults(foods, preferences);
+  const foodsWithPhone = mergedFoods.filter((food: A2uiFoodData) =>
+    normalizeFoodPhoneNumber(food.phone === undefined ? '' : food.phone).length > 0).length;
+  aiLogInfo('[AIPhone][FoodPhoneAggregation] providerResults=' + results.length.toString() +
+    ' mergedFoods=' + mergedFoods.length.toString() + ' foodsWithPhone=' + foodsWithPhone.toString() +
+    ' issues=' + issues.length.toString());
   return {
-    foods: selectVisibleFoodResults(foods, preferences),
+    foods: mergedFoods,
     issues: issues
   };
 }
@@ -9884,9 +10603,15 @@ function taobaoRecordsFromResult(result: TaobaoFlashResult): TaobaoFlashStoreRec
   return [];
 }
 
-async function safeFoodProviderSearch(adapter: FoodProviderAdapter, prompt: string, query: FoodQuery, keyword: string, location: string, locationSource: string): Promise<FoodProviderResult> {
+async function safeFoodProviderSearch(adapter: FoodProviderAdapter, prompt: string, query: FoodQuery, keyword: string,
+  location: string, locationSource: string, radiusMeters: string): Promise<FoodProviderResult> {
+  aiLogInfo('[AIPhone][FoodProviderDispatch] provider=' + adapter.name +
+    ' locationSource=' + locationSource +
+    ' longitude=' + locationLongitude(location) +
+    ' latitude=' + locationLatitude(location) +
+    ' radiusMeters=' + radiusMeters);
   try {
-    return await adapter.search(prompt, query, keyword, location, locationSource);
+    return await adapter.search(prompt, query, keyword, location, locationSource, radiusMeters);
   } catch (error) {
     return emptyProviderResult(adapter.name, describeThrown(error), true);
   }
@@ -9901,7 +10626,8 @@ function waitForDebugDelay(delayMs: number): Promise<void> {
 class AmapFoodProvider implements FoodProviderAdapter {
   name: string = '高德';
 
-  async search(_prompt: string, _query: FoodQuery, keyword: string, location: string, locationSource: string): Promise<FoodProviderResult> {
+  async search(_prompt: string, _query: FoodQuery, keyword: string, location: string, locationSource: string,
+    radiusMeters: string): Promise<FoodProviderResult> {
     const key = localProviderConfig.amapKey;
     if (key.length === 0) {
       return emptyProviderResult(this.name, '未配置 AMAP_KEY');
@@ -9917,12 +10643,12 @@ class AmapFoodProvider implements FoodProviderAdapter {
     const keywords = splitFoodSearchKeywords(keyword);
     for (let keywordIndex = 0; keywordIndex < keywords.length && keywordIndex < 4 && foods.length < FOOD_PROVIDER_RESULT_LIMIT; keywordIndex++) {
       const currentKeyword = keywords[keywordIndex];
-      aiLogInfo('[AIPhone][LocalToolAmapRequest] keyChars=' + key.length.toString() +
+      aiLogInfo('[AIPhone][LocalToolAmapRequest] provider=高德 endpoint=v5/place/around showFields=business keyChars=' + key.length.toString() +
         ' locationSource=' + locationSource + ' locationPresent=true keyword=' + currentKeyword);
       const payload = await amapJsonGet(buildQueryUrl(
-        'https://restapi.amap.com/v3/place/around',
-        ['key', 'location', 'types', 'keywords', 'radius', 'offset', 'page', 'extensions'],
-        [key, location, '050000', currentKeyword, localProviderConfig.amapRadius, '10', '1', 'all']
+        'https://restapi.amap.com/v5/place/around',
+        ['key', 'location', 'types', 'keywords', 'radius', 'page_size', 'page_num', 'show_fields'],
+        [key, location, '050000', currentKeyword, radiusMeters, '10', '1', 'business']
       ));
       if (textOf(payload.status) !== '1') {
         const providerMessage = firstText([payload.info, payload.infocode, payload.message]);
@@ -9935,7 +10661,7 @@ class AmapFoodProvider implements FoodProviderAdapter {
       const pois = payload.pois === undefined ? [] : payload.pois;
       totalPois += pois.length;
       for (let index = 0; index < pois.length && foods.length < FOOD_PROVIDER_RESULT_LIMIT; index++) {
-        const food = foodRecordForA2ui(pois[index]);
+        const food = foodRecordFromAmapPoi(pois[index]);
         const normalized = normalizeFoodName(food.name);
         if (food.name.length === 0 || names.indexOf(normalized) >= 0) {
           continue;
@@ -9944,7 +10670,11 @@ class AmapFoodProvider implements FoodProviderAdapter {
         foods.push(food);
       }
     }
-    aiLogInfo('[AIPhone][LocalToolAmapResult] pois=' + totalPois.toString() + ' returned=' + foods.length.toString());
+    const foodsWithPhone = foods.filter((food: A2uiFoodData) =>
+      normalizeFoodPhoneNumber(food.phone === undefined ? '' : food.phone).length > 0).length;
+    aiLogInfo('[AIPhone][LocalToolAmapResult] endpoint=v5/place/around pois=' + totalPois.toString() +
+      ' returned=' + foods.length.toString() + ' foodsWithPhone=' + foodsWithPhone.toString() +
+      ' hoursHits=' + foodHoursHitCount(foods).toString());
     return {
       provider: this.name,
       foods: foods,
@@ -9959,7 +10689,8 @@ class AmapFoodProvider implements FoodProviderAdapter {
 class TencentMapFoodProvider implements FoodProviderAdapter {
   name: string = '腾讯地图';
 
-  async search(_prompt: string, _query: FoodQuery, keyword: string, location: string, locationSource: string): Promise<FoodProviderResult> {
+  async search(_prompt: string, _query: FoodQuery, keyword: string, location: string, locationSource: string,
+    radiusMeters: string): Promise<FoodProviderResult> {
     const key = localProviderConfig.tencentMapKey;
     if (key.length === 0) {
       return emptyProviderResult(this.name, '未配置 TENCENT_MAP_KEY');
@@ -9972,7 +10703,7 @@ class TencentMapFoodProvider implements FoodProviderAdapter {
     if (longitude.length === 0 || latitude.length === 0) {
       return emptyProviderResult(this.name, '经纬度格式无效：' + location);
     }
-    const boundary = 'nearby(' + latitude + ',' + longitude + ',' + localProviderConfig.amapRadius + ',1)';
+    const boundary = 'nearby(' + latitude + ',' + longitude + ',' + radiusMeters + ',1)';
     aiLogInfo('[AIPhone][LocalToolTencentMapRequest] endpoint=' + localProviderConfig.tencentMapApiUrl +
       ' keyChars=' + key.length.toString() + ' locationSource=' + locationSource + ' keyword=' + keyword);
     const response = await requestText(buildQueryUrl(
@@ -9996,7 +10727,10 @@ class TencentMapFoodProvider implements FoodProviderAdapter {
         foods.push(food);
       }
     }
-    aiLogInfo('[AIPhone][LocalToolTencentMapResult] rows=' + places.length.toString() + ' returned=' + foods.length.toString());
+    const foodsWithPhone = foods.filter((food: A2uiFoodData) =>
+      normalizeFoodPhoneNumber(food.phone === undefined ? '' : food.phone).length > 0).length;
+    aiLogInfo('[AIPhone][LocalToolTencentMapResult] rows=' + places.length.toString() + ' returned=' + foods.length.toString() +
+      ' foodsWithPhone=' + foodsWithPhone.toString());
     return {
       provider: this.name,
       foods: foods,
@@ -10011,7 +10745,8 @@ class TencentMapFoodProvider implements FoodProviderAdapter {
 class BaiduMapFoodProvider implements FoodProviderAdapter {
   name: string = '百度地图';
 
-  async search(_prompt: string, _query: FoodQuery, keyword: string, location: string, locationSource: string): Promise<FoodProviderResult> {
+  async search(_prompt: string, _query: FoodQuery, keyword: string, location: string, locationSource: string,
+    radiusMeters: string): Promise<FoodProviderResult> {
     const ak = localProviderConfig.baiduMapAk;
     if (ak.length === 0) {
       return emptyProviderResult(this.name, '未配置 BAIDU_MAP_AK');
@@ -10024,12 +10759,12 @@ class BaiduMapFoodProvider implements FoodProviderAdapter {
     if (longitude.length === 0 || latitude.length === 0) {
       return emptyProviderResult(this.name, '经纬度格式无效：' + location);
     }
-    aiLogInfo('[AIPhone][LocalToolBaiduMapRequest] endpoint=' + localProviderConfig.baiduMapApiUrl +
+    aiLogInfo('[AIPhone][LocalToolBaiduMapRequest] provider=百度地图 scope=2 endpoint=' + localProviderConfig.baiduMapApiUrl +
       ' akChars=' + ak.length.toString() + ' locationSource=' + locationSource + ' keyword=' + keyword);
     const response = await requestText(buildQueryUrl(
       localProviderConfig.baiduMapApiUrl,
       ['ak', 'query', 'location', 'radius', 'output', 'scope', 'coord_type', 'ret_coordtype', 'page_size', 'page_num'],
-      [ak, keyword, latitude + ',' + longitude, localProviderConfig.amapRadius, 'json', '2', '2', 'gcj02ll', '10', '0']
+      [ak, keyword, latitude + ',' + longitude, radiusMeters, 'json', '2', '2', 'gcj02ll', '10', '0']
     ), userAgentHeaders());
     if (response.code < 200 || response.code >= 300) {
       return emptyProviderResult(this.name, 'HTTP ' + response.code.toString() + '：' + response.text.substring(0, 300), true);
@@ -10047,7 +10782,11 @@ class BaiduMapFoodProvider implements FoodProviderAdapter {
         foods.push(food);
       }
     }
-    aiLogInfo('[AIPhone][LocalToolBaiduMapResult] rows=' + places.length.toString() + ' returned=' + foods.length.toString());
+    const foodsWithPhone = foods.filter((food: A2uiFoodData) =>
+      normalizeFoodPhoneNumber(food.phone === undefined ? '' : food.phone).length > 0).length;
+    aiLogInfo('[AIPhone][LocalToolBaiduMapResult] endpoint=' + localProviderConfig.baiduMapApiUrl +
+      ' scope=2 rows=' + places.length.toString() + ' returned=' + foods.length.toString() +
+      ' foodsWithPhone=' + foodsWithPhone.toString() + ' hoursHits=' + foodHoursHitCount(foods).toString());
     return {
       provider: this.name,
       foods: foods,
@@ -10062,8 +10801,9 @@ class BaiduMapFoodProvider implements FoodProviderAdapter {
 class GoogleMapsFoodProvider implements FoodProviderAdapter {
   name: string = 'Google Maps';
 
-  async search(prompt: string, query: FoodQuery, keyword: string, _location: string, _locationSource: string): Promise<FoodProviderResult> {
-    const searchQuery = query.place.length > 0 ? query.place + '附近的' + keyword : prompt;
+  async search(prompt: string, query: FoodQuery, keyword: string, _location: string, _locationSource: string,
+    _radiusMeters: string): Promise<FoodProviderResult> {
+    const searchQuery = foodGoogleSearchQueryForTest(prompt, query.place, keyword);
     const results = await callMapsPlaceSearch(searchQuery, localProviderConfig.googleMapsApiKey);
     const foods: A2uiFoodData[] = [];
     let providerError = '';
@@ -10094,10 +10834,23 @@ class GoogleMapsFoodProvider implements FoodProviderAdapter {
   }
 }
 
+export function foodGoogleSearchQueryForTest(prompt: string, place: string, keyword: string): string {
+  const normalizedPlace = place.trim();
+  const normalizedKeyword = keyword.trim();
+  if (normalizedPlace.length > 0 && normalizedKeyword.length > 0) {
+    return normalizedPlace + '附近的' + normalizedKeyword;
+  }
+  if (normalizedPlace.length > 0) {
+    return normalizedPlace + '附近的餐饮';
+  }
+  return prompt;
+}
+
 class MeituanUnionFoodProvider implements FoodProviderAdapter {
   name: string = '美团';
 
-  async search(_prompt: string, _query: FoodQuery, keyword: string, location: string, _locationSource: string): Promise<FoodProviderResult> {
+  async search(_prompt: string, _query: FoodQuery, keyword: string, location: string, _locationSource: string,
+    _radiusMeters: string): Promise<FoodProviderResult> {
     const appKey = localProviderConfig.meituanUnionAppKey;
     const appSecret = localProviderConfig.meituanUnionAppSecret;
     if (appKey.length === 0 || appSecret.length === 0) {
@@ -10163,7 +10916,8 @@ class MeituanUnionFoodProvider implements FoodProviderAdapter {
 class TaobaoFlashFoodProvider implements FoodProviderAdapter {
   name: string = '淘宝闪购';
 
-  async search(_prompt: string, _query: FoodQuery, keyword: string, location: string, _locationSource: string): Promise<FoodProviderResult> {
+  async search(_prompt: string, _query: FoodQuery, keyword: string, location: string, _locationSource: string,
+    _radiusMeters: string): Promise<FoodProviderResult> {
     const appKey = localProviderConfig.taobaoAppKey;
     const appSecret = localProviderConfig.taobaoAppSecret;
     const pid = localProviderConfig.taobaoFlashPid;
@@ -10281,7 +11035,8 @@ function wantsBrandMenu(prompt: string, keyword: string): boolean {
 class McDonaldsMcpFoodProvider implements FoodProviderAdapter {
   name: string = '麦当劳';
 
-  async search(prompt: string, query: FoodQuery, keyword: string, _location: string, _locationSource: string): Promise<FoodProviderResult> {
+  async search(prompt: string, query: FoodQuery, keyword: string, _location: string, _locationSource: string,
+    _radiusMeters: string): Promise<FoodProviderResult> {
     const token = localProviderConfig.mcdMcpToken;
     if (token.length === 0) {
       return emptyProviderResult(this.name, '未配置 MCD_MCP_TOKEN');
@@ -10322,7 +11077,8 @@ class McDonaldsMcpFoodProvider implements FoodProviderAdapter {
 class LuckinMcpFoodProvider implements FoodProviderAdapter {
   name: string = '瑞幸';
 
-  async search(prompt: string, _query: FoodQuery, keyword: string, location: string, _locationSource: string): Promise<FoodProviderResult> {
+  async search(prompt: string, _query: FoodQuery, keyword: string, location: string, _locationSource: string,
+    _radiusMeters: string): Promise<FoodProviderResult> {
     const token = localProviderConfig.luckinMcpToken;
     if (token.length === 0) {
       return emptyProviderResult(this.name, '未配置 LUCKIN_MCP_TOKEN');
@@ -10419,33 +11175,49 @@ async function callStructuredFoodTool(
 ): Promise<DataResult> {
   const key = localProviderConfig.amapKey;
   const preferences = foodPreferenceArgs(args);
-  let effectivePrompt: string = prompt;
-  if (args !== null) {
-    const values = args as Record<string, Object | string | number | boolean | null | undefined>;
-    const structuredQuery = values['query'];
-    if (typeof structuredQuery === 'string' && structuredQuery.trim().length > 0) {
-      effectivePrompt = structuredQuery.trim();
-    }
-  }
+  const structuredArgs = foodSearchArgs(args);
+  const requestedArea = structuredFoodSearchArea(structuredArgs);
+  const rawSearchArea = structuredArgs.searchArea;
+  const rawLongitude = rawSearchArea === undefined ? '' : textOf(rawSearchArea.longitude).trim();
+  const rawLatitude = rawSearchArea === undefined ? '' : textOf(rawSearchArea.latitude).trim();
+  const rawRadiusMeters = rawSearchArea === undefined ? '' : textOf(rawSearchArea.radiusMeters).trim();
+  const rawName = rawSearchArea === undefined ? '' : textOf(rawSearchArea.name).trim();
+  const rawAddress = rawSearchArea === undefined ? '' : textOf(rawSearchArea.address).trim();
+  aiLogInfo('[AIPhone][FoodSearchStructuredArgs] areaPresent=' +
+    (rawSearchArea === undefined ? 'false' : 'true') +
+    ' longitudeRaw=' + rawLongitude +
+    ' latitudeRaw=' + rawLatitude +
+    ' radiusMetersRaw=' + rawRadiusMeters +
+    ' centerValid=' + (requestedArea === null ? 'false' : 'true') +
+    ' nameChars=' + rawName.length.toString() +
+    ' addressChars=' + rawAddress.length.toString());
+  const effectivePrompt = textOf(structuredArgs.query).trim().length > 0 ?
+    textOf(structuredArgs.query).trim() : prompt;
 
   const query = extractFoodQuery(effectivePrompt);
   const preflightResults: FoodProviderResult[] = [];
   const provenanceResults: FoodProviderResult[] = [];
   let locationSource = 'none';
-  let location = parseCoordinatePair(effectivePrompt);
-  if (location.length > 0) {
-    locationSource = 'prompt_coords';
-  } else if (query.place.length > 0 && key.length > 0) {
-    try {
-      const resolved = await resolveFoodSearchLocation(query.place, key);
-      location = resolved.location;
-      locationSource = resolved.locationSource;
-      provenanceResults.push({
-        provider: '高德', foods: [], error: '', attempted: true, succeeded: true, operation: 'geocode'
-      });
-    } catch (error) {
-      preflightResults.push(emptyProviderResult('高德', '地点解析失败：' + describeThrown(error), true, 'geocode'));
-      locationSource = 'geocode_error';
+  let location = requestedArea === null ? '' :
+    requestedArea.longitude.toString() + ',' + requestedArea.latitude.toString();
+  if (requestedArea !== null) {
+    locationSource = 'structured_search_area';
+  } else {
+    location = parseCoordinatePair(effectivePrompt);
+    if (location.length > 0) {
+      locationSource = 'prompt_coords';
+    } else if (query.place.length > 0 && key.length > 0) {
+      try {
+        const resolved = await resolveFoodSearchLocation(query.place, key);
+        location = resolved.location;
+        locationSource = resolved.locationSource;
+        provenanceResults.push({
+          provider: '高德', foods: [], error: '', attempted: true, succeeded: true, operation: 'geocode'
+        });
+      } catch (error) {
+        preflightResults.push(emptyProviderResult('高德', '地点解析失败：' + describeThrown(error), true, 'geocode'));
+        locationSource = 'geocode_error';
+      }
     }
   }
   if (location.length === 0) {
@@ -10454,7 +11226,19 @@ async function callStructuredFoodTool(
       locationSource = 'rawfile_default';
     }
   }
-  const keyword = extractFoodKeyword(effectivePrompt);
+  const structuredKeyword = textOf(structuredArgs.keyword).trim();
+  const keyword = structuredKeyword.length > 0 ? structuredKeyword : extractFoodKeyword(effectivePrompt);
+  const selectedPlace = requestedArea === null ? '' : firstText([requestedArea.name, requestedArea.address]);
+  const providerQuery: FoodQuery = {
+    place: selectedPlace.length > 0 ? selectedPlace : query.place,
+    keyword: query.keyword
+  };
+  const radiusMeters = (requestedArea === null ? normalizedFoodRadius(undefined) : requestedArea.radiusMeters).toString();
+  aiLogInfo('[AIPhone][FoodSearchResolvedArea] locationSource=' + locationSource +
+    ' longitude=' + locationLongitude(location) +
+    ' latitude=' + locationLatitude(location) +
+    ' radiusMeters=' + radiusMeters +
+    ' structuredCenterAccepted=' + (requestedArea === null ? 'false' : 'true'));
 
   const adapters: FoodProviderAdapter[] = [
     new AmapFoodProvider(),
@@ -10493,7 +11277,9 @@ async function callStructuredFoodTool(
   }
   const tasks: Promise<FoodProviderResult>[] = [];
   for (let index = 0; index < adapters.length; index++) {
-    tasks.push(safeFoodProviderSearch(adapters[index], effectivePrompt, query, keyword, location, locationSource));
+    tasks.push(safeFoodProviderSearch(
+      adapters[index], effectivePrompt, providerQuery, keyword, location, locationSource, radiusMeters
+    ));
   }
   const streamed = await streamFoodProviderResultsWithPartials(tasks, providerResults, (snapshot: FoodProviderPartialSnapshot) => {
     aiLogInfo('[AIPhone][LocalToolFoodPartial] provider=' + snapshot.provider +
@@ -10511,9 +11297,34 @@ async function callStructuredFoodTool(
   aiLogInfo('[AIPhone][LocalToolFoodAggregate] keyword=' + keyword +
     ' locationSource=' + locationSource +
     ' locationPresent=' + (location.length > 0 ? 'true' : 'false') +
+    ' radiusMeters=' + radiusMeters +
     ' foods=' + aggregated.foods.length.toString() +
+    ' hoursHits=' + foodHoursHitCount(aggregated.foods).toString() +
     ' issues=' + rows.length.toString());
 
+  const locationLongitudeValue = Number(locationLongitude(location));
+  const locationLatitudeValue = Number(locationLatitude(location));
+  const searchArea: A2uiFoodSearchArea = {
+    longitude: Number.isFinite(locationLongitudeValue) ? locationLongitudeValue : 0,
+    latitude: Number.isFinite(locationLatitudeValue) ? locationLatitudeValue : 0,
+    radiusMeters: Number(radiusMeters),
+    name: requestedArea === null ? query.place : requestedArea.name,
+    address: requestedArea === null ? query.place : requestedArea.address
+  };
+  const searchContext: A2uiFoodSearchContext = {
+    query: effectivePrompt,
+    keyword: keyword,
+    searchArea: searchArea
+  };
+  if (preferences.brandPreference !== undefined) {
+    searchContext.brandPreference = preferences.brandPreference;
+  }
+  if (preferences.brandStrict !== undefined) {
+    searchContext.brandStrict = preferences.brandStrict;
+  }
+  if (preferences.sweetness !== undefined) {
+    searchContext.sweetness = preferences.sweetness;
+  }
   const data: FoodStructuredData = {
     title: '外卖聚合搜索',
     body: '以下结果来自高德、腾讯地图、百度地图、Google Maps、美团联盟、淘宝闪购联盟，以及已配置的麦当劳/瑞幸官方 MCP；仅展示真实返回字段，不下单、不支付、不创建购物车。' + preferenceNote,
@@ -10521,7 +11332,8 @@ async function callStructuredFoodTool(
       '已聚合 ' + aggregated.foods.length.toString() + ' 个可展示结果；' + rows.length.toString() + ' 个来源状态见下方。' :
       '所有来源都没有可展示外卖结果；下面只列出真实 provider 状态。',
     foods: aggregated.foods,
-    rows: rows
+    rows: rows,
+    foodSearchContext: searchContext
   };
   return foodStructuredDataResultFromProviders(data, provenanceResults.concat(streamed.results));
 }
@@ -10544,7 +11356,7 @@ async function callLocalFoodSearch(prompt: string, surfaceId: string, emitJsonl:
     return foodStructuredDataA2ui(surfaceId, data);
   }
   const finalState = foodA2uiRenderState(
-    surfaceId, data.title, data.body, data.summary, data.foods, data.rows, 'ready'
+    surfaceId, data.title, data.body, data.summary, data.foods, data.rows, 'ready', data.foodSearchContext
   );
   const planned = planA2uiPartialUpdate(foodPartialCache, finalState);
   aiLogInfo('[AIPhone][LocalToolFoodFinalEmit] envelopes=' + planned.emittedEnvelopeCount.toString() +
@@ -10685,7 +11497,9 @@ async function callStructuredTrainTool(prompt: string): Promise<DataResult> {
   const top: A2uiTrainData[] = [];
   const count = parsed.length > TRAIN_RESULT_LIMIT ? TRAIN_RESULT_LIMIT : parsed.length;
   for (let index = 0; index < count; index++) {
-    top.push(normalizeTrainRecord(parsed[index], bookingUrl));
+    const train = parsed[index];
+    train.travelDate = date;
+    top.push(normalizeTrainRecord(train, bookingUrl));
   }
 
   const timeSummary = departAfter.length > 0 ? departAfter + ' 后' : '';
@@ -11461,12 +12275,16 @@ function dynamicHttpApiResultFromJson(registration: DynamicToolRegistration, res
     };
   }
 
+  let httpSucceeded = false;
+  if (response.code >= 200 && response.code < 300) {
+    httpSucceeded = true;
+  }
   return {
     sourceTag: registration.displayName,
     toolName: registration.mcpToolName,
     title: '动态 HTTP API 返回',
-    status: response.code >= 200 && response.code < 300 ? 'success' : 'error',
-    summary: response.code >= 200 && response.code < 300 ? '已收到远程 HTTP API 返回。' : '远程 HTTP API 返回 HTTP ' + response.code.toString(),
+    status: httpSucceeded ? 'success' : 'error',
+    summary: httpSucceeded ? '已收到远程 HTTP API 返回。' : '远程 HTTP API 返回 HTTP ' + response.code.toString(),
     rows: [{ label: 'HTTP', value: response.code.toString() }],
     rawPreview: response.text.substring(0, 1200)
   };
@@ -12877,7 +13695,8 @@ function youtubeSearchOptionsFromArgs(args: Object | null): YouTubeSearchOptions
   const rawMaxResults = record.maxResults;
   return {
     order: order.length > 0 ? order : 'relevance',
-    maxResults: typeof rawMaxResults === 'number' ? rawMaxResults : 10
+    maxResults: typeof rawMaxResults === 'number' ? rawMaxResults : 10,
+    pageToken: textOf(record.pageToken).trim()
   };
 }
 
@@ -13655,6 +14474,69 @@ async function callStructuredMediaTool(
     ));
   }
   return errorDataResult(toolId, '', 'MEDIA_TOOL_UNSUPPORTED', 'Unsupported media tool: ' + toolId + '.');
+}
+
+export async function callConfiguredAggregateSearchContinuation(
+  query: string,
+  requests: WaterfallLoadRequest[],
+  onBatch: AggregateSearchBatchObserver
+): Promise<void> {
+  return callAggregateSearchContinuation(
+    query,
+    requests,
+    localProviderConfig.youtubeApiKey,
+    { apiKey: localProviderConfig.zhihuApiKey },
+    onBatch
+  );
+}
+
+export interface WaterfallInterestRecallBatch {
+  request: WaterfallInterestRecallRequest;
+  batch: AggregateSearchSourceBatch;
+  candidates: WaterfallCandidate[];
+}
+
+export type WaterfallInterestRecallObserver = (result: WaterfallInterestRecallBatch) => void;
+
+export async function callConfiguredWaterfallInterestRecall(
+  requests: WaterfallInterestRecallRequest[],
+  onBatch: WaterfallInterestRecallObserver
+): Promise<void> {
+  let batchIndex = 0;
+  for (let requestIndex = 0; requestIndex < requests.length; requestIndex += 1) {
+    const recall = requests[requestIndex];
+    if (recall.route === 'popular' && recall.sources.indexOf('youtube') >= 0) {
+      const dynamic = await callYouTubeMostPopularVideos(localProviderConfig.youtubeApiKey, 10);
+      const batch = aggregateVideoSourceBatchFromDynamicResults('youtube', dynamic);
+      onBatch({
+        request: recall,
+        batch,
+        candidates: aggregateMediaCandidates(
+          batch.videos, batch.posts, batchIndex++, '', 'done', 'popular', recall.weight)
+      });
+      continue;
+    }
+    const loads: WaterfallLoadRequest[] = recall.sources.map((source: string): WaterfallLoadRequest => ({
+      source,
+      continuation: null,
+      limit: 10,
+      phase: 'loading',
+      message: '',
+      mode: 'search'
+    }));
+    await callConfiguredAggregateSearchContinuation(
+      recall.query,
+      loads,
+      (batch: AggregateSearchSourceBatch): void => {
+        onBatch({
+          request: recall,
+          batch,
+          candidates: aggregateMediaCandidates(
+            batch.videos, batch.posts, batchIndex++, recall.query, 'done', recall.route, recall.weight)
+        });
+      }
+    );
+  }
 }
 
 async function callLocalMediaTool(

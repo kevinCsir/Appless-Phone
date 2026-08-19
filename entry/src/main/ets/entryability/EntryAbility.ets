@@ -8,15 +8,15 @@ import {
   aiLogError,
   aiLogInfo,
   AssetCredentialStore,
-  configureComposioConfigFromRawJson,
-  configureLocalModelSettingsFromRawJson,
-  configureLocalProviderConfigFromRawJson,
   gmailOAuthConfigFromProvider,
-  handleGmailOAuthRedirect,
-  localModelSettingsDebugSummary,
-  localProviderConfigDebugSummary
+  handleGmailOAuthRedirect
 } from '@loop/agent-core';
 import { configurePersonaStoreFromRaw } from '../model/PersonaStore';
+import { loadProviderRuntimeConfig } from './ProviderRuntimeBootstrap';
+import {
+  BIM_SENTINEL_MOCK_EVENT,
+  queueBimSentinelMockHandoff
+} from '../pages/A2uiHome/bim/BimDailyReminder';
 import {
   claimDueTrainPresaleTask,
   parseTrainPresaleTaskList,
@@ -28,8 +28,6 @@ import {
 } from '../pages/A2uiHome/train/TrainPresaleTaskStore';
 
 const DOMAIN = 0x0000;
-const LOCAL_PROVIDER_CONFIG_RAWFILE = 'aiphone_provider_config.json';
-const COMPOSIO_CONFIG_RAWFILE = 'composio_config.json';
 const PERSONA_MANIFEST_RAWFILE = 'personas/personas.json';
 const PERSONA_IDS: string[] = [
   'default_companion',
@@ -42,7 +40,7 @@ const PERSONA_IDS: string[] = [
 ];
 const PERSONA_SKILL_PATHS: Record<string, string[]> = {
   'default_companion': ['skills/default-general/SKILL.md'],
-  'food_companion': ['skills/food-search/SKILL.md', 'skills/coffee-order/SKILL.md', 'skills/milk-tea/SKILL.md'],
+  'food_companion': ['skills/food-search/SKILL.md', 'skills/milk-tea/SKILL.md'],
   'travel_companion': ['skills/travel-planning/SKILL.md', 'skills/train-planning/SKILL.md', 'skills/flight-planning/SKILL.md'],
   'work_companion': ['skills/work-assistant/SKILL.md', 'skills/mail-draft/SKILL.md', 'skills/calendar-planning/SKILL.md'],
   'entertainment_companion': ['skills/media-search/SKILL.md', 'skills/worldcup-night/SKILL.md', 'skills/youtube-search/SKILL.md'],
@@ -51,8 +49,8 @@ const PERSONA_SKILL_PATHS: Record<string, string[]> = {
 };
 const GMAIL_REVERSED_CLIENT_SCHEME = 'com.googleusercontent.apps.358078200829-covuu6l8dgvs7kaejua7mrkke7e8833b:/oauth2redirect';
 const GMAIL_OAUTH_URI_HINTS: string[] = [
-  'com.example.aiphonedemo:/oauth/google',
-  'com.example.aiphonedemo://oauth/google',
+  'com.jiuwen.appless:/oauth/google',
+  'com.jiuwen.appless://oauth/google',
   'aiphone://oauth/google',
   GMAIL_REVERSED_CLIENT_SCHEME
 ];
@@ -223,6 +221,15 @@ function trainPresaleTaskIdFromWant(want: Want): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 }
 
+export function queueBimSentinelMockFromWant(want: Want): boolean {
+  const params = want.parameters;
+  if (params === undefined || params === null || params['bimDailySentinelMock'] !== true) {
+    return false;
+  }
+  queueBimSentinelMockHandoff();
+  return true;
+}
+
 function trainPresaleTasks(store: preferences.Preferences): TrainPresaleTask[] {
   return parseTrainPresaleTaskList(preferenceText(store.getSync(TRAIN_PRESALE_TASKS_KEY, '')));
 }
@@ -341,11 +348,11 @@ export default class EntryAbility extends UIAbility {
     } catch (err) {
       hilog.error(DOMAIN, 'testTag', 'Failed to set colorMode. Cause: %{public}s', JSON.stringify(err));
     }
-    this.loadLocalProviderConfig();
-    this.loadComposioConfig();
+    loadProviderRuntimeConfig(this.context, true);
     this.loadPersonaPacks();
     this.handleOAuthWant(want);
     this.claimTrainPresaleTask(want);
+    queueBimSentinelMockFromWant(want);
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
   }
 
@@ -360,28 +367,6 @@ export default class EntryAbility extends UIAbility {
       return this.rawfileText(path);
     } catch (_err) {
       return '';
-    }
-  }
-
-  private loadLocalProviderConfig(): void {
-    try {
-      const rawJson = this.rawfileText(LOCAL_PROVIDER_CONFIG_RAWFILE);
-      configureLocalProviderConfigFromRawJson(rawJson);
-      configureLocalModelSettingsFromRawJson(rawJson);
-      hilog.info(DOMAIN, 'testTag', 'Loaded local provider config. agentCore=%{public}s %{public}s',
-        localProviderConfigDebugSummary(),
-        localModelSettingsDebugSummary());
-    } catch (err) {
-      hilog.info(DOMAIN, 'testTag', 'Local provider config not loaded from %{public}s. Cause: %{public}s', LOCAL_PROVIDER_CONFIG_RAWFILE, JSON.stringify(err));
-    }
-  }
-
-  private loadComposioConfig(): void {
-    try {
-      configureComposioConfigFromRawJson(this.rawfileText(COMPOSIO_CONFIG_RAWFILE));
-      hilog.info(DOMAIN, 'testTag', 'Loaded Composio config.');
-    } catch (err) {
-      hilog.info(DOMAIN, 'testTag', 'Composio config not loaded from %{public}s. Cause: %{public}s', COMPOSIO_CONFIG_RAWFILE, JSON.stringify(err));
     }
   }
 
@@ -421,16 +406,17 @@ export default class EntryAbility extends UIAbility {
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onNewWant');
+    const bimSentinelMock = queueBimSentinelMockFromWant(want);
     const uri = oauthUriFromWant(want);
-    this.loadLocalProviderConfig();
-    if (!isComposioCallbackUri(uri)) {
-      this.loadComposioConfig();
-    }
+    loadProviderRuntimeConfig(this.context, !isComposioCallbackUri(uri));
     this.loadPersonaPacks();
     this.handleOAuthWant(want);
     const result = this.claimTrainPresaleTask(want);
     if (result.changed) {
       this.context.getApplicationContext().eventHub.emit(TRAIN_PRESALE_HANDOFF_EVENT);
+    }
+    if (bimSentinelMock) {
+      this.context.getApplicationContext().eventHub.emit(BIM_SENTINEL_MOCK_EVENT);
     }
   }
 

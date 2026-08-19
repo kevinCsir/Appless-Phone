@@ -64,6 +64,9 @@ interface LuckinPaymentArgs {
   payOrderQrCodeUrl?: HtmlHomePolicyValue;
 }
 
+type DailyBriefPreferenceValue = Object | string | number | boolean | null | undefined;
+type DailyBriefPreferenceRecord = Record<string, DailyBriefPreferenceValue>;
+
 export function isHtmlHomeActionAllowed(document: HtmlHomeDocument, action: A2uiAction): boolean {
   if (action.id === 'hotel.book') {
     return false;
@@ -93,7 +96,23 @@ function isHtmlHomeActionAllowedInDocument(document: HtmlHomeDocument, action: A
   if (action.id === 'flight_retry_date') {
     return hasBlockKind(document, 'flight-option');
   }
+  if (document.kind === 'food' && action.kind === 'client' &&
+    (action.id === 'food_address_book_save' || action.id === 'food_address_book_delete') &&
+    foodAddressBookActionAllowed(document, action)) {
+    return true;
+  }
+  if (document.kind === 'food' && action.kind === 'client' && action.id === 'food_change_location' &&
+    foodLocationChangeAllowed(document, action)) {
+    return true;
+  }
+  if (document.kind === 'food' && action.kind === 'client' && action.id === 'food_relocate_current' &&
+    foodSurfaceOwnedActionAllowed(document, action)) {
+    return true;
+  }
   if (action.id === 'payment.account.save' && paymentAccountSaveAllowed(document, action)) {
+    return true;
+  }
+  if (action.id === 'daily.brief.preference.save' && dailyBriefPreferenceSaveAllowed(document, action)) {
     return true;
   }
   for (let index = 0; index < document.actions.length; index++) {
@@ -135,6 +154,95 @@ function isHtmlHomeActionAllowedInDocument(document: HtmlHomeDocument, action: A
     return true;
   }
   return false;
+}
+
+function foodAddressBookActionAllowed(document: HtmlHomeDocument, action: A2uiAction): boolean {
+  if (action.args === undefined || action.args === null) {
+    return false;
+  }
+  const args = action.args as Record<string, HtmlHomePolicyValue>;
+  if (policyText(args['surfaceId']).trim() !== (document.surfaceId ?? '')) {
+    return false;
+  }
+  return action.id !== 'food_address_book_delete' || policyText(args['addressId']).trim().length > 0;
+}
+
+function foodSurfaceOwnedActionAllowed(document: HtmlHomeDocument, action: A2uiAction): boolean {
+  if (action.args === undefined || action.args === null) {
+    return false;
+  }
+  const args = action.args as Record<string, HtmlHomePolicyValue>;
+  return policyText(args['surfaceId']).trim() === (document.surfaceId ?? '');
+}
+
+function foodLocationChangeAllowed(document: HtmlHomeDocument, action: A2uiAction): boolean {
+  if (action.args === undefined || action.args === null) {
+    return false;
+  }
+  const args = action.args as Record<string, HtmlHomePolicyValue>;
+  if (policyText(args['surfaceId']).trim() !== (document.surfaceId ?? '')) {
+    return false;
+  }
+  const areaValue = args['searchArea'];
+  if (areaValue === undefined || areaValue === null || typeof areaValue !== 'object' || Array.isArray(areaValue)) {
+    return false;
+  }
+  const area = areaValue as Record<string, HtmlHomePolicyValue>;
+  const longitude = Number(policyText(area['longitude']));
+  const latitude = Number(policyText(area['latitude']));
+  const radius = Number(policyText(area['radiusMeters']));
+  return Number.isFinite(longitude) && longitude >= -180 && longitude <= 180 &&
+    Number.isFinite(latitude) && latitude >= -90 && latitude <= 90 &&
+    Number.isFinite(radius) && radius >= 100 && radius <= 50000;
+}
+
+function dailyBriefPreferenceSaveAllowed(document: HtmlHomeDocument, action: A2uiAction): boolean {
+  const baseAction = dailyBriefPreferenceSaveAction(document);
+  if (document.kind !== 'daily-brief' || action.kind !== 'client' || action.args === undefined ||
+    baseAction === null || action.prompt !== baseAction.prompt) {
+    return false;
+  }
+  const args = action.args as DailyBriefPreferenceRecord;
+  if (args === null || Array.isArray(args) || Object.keys(args).sort().join(',') !==
+    'formats,language,negativePreference,targetTime,timeBudgetMinutes,topics') {
+    return false;
+  }
+  const topics = dailyBriefStringArray(args['topics'], 40);
+  const formats = dailyBriefStringArray(args['formats']);
+  const language = args['language'];
+  const timeBudgetMinutes = args['timeBudgetMinutes'];
+  const negativePreference = args['negativePreference'];
+  const targetTime = args['targetTime'];
+  return topics !== null && topics.length <= 8 && formats !== null &&
+    (language === '中文优先' || language === '中英混合') &&
+    typeof timeBudgetMinutes === 'number' && Number.isFinite(timeBudgetMinutes) && timeBudgetMinutes >= 0 &&
+    typeof negativePreference === 'string' && negativePreference.length <= 4096 &&
+    typeof targetTime === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(targetTime);
+}
+
+function dailyBriefPreferenceSaveAction(document: HtmlHomeDocument): HtmlHomeAction | null {
+  for (let index = 0; index < document.actions.length; index += 1) {
+    if (document.actions[index].id === 'daily.brief.preference.save' &&
+      document.actions[index].kind === 'client') {
+      return document.actions[index];
+    }
+  }
+  return null;
+}
+
+function dailyBriefStringArray(value: DailyBriefPreferenceValue, limit: number = 4096): string[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const values = value as DailyBriefPreferenceValue[];
+  const result: string[] = [];
+  for (let index = 0; index < values.length; index += 1) {
+    if (typeof values[index] !== 'string' || (values[index] as string).length > limit) {
+      return null;
+    }
+    result.push(values[index] as string);
+  }
+  return result;
 }
 
 function mailCalendarAddAllowed(block: HtmlHomeBlock, action: A2uiAction): boolean {
