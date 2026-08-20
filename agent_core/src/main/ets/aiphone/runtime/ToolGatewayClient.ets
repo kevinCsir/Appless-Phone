@@ -9880,7 +9880,7 @@ export async function queryMcDonaldsFoodMenuForCard(item: A2uiFoodData): Promise
     const categories = menuData === undefined || menuData.categories === undefined ? [] : menuData.categories;
     const entries = menuData === undefined ? [] : mcdMealEntries(menuData.meals);
     const products: McDonaldsFoodMenuProduct[] = [];
-    for (let index = 0; index < entries.length && products.length < FOOD_PROVIDER_RESULT_LIMIT; index += 1) {
+    for (let index = 0; index < entries.length; index += 1) {
       const product = mcDonaldsFoodMenuProduct(entries[index], categories);
       if (product.name.length > 0) {
         products.push(product);
