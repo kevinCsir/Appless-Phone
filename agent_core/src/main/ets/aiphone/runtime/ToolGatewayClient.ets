@@ -9705,7 +9705,7 @@ export async function queryLuckinFoodMenuForCard(item: A2uiFoodData): Promise<Lu
       storeLocation: lookup.location, products: [], error: '瑞幸门店 deptId 无效。' };
   }
   const token = localProviderConfig.luckinMcpToken;
-  const keywords: string[] = ['咖啡', '拿铁', '茶', '轻食'];
+  const keywords: string[] = ['咖啡', '拿铁', '美式', '生椰', '茶', '轻食'];
   const products: LuckinFoodMenuProduct[] = [];
   const seenProductIds: string[] = [];
   try {
