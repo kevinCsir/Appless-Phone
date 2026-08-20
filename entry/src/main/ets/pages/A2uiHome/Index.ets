@@ -123,6 +123,9 @@ import {
   normalizeComposioUserId,
   prepareGmailOAuthAuthorizationUrl,
   prepareGoogleOAuthAuthorizationUrl,
+  foodCardHasLuckinSource,
+  LuckinFoodMenuProduct,
+  queryLuckinFoodMenuForCard,
   recheck12306TrainAvailability,
   resolveMultiTaskSlotId,
   resolveLuckinActionPrompt,
@@ -731,6 +734,16 @@ interface LuckinPaymentStatusPatch {
   kind: 'payment-status';
   statusText: string;
   sectionId?: string;
+}
+
+interface LuckinFoodMenuPatch {
+  kind: 'food-menu';
+  status: 'ready' | 'error';
+  requestKey: string;
+  storeName: string;
+  storeAddress: string;
+  products: LuckinFoodMenuProduct[];
+  error: string;
 }
 
 interface InlineLuckinPaymentStatusPlan {
@@ -7085,6 +7098,10 @@ struct Index {
     if (await this.handleStoredFoodFavoriteAction(action)) {
       return;
     }
+    if (action.id === 'food_luckin_menu_open') {
+      await this.openLuckinFoodMenu(action);
+      return;
+    }
     if (action.id === 'food_favorite_remove') {
       await this.removeFoodFavorite(action);
       return;
@@ -7437,6 +7454,56 @@ struct Index {
     this.htmlHomeCacheKey = '';
     this.htmlHomeCacheHtml = '';
     aiLogInfo('[AIPhone][FoodFavoritesLoaded] count=' + this.foodFavorites.length.toString());
+  }
+
+  private foodRowForLuckinMenuAction(action: A2uiAction): A2uiFoodData | null {
+    if (action.args !== undefined && action.args !== null) {
+      const favorite = this.storedFoodFavorite(action);
+      if (favorite !== null) {
+        return favorite;
+      }
+    }
+    const model = this.parsedDataModel();
+    if (model === null) {
+      return null;
+    }
+    const payload = this.htmlPinPayload(action);
+    return this.htmlPinFoodRow(model, payload, this.htmlActionIndex(action, payload));
+  }
+
+  private publishLuckinFoodMenuPatch(patch: LuckinFoodMenuPatch): void {
+    this.luckinInlinePatchJson = JSON.stringify(patch);
+    this.luckinInlinePatchTick = this.luckinInlinePatchTick + 1;
+    aiLogInfo('[AIPhone][LuckinFoodMenuPatch] status=' + patch.status +
+      ' products=' + patch.products.length.toString());
+  }
+
+  private async openLuckinFoodMenu(action: A2uiAction): Promise<void> {
+    if (this.currentSurface.intent !== 'food') {
+      this.logHtmlHomeActionError(action, 'food_surface_required');
+      return;
+    }
+    const row = this.foodRowForLuckinMenuAction(action);
+    if (row === null || !foodCardHasLuckinSource(row)) {
+      this.logHtmlHomeActionError(action, row === null ? 'missing_food_row' : 'luckin_source_required');
+      return;
+    }
+    const surfaceId = this.currentSurface.surfaceId;
+    const requestKey = row.name + '|' + row.address;
+    const result = await queryLuckinFoodMenuForCard(row);
+    if (this.currentSurface.surfaceId !== surfaceId) {
+      aiLogInfo('[AIPhone][LuckinFoodMenuPatch] status=ignored reason=surface_changed');
+      return;
+    }
+    this.publishLuckinFoodMenuPatch({
+      kind: 'food-menu',
+      status: result.found ? 'ready' : 'error',
+      requestKey: requestKey,
+      storeName: result.storeName.length > 0 ? result.storeName : row.name,
+      storeAddress: result.storeAddress.length > 0 ? result.storeAddress : row.address,
+      products: result.products,
+      error: result.error
+    });
   }
 
   private async toggleFoodFavorite(action: A2uiAction): Promise<void> {

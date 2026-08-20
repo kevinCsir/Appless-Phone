@@ -290,6 +290,8 @@ export default function htmlHomeActionPolicyTest() {
       expect(isHtmlHomeActionAllowed(doc,
         action('food_favorite_pin', '固定收藏门店', 'client', allowedArgs))).assertTrue();
       expect(isHtmlHomeActionAllowed(doc,
+        action('food_luckin_menu_open', '查询菜单', 'client', allowedArgs))).assertTrue();
+      expect(isHtmlHomeActionAllowed(doc,
         action('food_favorite_remove', '取消收藏门店', 'client', wrongSurfaceArgs))).assertFalse();
       expect(isHtmlHomeActionAllowed(doc,
         action('food_favorite_remove', '取消收藏门店', 'client', invalidIdArgs))).assertFalse();

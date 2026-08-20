@@ -1120,6 +1120,63 @@ interface LuckinShopListArgs {
   latitude: number;
 }
 
+export interface LuckinShopIdLookupRequest {
+  name: string;
+  address: string;
+  location: string;
+}
+
+export interface LuckinShopIdCandidate {
+  deptId: string;
+  name: string;
+  address: string;
+  location: string;
+}
+
+export interface LuckinShopIdLookupResult {
+  found: boolean;
+  deptId: string;
+  name: string;
+  address: string;
+  location: string;
+  matchType: string;
+  score: number;
+  candidateCount: number;
+  error: string;
+}
+
+export interface LuckinFoodMenuOptionGroup {
+  name: string;
+  choices: string[];
+}
+
+export interface LuckinFoodMenuProduct {
+  productId: string;
+  name: string;
+  skuCode: string;
+  pictureUrl: string;
+  priceText: string;
+  originalPriceText: string;
+  tags: string[];
+  options: LuckinFoodMenuOptionGroup[];
+}
+
+export interface LuckinFoodMenuResult {
+  found: boolean;
+  storeName: string;
+  storeAddress: string;
+  products: LuckinFoodMenuProduct[];
+  error: string;
+}
+
+interface ScoredLuckinShopIdCandidate {
+  candidate: LuckinShopIdCandidate;
+  score: number;
+  nameExact: boolean;
+  addressMatched: boolean;
+  distanceMeters: number;
+}
+
 interface LuckinProductSearchArgs {
   deptId: number;
   query: string;
@@ -1329,6 +1386,8 @@ interface LuckinProductRecord {
   price?: string | number;
   discountPrice?: string | number;
   initPrice?: string | number;
+  estimatePrice?: string | number;
+  initialPrice?: string | number;
   productAttrs?: LuckinProductAttr[];
   tags?: string[];
 }
@@ -9260,6 +9319,293 @@ function luckinShopLocation(shop: LuckinShopRecord, fallback: string): string {
   const longitude = firstText([shop.longitude, shop.lng]);
   const latitude = firstText([shop.latitude, shop.lat]);
   return longitude.length > 0 && latitude.length > 0 ? longitude + ',' + latitude : fallback;
+}
+
+function emptyLuckinShopIdLookupResult(candidateCount: number, error: string, matchType: string = 'none'): LuckinShopIdLookupResult {
+  return {
+    found: false,
+    deptId: '',
+    name: '',
+    address: '',
+    location: '',
+    matchType: matchType,
+    score: 0,
+    candidateCount: candidateCount,
+    error: error
+  };
+}
+
+function luckinCoordinateDistanceMeters(left: string, right: string): number {
+  const leftLongitude = Number(locationLongitude(left));
+  const leftLatitude = Number(locationLatitude(left));
+  const rightLongitude = Number(locationLongitude(right));
+  const rightLatitude = Number(locationLatitude(right));
+  if (isNaN(leftLongitude) || isNaN(leftLatitude) || isNaN(rightLongitude) || isNaN(rightLatitude)) {
+    return 999999999;
+  }
+  const radians = Math.PI / 180;
+  const latitudeDelta = (rightLatitude - leftLatitude) * radians;
+  const longitudeDelta = (rightLongitude - leftLongitude) * radians;
+  const leftLatitudeRadians = leftLatitude * radians;
+  const rightLatitudeRadians = rightLatitude * radians;
+  const sinLatitude = Math.sin(latitudeDelta / 2);
+  const sinLongitude = Math.sin(longitudeDelta / 2);
+  const haversine = sinLatitude * sinLatitude +
+    Math.cos(leftLatitudeRadians) * Math.cos(rightLatitudeRadians) * sinLongitude * sinLongitude;
+  return 6371000 * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+}
+
+function scoreLuckinShopIdCandidate(
+  request: LuckinShopIdLookupRequest,
+  candidate: LuckinShopIdCandidate
+): ScoredLuckinShopIdCandidate {
+  const requestName = normalizeFoodComparable(request.name);
+  const candidateName = normalizeFoodComparable(candidate.name);
+  const requestAddress = normalizedFoodAddress(request.address);
+  const candidateAddress = normalizedFoodAddress(candidate.address);
+  const nameExact = requestName.length > 0 && requestName === candidateName;
+  const nameContained = textContainsWithSignal(requestName, candidateName, 5);
+  const addressExact = requestAddress.length > 0 && requestAddress === candidateAddress;
+  const addressContained = textContainsWithSignal(requestAddress, candidateAddress, 8);
+  const distanceMeters = luckinCoordinateDistanceMeters(request.location, candidate.location);
+  let score = 0;
+  if (nameExact) {
+    score += 100;
+  } else if (nameContained) {
+    score += 65;
+  }
+  if (addressExact) {
+    score += 80;
+  } else if (addressContained) {
+    score += 50;
+  }
+  if (distanceMeters <= 100) {
+    score += 40;
+  } else if (distanceMeters <= 300) {
+    score += 25;
+  } else if (distanceMeters <= 800) {
+    score += 10;
+  }
+  return {
+    candidate: candidate,
+    score: score,
+    nameExact: nameExact,
+    addressMatched: addressExact || addressContained,
+    distanceMeters: distanceMeters
+  };
+}
+
+function luckinShopIdMatchType(scored: ScoredLuckinShopIdCandidate): string {
+  if (scored.nameExact && scored.addressMatched) {
+    return 'name_address';
+  }
+  if (scored.nameExact && scored.distanceMeters <= 300) {
+    return 'name_location';
+  }
+  if (scored.addressMatched && scored.distanceMeters <= 300) {
+    return 'address_location';
+  }
+  if (scored.nameExact) {
+    return 'name';
+  }
+  if (scored.addressMatched) {
+    return 'address';
+  }
+  return scored.distanceMeters <= 300 ? 'location' : 'none';
+}
+
+export function matchLuckinShopIdCandidates(
+  request: LuckinShopIdLookupRequest,
+  candidates: LuckinShopIdCandidate[]
+): LuckinShopIdLookupResult {
+  const scored: ScoredLuckinShopIdCandidate[] = [];
+  for (let index = 0; index < candidates.length; index += 1) {
+    if (candidates[index].deptId.trim().length > 0) {
+      scored.push(scoreLuckinShopIdCandidate(request, candidates[index]));
+    }
+  }
+  scored.sort((left: ScoredLuckinShopIdCandidate, right: ScoredLuckinShopIdCandidate): number =>
+    right.score - left.score
+  );
+  if (scored.length === 0) {
+    return emptyLuckinShopIdLookupResult(candidates.length, '瑞幸门店查询没有返回带 deptId 的候选项。');
+  }
+  const best = scored[0];
+  if (best.score < 75) {
+    return emptyLuckinShopIdLookupResult(candidates.length, '没有候选门店达到名称、地址或坐标匹配阈值。');
+  }
+  if (scored.length > 1 && best.score - scored[1].score < 20) {
+    return emptyLuckinShopIdLookupResult(candidates.length, '多个候选门店得分接近，无法可靠确定 deptId。', 'ambiguous');
+  }
+  return {
+    found: true,
+    deptId: best.candidate.deptId,
+    name: best.candidate.name,
+    address: best.candidate.address,
+    location: best.candidate.location,
+    matchType: luckinShopIdMatchType(best),
+    score: best.score,
+    candidateCount: candidates.length,
+    error: ''
+  };
+}
+
+export async function resolveLuckinShopIdByNameAddress(
+  request: LuckinShopIdLookupRequest
+): Promise<LuckinShopIdLookupResult> {
+  const name = request.name.trim();
+  const longitude = locationLongitude(request.location);
+  const latitude = locationLatitude(request.location);
+  if (name.length === 0) {
+    return emptyLuckinShopIdLookupResult(0, '缺少瑞幸门店名称。');
+  }
+  if (longitude.length === 0 || latitude.length === 0 || isNaN(Number(longitude)) || isNaN(Number(latitude))) {
+    return emptyLuckinShopIdLookupResult(0, '缺少有效经纬度，无法重新查询瑞幸门店。');
+  }
+  const token = localProviderConfig.luckinMcpToken;
+  if (token.length === 0) {
+    return emptyLuckinShopIdLookupResult(0, '未配置 LUCKIN_MCP_TOKEN。');
+  }
+  try {
+    const args: LuckinShopListArgs = {
+      deptName: name,
+      longitude: Number(longitude),
+      latitude: Number(latitude)
+    };
+    const payload = await callReadonlyBrandMcpTool(
+      '瑞幸', localProviderConfig.luckinMcpUrl, token, 'queryShopList', args
+    );
+    const shops = luckinShopsFromData(
+      mcpPayloadData(payload as LuckinPayload) as LuckinShopRecord[] | LuckinShopContainer | undefined
+    );
+    const candidates: LuckinShopIdCandidate[] = [];
+    for (let index = 0; index < shops.length; index += 1) {
+      const shop = shops[index];
+      candidates.push({
+        deptId: textOf(shop.deptId),
+        name: luckinShopName(shop),
+        address: luckinShopAddress(shop),
+        location: luckinShopLocation(shop, '')
+      });
+    }
+    const result = matchLuckinShopIdCandidates({
+      name: name,
+      address: request.address,
+      location: request.location
+    }, candidates);
+    aiLogInfo('[AIPhone][LuckinShopIdLookup] found=' + (result.found ? 'true' : 'false') +
+      ' candidates=' + result.candidateCount.toString() +
+      ' score=' + result.score.toString() +
+      ' matchType=' + result.matchType);
+    return result;
+  } catch (error) {
+    return emptyLuckinShopIdLookupResult(0, '瑞幸门店重新查询失败：' + describeThrown(error));
+  }
+}
+
+export function foodCardHasLuckinSource(item: A2uiFoodData): boolean {
+  const sourceTags = item.sourceTags === undefined || item.sourceTags === null ? [] : item.sourceTags;
+  for (let index = 0; index < sourceTags.length; index += 1) {
+    if (textOf(sourceTags[index]).trim() === '瑞幸') {
+      return true;
+    }
+  }
+  return false;
+}
+
+export async function resolveLuckinShopIdForFoodCard(item: A2uiFoodData): Promise<LuckinShopIdLookupResult> {
+  if (!foodCardHasLuckinSource(item)) {
+    return emptyLuckinShopIdLookupResult(0, '当前餐饮卡片没有瑞幸信源。', 'unsupported_source');
+  }
+  return resolveLuckinShopIdByNameAddress({
+    name: item.name,
+    address: item.address,
+    location: item.location === undefined ? '' : item.location
+  });
+}
+
+function luckinFoodMenuOptions(product: LuckinProductRecord): LuckinFoodMenuOptionGroup[] {
+  const result: LuckinFoodMenuOptionGroup[] = [];
+  const attrs = product.productAttrs === undefined ? [] : product.productAttrs;
+  for (let index = 0; index < attrs.length; index += 1) {
+    const name = textOf(attrs[index].attributeName).trim();
+    const children: LuckinProductSubAttr[] = attrs[index].productSubAttrs === undefined ?
+      [] : (attrs[index].productSubAttrs as LuckinProductSubAttr[]);
+    const choices: string[] = [];
+    for (let childIndex = 0; childIndex < children.length; childIndex += 1) {
+      const choice = textOf(children[childIndex].attributeName).trim();
+      if (choice.length > 0 && choices.indexOf(choice) < 0) {
+        choices.push(choice);
+      }
+    }
+    if (name.length > 0 && choices.length > 0) {
+      result.push({ name: name, choices: choices });
+    }
+  }
+  return result;
+}
+
+function luckinFoodMenuProduct(product: LuckinProductRecord): LuckinFoodMenuProduct {
+  return {
+    productId: textOf(product.productId),
+    name: luckinProductName(product),
+    skuCode: luckinProductSku(product),
+    pictureUrl: luckinProductPictureUrl(product),
+    priceText: luckinMoney(firstText([
+      product.estimatePrice, product.discountPrice, product.price, product.initialPrice, product.initPrice
+    ])),
+    originalPriceText: luckinMoney(firstText([product.initialPrice, product.initPrice])),
+    tags: product.tags === undefined ? [] : product.tags,
+    options: luckinFoodMenuOptions(product)
+  };
+}
+
+export async function queryLuckinFoodMenuForCard(item: A2uiFoodData): Promise<LuckinFoodMenuResult> {
+  const lookup = await resolveLuckinShopIdForFoodCard(item);
+  if (!lookup.found) {
+    return { found: false, storeName: '', storeAddress: '', products: [], error: lookup.error };
+  }
+  const deptId = Number(lookup.deptId);
+  if (!Number.isFinite(deptId)) {
+    return { found: false, storeName: lookup.name, storeAddress: lookup.address, products: [], error: '瑞幸门店 deptId 无效。' };
+  }
+  const token = localProviderConfig.luckinMcpToken;
+  const keywords: string[] = ['咖啡', '拿铁', '茶', '轻食'];
+  const products: LuckinFoodMenuProduct[] = [];
+  const seenProductIds: string[] = [];
+  try {
+    for (let keywordIndex = 0; keywordIndex < keywords.length; keywordIndex += 1) {
+      const payload = await callReadonlyBrandMcpTool('瑞幸', localProviderConfig.luckinMcpUrl, token,
+        'searchProductForMcp', { deptId: deptId, query: keywords[keywordIndex] } as LuckinProductSearchArgs);
+      const rows = luckinProductsFromPayload(payload);
+      for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+        const product = luckinFoodMenuProduct(rows[rowIndex]);
+        const identity = product.productId.length > 0 ? product.productId : product.name + '|' + product.skuCode;
+        if (product.name.length === 0 || seenProductIds.indexOf(identity) >= 0) {
+          continue;
+        }
+        seenProductIds.push(identity);
+        products.push(product);
+      }
+    }
+    aiLogInfo('[AIPhone][LuckinFoodMenu] found=' + (products.length > 0 ? 'true' : 'false') +
+      ' products=' + products.length.toString());
+    return {
+      found: products.length > 0,
+      storeName: lookup.name,
+      storeAddress: lookup.address,
+      products: products,
+      error: products.length > 0 ? '' : '瑞幸暂未返回这家门店的菜单商品。'
+    };
+  } catch (error) {
+    return {
+      found: false,
+      storeName: lookup.name,
+      storeAddress: lookup.address,
+      products: [],
+      error: '瑞幸菜单查询失败：' + describeThrown(error)
+    };
+  }
 }
 
 function luckinShopStatus(shop: LuckinShopRecord): string {

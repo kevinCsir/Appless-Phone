@@ -20,7 +20,11 @@ import {
 import { buildMultiTaskHomePayload } from '../main/ets/pages/A2uiHome/html/HtmlMultiTaskHomeRenderer';
 import { createFirecrawlPendingDocument } from '../main/ets/pages/A2uiHome/html/HtmlFirecrawlHomeRenderer';
 import { createHtmlHomeDocument } from '../main/ets/pages/A2uiHome/html/HtmlHomeSnapshot';
-import { FoodFavoriteViewModel, foodFavoriteId } from '../main/ets/pages/A2uiHome/FoodFavoritesStore';
+import {
+  findFoodFavoriteIndex,
+  FoodFavoriteViewModel,
+  foodFavoriteId
+} from '../main/ets/pages/A2uiHome/FoodFavoritesStore';
 import {
   buildDailyBriefFixtureDiscovery,
   buildDailyBriefFixtureSections,
@@ -2704,6 +2708,12 @@ export default function htmlHomeRendererTest() {
       expect(html.indexOf('food_address_book_delete')).assertLarger(-1);
       expect(html.indexOf('food-favorites-icon')).assertLarger(-1);
       expect(html.indexOf('food-favorites-overlay')).assertLarger(-1);
+      expect(html.indexOf('food-menu-overlay')).assertLarger(-1);
+      expect(html.indexOf('AIPhoneFoodMenu')).assertLarger(-1);
+      expect(html.indexOf('function applyMenuPatch(patchJson)')).assertLarger(-1);
+      expect(html.indexOf("text(patch.kind) !== 'food-menu'")).assertLarger(-1);
+      expect(html.indexOf('正在匹配瑞幸门店并查询菜单')).assertLarger(-1);
+      expect(html.indexOf('food_luckin_menu_open')).assertLarger(-1);
       expect(html.indexOf('food_favorite_toggle')).assertLarger(-1);
       expect(html.indexOf('"foodFavorite":true')).assertLarger(-1);
       expect(html.indexOf('function applyFavoriteState(block, active)')).assertLarger(-1);
@@ -2820,6 +2830,59 @@ export default function htmlHomeRendererTest() {
       expect(firstOriginalTitle).assertLess(secondOriginalTitle);
       expect(html.indexOf('applyFavoriteState(block, nextActive);')).assertLarger(-1);
       expect(html.indexOf('applyFavoriteState(block, nextActive); applyFilter();')).assertEqual(-1);
+    });
+
+    it('keeps same-named stores at different coordinates independently favorite', 0, () => {
+      const savedFood: A2uiFoodData = {
+        name: '麦当劳',
+        category: '麦当劳门店',
+        address: '龙华富士康店',
+        distance: '180米',
+        location: '114.030000,22.610000',
+        sourceTags: ['麦当劳']
+      };
+      const otherFood: A2uiFoodData = {
+        name: '麦当劳',
+        category: '麦当劳门店',
+        address: '民治店',
+        distance: '220米',
+        location: '114.080000,22.620000',
+        sourceTags: ['麦当劳']
+      };
+      const favorite: FoodFavoriteViewModel = {
+        favoriteId: foodFavoriteId(savedFood),
+        savedAt: 1,
+        name: savedFood.name,
+        category: savedFood.category,
+        address: savedFood.address,
+        distance: savedFood.distance,
+        location: savedFood.location,
+        sourceTags: savedFood.sourceTags
+      };
+      const doc = foodDocumentFixture();
+      doc.blocks = doc.blocks.slice(0, 2);
+      doc.blocks[0].title = savedFood.name;
+      doc.blocks[0].metrics = [
+        { label: 'category', value: savedFood.category },
+        { label: 'address', value: savedFood.address },
+        { label: 'distance', value: savedFood.distance },
+        { label: 'location', value: savedFood.location as string }
+      ];
+      doc.blocks[1].title = otherFood.name;
+      doc.blocks[1].metrics = [
+        { label: 'category', value: otherFood.category },
+        { label: 'address', value: otherFood.address },
+        { label: 'distance', value: otherFood.distance },
+        { label: 'location', value: otherFood.location as string }
+      ];
+
+      expect(foodFavoriteId(savedFood) === foodFavoriteId(otherFood)).assertFalse();
+      expect(findFoodFavoriteIndex([favorite], savedFood)).assertEqual(0);
+      expect(findFoodFavoriteIndex([favorite], otherFood)).assertEqual(-1);
+
+      const html = renderHtmlHomeDocument(doc, false, undefined, [], [favorite]);
+      expect(html.split('"foodFavorite":true').length - 1).assertEqual(1);
+      expect(html.split('"foodFavorite":false').length - 1).assertEqual(1);
     });
 
     it('does not render a call action when the food document has none', 0, () => {

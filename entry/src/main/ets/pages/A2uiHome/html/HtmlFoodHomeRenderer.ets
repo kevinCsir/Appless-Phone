@@ -1,5 +1,5 @@
 import { HtmlHomeBlock, HtmlHomeDocument, HtmlHomeMetric } from './HtmlHomeTypes';
-import { A2uiFoodData, foodRecordsLikelySameStore, rideAmapWebKeyForUi } from '@loop/agent-core';
+import { A2uiFoodData, rideAmapWebKeyForUi } from '@loop/agent-core';
 import { APP_LOGO_AMAP, APP_LOGO_BAIDU_MAPS, APP_LOGO_GOOGLE_MAPS, APP_LOGO_KFC, APP_LOGO_LUCKIN, APP_LOGO_MCDONALDS, APP_LOGO_MEITUAN, APP_LOGO_TAOBAO, APP_LOGO_TENCENT_MAPS } from './AppLogoDataUri';
 import { personaAvatarDataUri } from './PersonaAvatarDataUri';
 import { renderFoodLocationPickerHtml } from './FoodLocationPickerHtmlRenderer';
@@ -54,19 +54,8 @@ function foodBlocksWithFavorites(blocks: HtmlHomeBlock[], favorites: FoodFavorit
     }
     const food = foodFromBlock(block);
     const favoriteId = foodFavoriteId(food);
-    let favorite = favoriteIds.has(favoriteId);
-    let resolvedFavoriteId = favoriteId;
-    if (!favorite) {
-      for (let favoriteIndex = 0; favoriteIndex < favorites.length; favoriteIndex++) {
-        if (foodRecordsLikelySameStore(food, favorites[favoriteIndex])) {
-          favorite = true;
-          resolvedFavoriteId = favorites[favoriteIndex].favoriteId;
-          break;
-        }
-      }
-    }
-    block.foodFavoriteId = resolvedFavoriteId;
-    block.foodFavorite = favorite;
+    block.foodFavoriteId = favoriteId;
+    block.foodFavorite = favoriteIds.has(favoriteId);
     return block;
   });
   resolvedBlocks.sort((left: HtmlHomeBlock, right: HtmlHomeBlock): number => {
@@ -273,6 +262,23 @@ button:disabled { cursor: default; opacity: 0.5; }
 .food-address-overlay.open { display: flex; }
 .food-favorites-overlay { position: fixed; z-index: 95; inset: 0; display: none; flex-direction: column; overflow: hidden; background: var(--paper); color: var(--ink); }
 .food-favorites-overlay.open { display: flex; }
+.food-menu-overlay { position: fixed; z-index: 110; inset: 0; display: none; flex-direction: column; overflow: hidden; background: #f4f6fb; color: var(--ink); }
+.food-menu-overlay.open { display: flex; }
+.food-menu-head { display: grid; grid-template-columns: 38px minmax(0, 1fr); align-items: center; gap: 9px; padding: 12px 14px; border-bottom: 1px solid rgba(53,111,192,.14); background: #fff; }
+.food-menu-title { overflow: hidden; font-size: 18px; font-weight: 840; text-overflow: ellipsis; white-space: nowrap; }
+.food-menu-store { padding: 13px 16px 10px; background: #fff; color: #356fc0; font-size: 13px; font-weight: 760; }
+.food-menu-scroll { flex: 1; overflow-y: auto; padding: 12px 14px 28px; }
+.food-menu-state { margin-top: 48px; color: var(--muted); text-align: center; line-height: 1.65; }
+.food-menu-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
+.food-menu-product { min-width: 0; overflow: hidden; border: 1px solid rgba(53,111,192,.12); border-radius: 16px; background: #fff; box-shadow: 0 8px 20px rgba(39,61,94,.07); }
+.food-menu-picture { width: 100%; aspect-ratio: 1; display: block; object-fit: cover; background: #edf1f8; }
+.food-menu-picture-empty { display: grid; place-items: center; color: #356fc0; font-size: 28px; }
+.food-menu-copy { padding: 10px; }
+.food-menu-product-name { min-height: 40px; font-size: 14px; font-weight: 780; line-height: 1.4; }
+.food-menu-price { margin-top: 7px; color: #356fc0; font-size: 16px; font-weight: 850; }
+.food-menu-original-price { margin-left: 6px; color: #a1a6af; font-size: 11px; font-weight: 500; text-decoration: line-through; }
+.food-menu-tags { margin-top: 6px; color: #c58b25; font-size: 11px; }
+.food-menu-options { margin-top: 6px; color: #7e8794; font-size: 10px; line-height: 1.45; }
 .food-favorites-head { display: grid; grid-template-columns: 38px minmax(0, 1fr); align-items: center; gap: 9px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
 .food-favorites-title { font-size: 18px; font-weight: 840; }
 .food-favorites-scroll { flex: 1; overflow-y: auto; padding: 14px; }
@@ -628,6 +634,7 @@ button:disabled { cursor: default; opacity: 0.5; }
   color: var(--cream);
   box-shadow: 0 12px 22px rgba(37, 24, 13, 0.2);
 }
+.editorial-action.luckin-menu { background: linear-gradient(135deg, #356fc0, #224f94); color: #fff; box-shadow: 0 12px 22px rgba(53,111,192,.2); }
 .editorial-empty {
   border: 1px dashed rgba(23, 18, 13, 0.18);
   border-radius: var(--radius-md);
@@ -1153,6 +1160,9 @@ const FOOD_HOME_JS: string = `
   function hasLocation(block) {
     return text(metric(block, ['location'])).length > 0;
   }
+  function hasLuckinSource(block) {
+    return sourceParts(block).indexOf('瑞幸') >= 0;
+  }
   function postAction(action) {
     if (isBusy) { return false; }
     try {
@@ -1264,6 +1274,9 @@ const FOOD_HOME_JS: string = `
     if (text(favorite.phone).length > 0) {
       actions.push({ id: 'food_favorite_call', label: '拨打电话', prompt: '拨打收藏门店电话', kind: 'client', variant: 'secondary', args: actionArgs });
     }
+    if (list(favorite.sourceTags).map(function (source) { return text(source).trim(); }).indexOf('瑞幸') >= 0) {
+      actions.push({ id: 'food_luckin_menu_open', label: '查询菜单', prompt: '查询瑞幸门店菜单', kind: 'client', variant: 'secondary', args: actionArgs });
+    }
     return {
       id: 'favorite-' + (text(favorite.favoriteId) || String(index)),
       foodFavoriteId: favoriteId,
@@ -1363,6 +1376,81 @@ const FOOD_HOME_JS: string = `
     favoriteExpandedId = favoriteExpandedId === key ? '' : key;
     applyFavoriteExpansion();
   }
+  var menuOverlay = null;
+  var menuTitle = null;
+  var menuStore = null;
+  var menuScroll = null;
+  var activeMenuRequestKey = '';
+  function menuRequestKey(block) {
+    return text(block && block.title) + '|' + text(metric(block, ['address']));
+  }
+  function menuAction(block) {
+    var actions = list(block && block.actions);
+    for (var index = 0; index < actions.length; index += 1) {
+      if (text(actions[index] && actions[index].id) === 'food_luckin_menu_open') { return actions[index]; }
+    }
+    return null;
+  }
+  function renderMenuState(message) {
+    if (!menuScroll) { return; }
+    menuScroll.textContent = '';
+    add(menuScroll, 'div', 'food-menu-state', message);
+  }
+  function renderMenuProducts(patch) {
+    if (!menuScroll) { return; }
+    menuScroll.textContent = '';
+    var products = list(patch && patch.products);
+    if (products.length === 0) {
+      renderMenuState(text(patch && patch.error) || '这家门店暂时没有返回可展示的商品。');
+      return;
+    }
+    var grid = add(menuScroll, 'div', 'food-menu-grid');
+    products.forEach(function (product) {
+      var card = add(grid, 'article', 'food-menu-product');
+      var picture = text(product && product.pictureUrl);
+      if (picture) {
+        var image = add(card, 'img', 'food-menu-picture');
+        image.src = picture;
+        image.alt = text(product.name);
+      } else {
+        add(card, 'div', 'food-menu-picture food-menu-picture-empty', '☕');
+      }
+      var copy = add(card, 'div', 'food-menu-copy');
+      add(copy, 'div', 'food-menu-product-name', text(product && product.name) || '瑞幸商品');
+      var price = add(copy, 'div', 'food-menu-price', text(product && product.priceText) || '价格以结算页为准');
+      var originalPrice = text(product && product.originalPriceText);
+      if (originalPrice && originalPrice !== text(product && product.priceText)) {
+        add(price, 'span', 'food-menu-original-price', originalPrice);
+      }
+      var tags = list(product && product.tags).map(text).filter(Boolean);
+      if (tags.length > 0) { add(copy, 'div', 'food-menu-tags', tags.join(' · ')); }
+      var options = list(product && product.options).map(function (group) {
+        return text(group && group.name) + '：' + list(group && group.choices).map(text).filter(Boolean).join('/');
+      }).filter(Boolean);
+      if (options.length > 0) { add(copy, 'div', 'food-menu-options', options.join(' · ')); }
+    });
+  }
+  function applyMenuPatch(patchJson) {
+    var patch = patchJson;
+    try { if (typeof patchJson === 'string') { patch = JSON.parse(patchJson); } } catch (error) { patch = null; }
+    if (!patch || text(patch.kind) !== 'food-menu') { return false; }
+    if (text(patch.requestKey) && text(patch.requestKey) !== activeMenuRequestKey) { return false; }
+    if (menuTitle) { menuTitle.textContent = text(patch.storeName) || '瑞幸菜单'; }
+    if (menuStore) { menuStore.textContent = [text(patch.storeName), text(patch.storeAddress)].filter(Boolean).join(' · '); }
+    if (text(patch.status) === 'ready') { renderMenuProducts(patch); }
+    else { renderMenuState(text(patch.error) || '菜单查询失败，请稍后再试。'); }
+    return true;
+  }
+  function openLuckinMenu(block, action) {
+    if (!menuOverlay || !action) { return; }
+    activeMenuRequestKey = menuRequestKey(block);
+    if (menuTitle) { menuTitle.textContent = text(block && block.title) || '瑞幸菜单'; }
+    if (menuStore) { menuStore.textContent = [text(block && block.title), text(metric(block, ['address']))].filter(Boolean).join(' · '); }
+    renderMenuState('正在匹配瑞幸门店并查询菜单…');
+    menuOverlay.classList.add('open');
+    if (!postAction(action)) { renderMenuState('暂时无法连接原生能力，请稍后重试。'); }
+  }
+  window.AIPhoneFoodMenu = { applyPatch: applyMenuPatch };
   function renderFoodCardDetail(card, block, includeActions) {
     var detail = add(card, 'div', 'editorial-detail');
     var grid = add(detail, 'div', 'editorial-detail-grid');
@@ -1385,8 +1473,10 @@ const FOOD_HOME_JS: string = `
       var mapAction = id === 'html_open_food_map' || id === 'food_favorite_map';
       var pinAction = id === 'html_pin_food' || id === 'food_favorite_pin';
       var callAction = id === 'html_call_food' || id === 'food_favorite_call';
-      if (!mapAction && !pinAction && !callAction) { return false; }
-      if (!callAction && !canNavigate) { return false; }
+      var luckinMenuAction = id === 'food_luckin_menu_open';
+      if (!mapAction && !pinAction && !callAction && !luckinMenuAction) { return false; }
+      if (!callAction && !luckinMenuAction && !canNavigate) { return false; }
+      if (luckinMenuAction && !hasLuckinSource(block)) { return false; }
       return true;
     });
     if (availableActions.length > 0) {
@@ -1395,11 +1485,15 @@ const FOOD_HOME_JS: string = `
         var id = text(action && action.id);
         var mapAction = id === 'html_open_food_map' || id === 'food_favorite_map';
         var callAction = id === 'html_call_food' || id === 'food_favorite_call';
-        var button = add(row, 'button', mapAction ? 'editorial-action' : 'editorial-action secondary',
-          mapAction ? '导航去' : (callAction ? '拨打电话' : '固定到桌面'));
+        var luckinMenuAction = id === 'food_luckin_menu_open';
+        var button = add(row, 'button', luckinMenuAction ? 'editorial-action luckin-menu' : (mapAction ? 'editorial-action' : 'editorial-action secondary'),
+          luckinMenuAction ? '查询菜单' : (mapAction ? '导航去' : (callAction ? '拨打电话' : '固定到桌面')));
         button.type = 'button';
         button.disabled = isBusy;
-        button.addEventListener('click', function (event) { event.stopPropagation(); postAction(action); });
+        button.addEventListener('click', function (event) {
+          event.stopPropagation();
+          if (luckinMenuAction) { openLuckinMenu(block, action); } else { postAction(action); }
+        });
       });
     }
   }
@@ -1633,6 +1727,18 @@ const FOOD_HOME_JS: string = `
   favoritesClose.addEventListener('click', function () { favoritesOverlay.classList.remove('open'); });
   var favoritesScroll = add(favoritesOverlay, 'div', 'food-favorites-scroll');
   renderFavoriteEntries();
+  menuOverlay = add(shell, 'section', 'food-menu-overlay');
+  menuOverlay.id = 'food-menu-overlay';
+  var menuHead = add(menuOverlay, 'div', 'food-menu-head');
+  var menuClose = add(menuHead, 'button', 'food-address-back', '‹');
+  menuClose.type = 'button';
+  menuTitle = add(menuHead, 'div', 'food-menu-title', '瑞幸菜单');
+  menuClose.addEventListener('click', function () {
+    menuOverlay.classList.remove('open');
+    activeMenuRequestKey = '';
+  });
+  menuStore = add(menuOverlay, 'div', 'food-menu-store');
+  menuScroll = add(menuOverlay, 'div', 'food-menu-scroll');
   var addressOverlay = add(shell, 'section', 'food-address-overlay');
   addressOverlay.id = 'food-address-overlay';
   var addressTop = add(addressOverlay, 'div', 'food-address-top');

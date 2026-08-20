@@ -1,6 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
-import { A2uiFoodData, foodRecordsLikelySameStore } from '@loop/agent-core';
+import { A2uiFoodData } from '@loop/agent-core';
 
 const FOOD_FAVORITES_STORE_NAME: string = 'aiphone_food_favorites';
 const FOOD_FAVORITES_KEY: string = 'favorites';
@@ -47,6 +47,11 @@ export function foodFavoriteId(item: A2uiFoodData): string {
     return 'food:' + name + '@' + location;
   }
   return 'food:' + name + '@' + normalizedIdentityText(item.address);
+}
+
+export function findFoodFavoriteIndex(favorites: FoodFavoriteViewModel[], item: A2uiFoodData): number {
+  const favoriteId = foodFavoriteId(item);
+  return favorites.findIndex((favorite: FoodFavoriteViewModel): boolean => favorite.favoriteId === favoriteId);
 }
 
 function copyFoodFavorite(value: FoodFavoriteViewModel): FoodFavoriteViewModel {
@@ -219,9 +224,7 @@ export class FoodFavoritesStore {
   }
 
   async toggle(item: A2uiFoodData): Promise<boolean> {
-    const favoriteId = foodFavoriteId(item);
-    const existingIndex = this.favorites.findIndex((favorite: FoodFavoriteViewModel): boolean =>
-      favorite.favoriteId === favoriteId || foodRecordsLikelySameStore(favorite, item));
+    const existingIndex = findFoodFavoriteIndex(this.favorites, item);
     if (existingIndex >= 0) {
       this.favorites.splice(existingIndex, 1);
       await this.persist();
