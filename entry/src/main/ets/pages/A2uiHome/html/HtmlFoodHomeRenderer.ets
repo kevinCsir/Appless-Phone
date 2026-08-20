@@ -637,6 +637,7 @@ button:disabled { cursor: default; opacity: 0.5; }
   box-shadow: 0 12px 22px rgba(37, 24, 13, 0.2);
 }
 .editorial-action.luckin-menu { background: linear-gradient(135deg, #356fc0, #224f94); color: #fff; box-shadow: 0 12px 22px rgba(53,111,192,.2); }
+.editorial-action.mcd-menu { background: linear-gradient(135deg, #d71920, #a80e13); color: #fff; box-shadow: 0 12px 22px rgba(215,25,32,.18); }
 .editorial-empty {
   border: 1px dashed rgba(23, 18, 13, 0.18);
   border-radius: var(--radius-md);
@@ -1201,6 +1202,19 @@ const FOOD_HOME_JS: string = `
   function hasLuckinSource(block) {
     return sourceParts(block).indexOf('瑞幸') >= 0;
   }
+  function hasMcDonaldsSource(block) {
+    return sourceParts(block).indexOf('麦当劳') >= 0;
+  }
+  function isFoodMenuAction(id) {
+    return id === 'food_luckin_menu_open' || id === 'food_mcd_menu_open';
+  }
+  function foodMenuActionAllowed(block, id) {
+    return id === 'food_luckin_menu_open' ? hasLuckinSource(block) :
+      (id === 'food_mcd_menu_open' && hasMcDonaldsSource(block));
+  }
+  function foodMenuButtonClass(id) {
+    return id === 'food_mcd_menu_open' ? 'editorial-action mcd-menu' : 'editorial-action luckin-menu';
+  }
   function postAction(action) {
     if (isBusy) { return false; }
     try {
@@ -1315,6 +1329,9 @@ const FOOD_HOME_JS: string = `
     if (list(favorite.sourceTags).map(function (source) { return text(source).trim(); }).indexOf('瑞幸') >= 0) {
       actions.push({ id: 'food_luckin_menu_open', label: '查询菜单', prompt: '查询瑞幸门店菜单', kind: 'client', variant: 'secondary', args: actionArgs });
     }
+    if (list(favorite.sourceTags).map(function (source) { return text(source).trim(); }).indexOf('麦当劳') >= 0) {
+      actions.push({ id: 'food_mcd_menu_open', label: '查询菜单', prompt: '查询麦当劳门店菜单', kind: 'client', variant: 'secondary', args: actionArgs });
+    }
     return {
       id: 'favorite-' + (text(favorite.favoriteId) || String(index)),
       foodFavoriteId: favoriteId,
@@ -1425,7 +1442,7 @@ const FOOD_HOME_JS: string = `
   function menuAction(block) {
     var actions = list(block && block.actions);
     for (var index = 0; index < actions.length; index += 1) {
-      if (text(actions[index] && actions[index].id) === 'food_luckin_menu_open') { return actions[index]; }
+      if (isFoodMenuAction(text(actions[index] && actions[index].id))) { return actions[index]; }
     }
     return null;
   }
@@ -1445,16 +1462,17 @@ const FOOD_HOME_JS: string = `
     var grid = add(menuScroll, 'div', 'food-menu-grid');
     products.forEach(function (product) {
       var card = add(grid, 'article', 'food-menu-product');
+      var isMcDonalds = text(patch && patch.brand) === 'mcdonalds';
       var picture = text(product && product.pictureUrl);
       if (picture) {
         var image = add(card, 'img', 'food-menu-picture');
         image.src = picture;
         image.alt = text(product.name);
       } else {
-        add(card, 'div', 'food-menu-picture food-menu-picture-empty', '☕');
+        add(card, 'div', 'food-menu-picture food-menu-picture-empty', isMcDonalds ? '🍔' : '☕');
       }
       var copy = add(card, 'div', 'food-menu-copy');
-      add(copy, 'div', 'food-menu-product-name', text(product && product.name) || '瑞幸商品');
+      add(copy, 'div', 'food-menu-product-name', text(product && product.name) || (isMcDonalds ? '麦当劳商品' : '瑞幸商品'));
       var price = add(copy, 'div', 'food-menu-price', text(product && product.priceText) || '价格以结算页为准');
       var originalPrice = text(product && product.originalPriceText);
       if (originalPrice && originalPrice !== text(product && product.priceText)) {
@@ -1466,6 +1484,7 @@ const FOOD_HOME_JS: string = `
         return text(group && group.name) + '：' + list(group && group.choices).map(text).filter(Boolean).join('/');
       }).filter(Boolean);
       if (options.length > 0) { add(copy, 'div', 'food-menu-options', options.join(' · ')); }
+      if (isMcDonalds) { return; }
       var orderButton = add(copy, 'button', 'food-menu-order', '去点餐');
       orderButton.type = 'button';
       var canOrder = text(patch && patch.deptId).length > 0 && text(patch && patch.storeLocation).length > 0 &&
@@ -1493,18 +1512,21 @@ const FOOD_HOME_JS: string = `
     try { if (typeof patchJson === 'string') { patch = JSON.parse(patchJson); } } catch (error) { patch = null; }
     if (!patch || text(patch.kind) !== 'food-menu') { return false; }
     if (text(patch.requestKey) && text(patch.requestKey) !== activeMenuRequestKey) { return false; }
-    if (menuTitle) { menuTitle.textContent = text(patch.storeName) || '瑞幸菜单'; }
+    var brandName = text(patch.brand) === 'mcdonalds' ? '麦当劳' : '瑞幸';
+    if (menuTitle) { menuTitle.textContent = text(patch.storeName) || brandName + '菜单'; }
     if (menuStore) { menuStore.textContent = [text(patch.storeName), text(patch.storeAddress)].filter(Boolean).join(' · '); }
     if (text(patch.status) === 'ready') { renderMenuProducts(patch); }
     else { renderMenuState(text(patch.error) || '菜单查询失败，请稍后再试。'); }
     return true;
   }
-  function openLuckinMenu(block, action) {
+  function openFoodMenu(block, action) {
     if (!menuOverlay || !action) { return; }
+    var isMcDonalds = text(action && action.id) === 'food_mcd_menu_open';
+    var brandName = isMcDonalds ? '麦当劳' : '瑞幸';
     activeMenuRequestKey = menuRequestKey(block);
-    if (menuTitle) { menuTitle.textContent = text(block && block.title) || '瑞幸菜单'; }
+    if (menuTitle) { menuTitle.textContent = text(block && block.title) || brandName + '菜单'; }
     if (menuStore) { menuStore.textContent = [text(block && block.title), text(metric(block, ['address']))].filter(Boolean).join(' · '); }
-    renderMenuState('正在匹配瑞幸门店并查询菜单…');
+    renderMenuState('正在匹配' + brandName + '门店并查询菜单…');
     menuOverlay.classList.add('open');
     if (!postAction(action)) { renderMenuState('暂时无法连接原生能力，请稍后重试。'); }
   }
@@ -1531,10 +1553,10 @@ const FOOD_HOME_JS: string = `
       var mapAction = id === 'html_open_food_map' || id === 'food_favorite_map';
       var pinAction = id === 'html_pin_food' || id === 'food_favorite_pin';
       var callAction = id === 'html_call_food' || id === 'food_favorite_call';
-      var luckinMenuAction = id === 'food_luckin_menu_open';
-      if (!mapAction && !pinAction && !callAction && !luckinMenuAction) { return false; }
-      if (!callAction && !luckinMenuAction && !canNavigate) { return false; }
-      if (luckinMenuAction && !hasLuckinSource(block)) { return false; }
+      var menuAction = isFoodMenuAction(id);
+      if (!mapAction && !pinAction && !callAction && !menuAction) { return false; }
+      if (!callAction && !menuAction && !canNavigate) { return false; }
+      if (menuAction && !foodMenuActionAllowed(block, id)) { return false; }
       return true;
     });
     if (availableActions.length > 0) {
@@ -1543,21 +1565,21 @@ const FOOD_HOME_JS: string = `
         var id = text(action && action.id);
         var mapAction = id === 'html_open_food_map' || id === 'food_favorite_map';
         var callAction = id === 'html_call_food' || id === 'food_favorite_call';
-        var luckinMenuAction = id === 'food_luckin_menu_open';
-        var button = add(row, 'button', luckinMenuAction ? 'editorial-action luckin-menu' : (mapAction ? 'editorial-action' : 'editorial-action secondary'),
-          luckinMenuAction ? '查询菜单' : (mapAction ? '导航去' : (callAction ? '拨打电话' : '固定到桌面')));
+        var menuAction = isFoodMenuAction(id);
+        var button = add(row, 'button', menuAction ? foodMenuButtonClass(id) : (mapAction ? 'editorial-action' : 'editorial-action secondary'),
+          menuAction ? '查询菜单' : (mapAction ? '导航去' : (callAction ? '拨打电话' : '固定到桌面')));
         button.type = 'button';
         button.disabled = isBusy;
         button.addEventListener('click', function (event) {
           event.stopPropagation();
-          if (luckinMenuAction) { openLuckinMenu(block, action); } else { postAction(action); }
+          if (menuAction) { openFoodMenu(block, action); } else { postAction(action); }
         });
       });
     }
   }
   function decorateFoodActionButton(button, id) {
     var icon = add(button, 'span', 'food-action-icon');
-    var path = id === 'food_luckin_menu_open' ? '<path d="M6 7h10v7a5 5 0 0 1-10 0V7Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M16 9h1.5a2.5 2.5 0 0 1 0 5H16M8 4.5c1 1 2 1 3 0s2-1 3 0" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>' :
+    var path = isFoodMenuAction(id) ? '<path d="M6 7h10v7a5 5 0 0 1-10 0V7Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M16 9h1.5a2.5 2.5 0 0 1 0 5H16M8 4.5c1 1 2 1 3 0s2-1 3 0" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>' :
       (id === 'html_open_food_map' ? '<path d="M12 21s6-5.4 6-11a6 6 0 1 0-12 0c0 5.6 6 11 6 11Z" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="10" r="2.2" fill="none" stroke="currentColor" stroke-width="1.7"/>' :
         (id === 'html_call_food' ? '<path d="M7.2 4.5 9.8 7 8.2 8.8a13.5 13.5 0 0 0 7 7l1.8-1.6 2.5 2.6-1.7 2.1c-.5.6-1.4.8-2.1.5C9.1 17.1 6.9 14.9 4.6 8.3c-.3-.8-.1-1.6.5-2.1l2.1-1.7Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>' :
           '<path d="M6 4.5h12v15l-6-3-6 3v-15Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M9 8h6M9 11h6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>'));
@@ -2014,25 +2036,25 @@ const FOOD_HOME_JS: string = `
     detailRow(featureGrid, '电话', metric(featureBlock, ['phone']));
     var featureActions = list(featureBlock.actions).filter(function (action) {
       var id = text(action && action.id);
-      var luckinMenuAction = id === 'food_luckin_menu_open';
-      if (id !== 'html_open_food_map' && id !== 'html_pin_food' && id !== 'html_call_food' && !luckinMenuAction) { return false; }
-      if (id !== 'html_call_food' && !luckinMenuAction && !hasLocation(featureBlock)) { return false; }
-      if (luckinMenuAction && !hasLuckinSource(featureBlock)) { return false; }
+      var menuAction = isFoodMenuAction(id);
+      if (id !== 'html_open_food_map' && id !== 'html_pin_food' && id !== 'html_call_food' && !menuAction) { return false; }
+      if (id !== 'html_call_food' && !menuAction && !hasLocation(featureBlock)) { return false; }
+      if (menuAction && !foodMenuActionAllowed(featureBlock, id)) { return false; }
       return true;
     });
     if (featureActions.length > 0) {
       var featureActionRow = add(featureDetail, 'div', 'editorial-actions food-actions appless-v2-card-actions');
       featureActions.forEach(function (action) {
         var id = text(action && action.id);
-        var luckinMenuAction = id === 'food_luckin_menu_open';
-        var button = add(featureActionRow, 'button', luckinMenuAction ? 'editorial-action luckin-menu' : 'editorial-action',
-          luckinMenuAction ? '查询菜单' : (id === 'html_open_food_map' ? '导航去' : (id === 'html_call_food' ? '拨打电话' : '固定到桌面')));
+        var menuAction = isFoodMenuAction(id);
+        var button = add(featureActionRow, 'button', menuAction ? foodMenuButtonClass(id) : 'editorial-action',
+          menuAction ? '查询菜单' : (id === 'html_open_food_map' ? '导航去' : (id === 'html_call_food' ? '拨打电话' : '固定到桌面')));
         button.type = 'button';
         button.disabled = isBusy;
         decorateFoodActionButton(button, id);
         button.addEventListener('click', function (event) {
           event.stopPropagation();
-          if (luckinMenuAction) { openLuckinMenu(featureBlock, action); } else { postAction(action); }
+          if (menuAction) { openFoodMenu(featureBlock, action); } else { postAction(action); }
         });
       });
     }
@@ -2089,26 +2111,26 @@ const FOOD_HOME_JS: string = `
     var canNavigate = hasLocation(block);
     var availableActions = list(block.actions).filter(function (action) {
       var id = text(action && action.id);
-      var luckinMenuAction = id === 'food_luckin_menu_open';
-      if (id !== 'html_open_food_map' && id !== 'html_pin_food' && id !== 'html_call_food' && !luckinMenuAction) { return false; }
-      if (id !== 'html_call_food' && !luckinMenuAction && !canNavigate) { return false; }
-      if (luckinMenuAction && !hasLuckinSource(block)) { return false; }
+      var menuAction = isFoodMenuAction(id);
+      if (id !== 'html_open_food_map' && id !== 'html_pin_food' && id !== 'html_call_food' && !menuAction) { return false; }
+      if (id !== 'html_call_food' && !menuAction && !canNavigate) { return false; }
+      if (menuAction && !foodMenuActionAllowed(block, id)) { return false; }
       return true;
     });
     if (availableActions.length > 0) {
       var row = add(detail, 'div', 'editorial-actions');
       availableActions.forEach(function (action) {
         var id = text(action && action.id);
-        var luckinMenuAction = id === 'food_luckin_menu_open';
-        var button = add(row, 'button', luckinMenuAction ? 'editorial-action luckin-menu' :
+        var menuAction = isFoodMenuAction(id);
+        var button = add(row, 'button', menuAction ? foodMenuButtonClass(id) :
           (id === 'html_open_food_map' ? 'editorial-action' : 'editorial-action secondary'),
-          luckinMenuAction ? '查询菜单' : (id === 'html_open_food_map' ? '导航去' : (id === 'html_call_food' ? '拨打电话' : '固定到桌面')));
+          menuAction ? '查询菜单' : (id === 'html_open_food_map' ? '导航去' : (id === 'html_call_food' ? '拨打电话' : '固定到桌面')));
         button.type = 'button';
         button.disabled = isBusy;
         decorateFoodActionButton(button, id);
         button.addEventListener('click', function (event) {
           event.stopPropagation();
-          if (luckinMenuAction) { openLuckinMenu(block, action); } else { postAction(action); }
+          if (menuAction) { openFoodMenu(block, action); } else { postAction(action); }
         });
       });
     }

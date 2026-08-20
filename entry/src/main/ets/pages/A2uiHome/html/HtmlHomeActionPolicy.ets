@@ -125,7 +125,7 @@ function isHtmlHomeActionAllowedInDocument(document: HtmlHomeDocument, action: A
   if (document.kind === 'food' && action.kind === 'client' &&
     (action.id === 'food_favorite_remove' || action.id === 'food_favorite_map' ||
       action.id === 'food_favorite_call' || action.id === 'food_favorite_pin' ||
-      action.id === 'food_luckin_menu_open') &&
+      action.id === 'food_luckin_menu_open' || action.id === 'food_mcd_menu_open') &&
     foodFavoriteActionAllowed(document, action)) {
     return true;
   }

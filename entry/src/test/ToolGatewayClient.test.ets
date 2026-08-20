@@ -63,6 +63,7 @@ import {
   foodStructuredDataResult,
   foodStructuredDataResultFromProviders,
   foodDistanceMeters,
+  foodCardHasMcDonaldsSource,
   foodCardHasLuckinSource,
   foodCoordinateForTest,
   foodGoogleSearchQueryForTest,
@@ -4349,6 +4350,20 @@ export default function toolGatewayClientTest() {
 
       expect(foodCardHasLuckinSource(luckinCard)).assertTrue();
       expect(foodCardHasLuckinSource(mapOnlyCard)).assertFalse();
+    });
+
+    it('enables McDonalds menus only for cards carrying the McDonalds source tag', 0, () => {
+      const mcdCard: A2uiFoodData = {
+        name: '麦当劳坂田餐厅', category: '快餐', address: '深圳市龙岗区坂田街道', distance: '200米',
+        location: '114.063,22.631', sourceTags: ['高德', '麦当劳']
+      };
+      const mapOnlyCard: A2uiFoodData = {
+        name: '麦当劳坂田餐厅', category: '快餐', address: '深圳市龙岗区坂田街道', distance: '200米',
+        location: '114.063,22.631', sourceTags: ['高德']
+      };
+
+      expect(foodCardHasMcDonaldsSource(mcdCard)).assertTrue();
+      expect(foodCardHasMcDonaldsSource(mapOnlyCard)).assertFalse();
     });
 
     it('builds system map food destination search', 0, () => {

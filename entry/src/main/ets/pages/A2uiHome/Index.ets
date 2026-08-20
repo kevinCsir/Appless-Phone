@@ -123,8 +123,10 @@ import {
   normalizeComposioUserId,
   prepareGmailOAuthAuthorizationUrl,
   prepareGoogleOAuthAuthorizationUrl,
+  foodCardHasMcDonaldsSource,
   foodCardHasLuckinSource,
   LuckinFoodMenuProduct,
+  queryMcDonaldsFoodMenuForCard,
   queryLuckinFoodMenuForCard,
   recheck12306TrainAvailability,
   resolveMultiTaskSlotId,
@@ -736,8 +738,9 @@ interface LuckinPaymentStatusPatch {
   sectionId?: string;
 }
 
-interface LuckinFoodMenuPatch {
+interface FoodMenuPatch {
   kind: 'food-menu';
+  brand: 'luckin' | 'mcdonalds';
   status: 'ready' | 'error';
   requestKey: string;
   deptId: string;
@@ -1076,7 +1079,7 @@ struct Index {
   private activeRuntimeOwner: RuntimeOwner = 'legacy';
   @State luckinInlinePatchJson: string = '';
   @State luckinInlinePatchTick: number = 0;
-  private luckinFoodMenuContext: LuckinFoodMenuPatch | null = null;
+  private luckinFoodMenuContext: FoodMenuPatch | null = null;
   private luckinOptionSwitchInFlight: boolean = false;
   private luckinOptionSwitchSeq: number = 0;
   private luckinOptionSwitchPending: LuckinOptionSwitchPending | null = null;
@@ -7132,6 +7135,10 @@ struct Index {
       await this.openLuckinFoodMenu(action);
       return;
     }
+    if (action.id === 'food_mcd_menu_open') {
+      await this.openMcDonaldsFoodMenu(action);
+      return;
+    }
     if (action.id === 'food_luckin_order_preview') {
       await this.previewLuckinFoodMenuProduct(action);
       return;
@@ -7505,11 +7512,11 @@ struct Index {
     return this.htmlPinFoodRow(model, payload, this.htmlActionIndex(action, payload));
   }
 
-  private publishLuckinFoodMenuPatch(patch: LuckinFoodMenuPatch): void {
-    this.luckinFoodMenuContext = patch;
+  private publishFoodMenuPatch(patch: FoodMenuPatch): void {
+    this.luckinFoodMenuContext = patch.brand === 'luckin' ? patch : null;
     this.luckinInlinePatchJson = JSON.stringify(patch);
     this.luckinInlinePatchTick = this.luckinInlinePatchTick + 1;
-    aiLogInfo('[AIPhone][LuckinFoodMenuPatch] status=' + patch.status +
+    aiLogInfo('[AIPhone][FoodMenuPatch] brand=' + patch.brand + ' status=' + patch.status +
       ' products=' + patch.products.length.toString());
   }
 
@@ -7530,11 +7537,43 @@ struct Index {
       aiLogInfo('[AIPhone][LuckinFoodMenuPatch] status=ignored reason=surface_changed');
       return;
     }
-    this.publishLuckinFoodMenuPatch({
+    this.publishFoodMenuPatch({
       kind: 'food-menu',
+      brand: 'luckin',
       status: result.found ? 'ready' : 'error',
       requestKey: requestKey,
       deptId: result.deptId,
+      storeName: result.storeName.length > 0 ? result.storeName : row.name,
+      storeAddress: result.storeAddress.length > 0 ? result.storeAddress : row.address,
+      storeLocation: result.storeLocation.length > 0 ? result.storeLocation : (row.location ?? ''),
+      products: result.products,
+      error: result.error
+    });
+  }
+
+  private async openMcDonaldsFoodMenu(action: A2uiAction): Promise<void> {
+    if (this.currentSurface.intent !== 'food') {
+      this.logHtmlHomeActionError(action, 'food_surface_required');
+      return;
+    }
+    const row = this.foodRowForLuckinMenuAction(action);
+    if (row === null || !foodCardHasMcDonaldsSource(row)) {
+      this.logHtmlHomeActionError(action, row === null ? 'missing_food_row' : 'mcd_source_required');
+      return;
+    }
+    const surfaceId = this.currentSurface.surfaceId;
+    const requestKey = row.name + '|' + row.address;
+    const result = await queryMcDonaldsFoodMenuForCard(row);
+    if (this.currentSurface.surfaceId !== surfaceId) {
+      aiLogInfo('[AIPhone][McDonaldsFoodMenuPatch] status=ignored reason=surface_changed');
+      return;
+    }
+    this.publishFoodMenuPatch({
+      kind: 'food-menu',
+      brand: 'mcdonalds',
+      status: result.found ? 'ready' : 'error',
+      requestKey: requestKey,
+      deptId: '',
       storeName: result.storeName.length > 0 ? result.storeName : row.name,
       storeAddress: result.storeAddress.length > 0 ? result.storeAddress : row.address,
       storeLocation: result.storeLocation.length > 0 ? result.storeLocation : (row.location ?? ''),

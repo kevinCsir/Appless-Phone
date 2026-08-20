@@ -1171,6 +1171,28 @@ export interface LuckinFoodMenuResult {
   error: string;
 }
 
+export interface McDonaldsFoodMenuProduct {
+  productId: string;
+  name: string;
+  skuCode: string;
+  pictureUrl: string;
+  priceText: string;
+  originalPriceText: string;
+  tags: string[];
+  options: LuckinFoodMenuOptionGroup[];
+}
+
+export interface McDonaldsFoodMenuResult {
+  found: boolean;
+  storeCode: string;
+  beCode: string;
+  storeName: string;
+  storeAddress: string;
+  storeLocation: string;
+  products: McDonaldsFoodMenuProduct[];
+  error: string;
+}
+
 interface ScoredLuckinShopIdCandidate {
   candidate: LuckinShopIdCandidate;
   score: number;
@@ -1271,9 +1293,15 @@ interface McDonaldsCategoryMeal {
 }
 
 interface McDonaldsMealRecord {
+  code?: string;
+  productCode?: string;
   name?: string;
   currentPrice?: string | number;
   price?: string | number;
+  originalPrice?: string | number;
+  pictureUrl?: string;
+  imageUrl?: string;
+  image?: string;
   tags?: string[];
 }
 
@@ -9612,6 +9640,162 @@ export async function queryLuckinFoodMenuForCard(item: A2uiFoodData): Promise<Lu
       products: [],
       error: '瑞幸菜单查询失败：' + describeThrown(error)
     };
+  }
+}
+
+export function foodCardHasMcDonaldsSource(item: A2uiFoodData): boolean {
+  const sourceTags = item.sourceTags === undefined || item.sourceTags === null ? [] : item.sourceTags;
+  for (let index = 0; index < sourceTags.length; index += 1) {
+    if (textOf(sourceTags[index]).trim() === '麦当劳') {
+      return true;
+    }
+  }
+  return false;
+}
+
+function normalizedMcDonaldsMatchText(value: string): string {
+  return value.toLowerCase()
+    .replace(/麦当劳|mcdonald'?s?/ig, '')
+    .replace(/餐厅|门店|店铺/g, '')
+    .replace(/[\s\-—_·,，。()（）【】\[\]'"“”‘’/\\]/g, '');
+}
+
+function mcDonaldsStoreMatchScore(item: A2uiFoodData, store: McDonaldsStoreRecord): number {
+  const requestedName = normalizedMcDonaldsMatchText(textOf(item.name));
+  const candidateName = normalizedMcDonaldsMatchText(firstText([store.storeName, store.name]));
+  const requestedAddress = normalizedMcDonaldsMatchText(textOf(item.address));
+  const candidateAddress = normalizedMcDonaldsMatchText(textOf(store.address));
+  let score = 0;
+  if (requestedName.length > 0 && candidateName.length > 0) {
+    if (requestedName === candidateName) {
+      score += 120;
+    } else if (requestedName.indexOf(candidateName) >= 0 || candidateName.indexOf(requestedName) >= 0) {
+      score += 80;
+    }
+  }
+  if (requestedAddress.length > 0 && candidateAddress.length > 0) {
+    if (requestedAddress === candidateAddress) {
+      score += 80;
+    } else if (requestedAddress.indexOf(candidateAddress) >= 0 || candidateAddress.indexOf(requestedAddress) >= 0) {
+      score += 50;
+    } else {
+      const requestedTail = requestedAddress.length > 8 ? requestedAddress.substring(requestedAddress.length - 8) : requestedAddress;
+      const candidateTail = candidateAddress.length > 8 ? candidateAddress.substring(candidateAddress.length - 8) : candidateAddress;
+      if ((requestedTail.length >= 4 && candidateAddress.indexOf(requestedTail) >= 0) ||
+        (candidateTail.length >= 4 && requestedAddress.indexOf(candidateTail) >= 0)) {
+        score += 30;
+      }
+    }
+  }
+  return score;
+}
+
+function bestMcDonaldsStoreForFoodCard(item: A2uiFoodData, stores: McDonaldsStoreRecord[]): McDonaldsStoreRecord | null {
+  let best: McDonaldsStoreRecord | null = null;
+  let bestScore = -1;
+  for (let index = 0; index < stores.length; index += 1) {
+    const score = mcDonaldsStoreMatchScore(item, stores[index]);
+    if (score > bestScore) {
+      best = stores[index];
+      bestScore = score;
+    }
+  }
+  return bestScore > 0 ? best : null;
+}
+
+function mcDonaldsFoodMenuProduct(entry: McDonaldsMealEntry,
+  categories: McDonaldsCategoryRecord[]): McDonaldsFoodMenuProduct {
+  const meal = entry.meal;
+  const tags: string[] = [];
+  const sourceTags = meal.tags === undefined ? [] : meal.tags;
+  for (let index = 0; index < sourceTags.length; index += 1) {
+    appendUniqueText(tags, textOf(sourceTags[index]));
+  }
+  const categoryTags = mcdMealTags(entry.code, categories);
+  for (let index = 0; index < categoryTags.length; index += 1) {
+    appendUniqueText(tags, categoryTags[index]);
+  }
+  return {
+    productId: firstText([entry.code, meal.productCode, meal.code]),
+    name: textOf(meal.name),
+    skuCode: '',
+    pictureUrl: firstText([meal.pictureUrl, meal.imageUrl, meal.image]),
+    priceText: pricePart('', firstText([meal.currentPrice, meal.price])),
+    originalPriceText: pricePart('', meal.originalPrice),
+    tags: tags,
+    options: []
+  };
+}
+
+export async function queryMcDonaldsFoodMenuForCard(item: A2uiFoodData): Promise<McDonaldsFoodMenuResult> {
+  const emptyResult = (error: string): McDonaldsFoodMenuResult => ({
+    found: false,
+    storeCode: '',
+    beCode: '',
+    storeName: item.name,
+    storeAddress: item.address,
+    storeLocation: item.location === undefined ? '' : item.location,
+    products: [],
+    error: error
+  });
+  if (!foodCardHasMcDonaldsSource(item)) {
+    return emptyResult('当前餐饮卡片没有麦当劳信源。');
+  }
+  const token = localProviderConfig.mcdMcpToken;
+  if (token.length === 0) {
+    return emptyResult('未配置 MCD_MCP_TOKEN。');
+  }
+  const name = textOf(item.name).trim();
+  if (name.length === 0) {
+    return emptyResult('缺少麦当劳门店名称。');
+  }
+  try {
+    const storeArgs: McDonaldsNearbyStoresArgs = {
+      searchType: 2,
+      beType: 1,
+      city: inferFoodCityFromText(item.address + ' ' + item.name),
+      keyword: name
+    };
+    const storePayload = await callReadonlyBrandMcpTool(
+      '麦当劳', localProviderConfig.mcdMcpUrl, token, 'query-nearby-stores', storeArgs
+    );
+    const stores = mcDonaldsStoresFromData(
+      mcpPayloadData(storePayload as McDonaldsPayload) as McDonaldsStoreRecord[] | McDonaldsStoreContainer | undefined
+    );
+    const store = bestMcDonaldsStoreForFoodCard(item, stores);
+    if (store === null || textOf(store.storeCode).trim().length === 0) {
+      return emptyResult('没有匹配到可查询菜单的麦当劳门店。');
+    }
+    const storeCode = textOf(store.storeCode).trim();
+    const beCode = textOf(store.beCode).trim();
+    const menuArgs: McDonaldsMealsArgs = { storeCode: storeCode, beCode: beCode, orderType: 1, beType: 1 };
+    const menuPayload = await callReadonlyBrandMcpTool(
+      '麦当劳', localProviderConfig.mcdMcpUrl, token, 'query-meals', menuArgs
+    );
+    const menuData = mcpPayloadData(menuPayload as McDonaldsPayload) as McDonaldsMealsData | undefined;
+    const categories = menuData === undefined || menuData.categories === undefined ? [] : menuData.categories;
+    const entries = menuData === undefined ? [] : mcdMealEntries(menuData.meals);
+    const products: McDonaldsFoodMenuProduct[] = [];
+    for (let index = 0; index < entries.length && products.length < FOOD_PROVIDER_RESULT_LIMIT; index += 1) {
+      const product = mcDonaldsFoodMenuProduct(entries[index], categories);
+      if (product.name.length > 0) {
+        products.push(product);
+      }
+    }
+    aiLogInfo('[AIPhone][McDonaldsFoodMenu] found=' + (products.length > 0 ? 'true' : 'false') +
+      ' stores=' + stores.length.toString() + ' products=' + products.length.toString());
+    return {
+      found: products.length > 0,
+      storeCode: storeCode,
+      beCode: beCode,
+      storeName: firstText([store.storeName, store.name, item.name]),
+      storeAddress: firstText([store.address, item.address]),
+      storeLocation: item.location === undefined ? '' : item.location,
+      products: products,
+      error: products.length > 0 ? '' : '麦当劳暂未返回这家门店的菜单商品。'
+    };
+  } catch (error) {
+    return emptyResult('麦当劳菜单查询失败：' + describeThrown(error));
   }
 }
 
