@@ -281,6 +281,28 @@ button:disabled { cursor: default; opacity: 0.5; }
 .food-menu-options { margin-top: 6px; color: #7e8794; font-size: 10px; line-height: 1.45; }
 .food-menu-order { width: 100%; min-height: 36px; margin-top: 10px; border: 0; border-radius: 11px; background: linear-gradient(135deg, #356fc0, #224f94); color: #fff; font-size: 12px; font-weight: 800; }
 .food-menu-order:disabled { background: #d9dde5; color: #8c929d; }
+.food-menu-order.mcd { background: linear-gradient(135deg, #d71920, #a80e13); }
+.food-menu-detail { display: grid; gap: 14px; }
+.food-menu-detail-hero { display: grid; grid-template-columns: 108px minmax(0, 1fr); gap: 14px; align-items: center; padding: 14px; border: 1px solid rgba(215,25,32,.12); border-radius: 18px; background: #fff; }
+.food-menu-detail-hero .food-menu-picture { border-radius: 13px; }
+.food-menu-detail-name { font-size: 19px; font-weight: 850; line-height: 1.35; }
+.food-menu-detail-price { margin-top: 7px; color: #d71920; font-size: 20px; font-weight: 850; }
+.food-menu-detail-rows { overflow: hidden; border: 1px solid rgba(73,63,56,.1); border-radius: 16px; background: #fff; }
+.food-menu-detail-row { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 10px; padding: 11px 13px; border-bottom: 1px solid rgba(73,63,56,.08); font-size: 13px; line-height: 1.5; }
+.food-menu-detail-row:last-child { border-bottom: 0; }
+.food-menu-detail-row b { color: #51443c; }
+.food-menu-detail-row span { color: #74665c; overflow-wrap: anywhere; }
+.food-menu-quantity { display: flex; align-items: center; justify-content: space-between; padding: 13px 14px; border-radius: 16px; background: #fff; }
+.food-menu-stepper { display: flex; align-items: center; gap: 13px; }
+.food-menu-stepper button { width: 34px; height: 34px; border: 0; border-radius: 11px; background: #f2ece8; color: #5e4d43; font-size: 20px; font-weight: 800; }
+.food-menu-stepper strong { min-width: 20px; text-align: center; }
+.food-menu-checkout-actions { display: grid; gap: 9px; }
+.food-menu-checkout-primary, .food-menu-checkout-secondary { min-height: 46px; border: 0; border-radius: 14px; font-size: 14px; font-weight: 830; }
+.food-menu-checkout-primary { background: linear-gradient(135deg, #d71920, #a80e13); color: #fff; }
+.food-menu-checkout-primary:disabled { background: #d9dde5; color: #8c929d; }
+.food-menu-checkout-secondary { border: 1px solid rgba(73,63,56,.12); background: #fff; color: #5e4d43; }
+.food-menu-warning { padding: 11px 13px; border-radius: 13px; background: #fff4df; color: #8a5b16; font-size: 12px; line-height: 1.55; }
+.food-menu-success { padding: 14px; border-radius: 16px; background: #edf8ef; color: #236233; font-size: 14px; font-weight: 760; line-height: 1.55; }
 .food-favorites-head { display: grid; grid-template-columns: 38px minmax(0, 1fr); align-items: center; gap: 9px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
 .food-favorites-title { font-size: 18px; font-weight: 840; }
 .food-favorites-scroll { flex: 1; overflow-y: auto; padding: 14px; }
@@ -1436,6 +1458,7 @@ const FOOD_HOME_JS: string = `
   var menuStore = null;
   var menuScroll = null;
   var activeMenuRequestKey = '';
+  var activeMenuPatch = null;
   function menuRequestKey(block) {
     return text(block && block.title) + '|' + text(metric(block, ['address']));
   }
@@ -1484,15 +1507,28 @@ const FOOD_HOME_JS: string = `
         return text(group && group.name) + '：' + list(group && group.choices).map(text).filter(Boolean).join('/');
       }).filter(Boolean);
       if (options.length > 0) { add(copy, 'div', 'food-menu-options', options.join(' · ')); }
-      if (isMcDonalds) { return; }
-      var orderButton = add(copy, 'button', 'food-menu-order', '去点餐');
+      var orderButton = add(copy, 'button', isMcDonalds ? 'food-menu-order mcd' : 'food-menu-order',
+        isMcDonalds ? '查看详情' : '去点餐');
       orderButton.type = 'button';
-      var canOrder = text(patch && patch.deptId).length > 0 && text(patch && patch.storeLocation).length > 0 &&
-        text(product && product.productId).length > 0 && text(product && product.skuCode).length > 0;
+      var canOrder = isMcDonalds ? text(product && product.productId).length > 0 :
+        text(patch && patch.deptId).length > 0 && text(patch && patch.storeLocation).length > 0 &&
+          text(product && product.productId).length > 0 && text(product && product.skuCode).length > 0;
       orderButton.disabled = isBusy || !canOrder;
       if (!canOrder) { orderButton.textContent = '暂不可点'; }
       orderButton.addEventListener('click', function (event) {
         event.stopPropagation();
+        if (isMcDonalds) {
+          renderMenuState('正在加载菜品详情…');
+          postAction({
+            id: 'food_mcd_menu_detail', label: '查看详情', prompt: '查看' + text(product && product.name),
+            kind: 'client', variant: 'primary',
+            args: {
+              surfaceId: text(data.surfaceId), requestKey: text(patch && patch.requestKey),
+              productId: text(product && product.productId)
+            }
+          });
+          return;
+        }
         postAction({
           id: 'food_luckin_order_preview', label: '去点餐', prompt: '点一份' + text(product && product.name),
           kind: 'client', variant: 'primary',
@@ -1507,15 +1543,156 @@ const FOOD_HOME_JS: string = `
       });
     });
   }
+  function renderMcDonaldsRows(container, rows) {
+    var listRows = list(rows);
+    if (listRows.length === 0) { return; }
+    var wrap = add(container, 'div', 'food-menu-detail-rows');
+    listRows.forEach(function (row) {
+      var line = add(wrap, 'div', 'food-menu-detail-row');
+      add(line, 'b', '', text(row && row.label));
+      add(line, 'span', '', text(row && row.value));
+    });
+  }
+  function renderMcDonaldsHero(container, patch) {
+    var hero = add(container, 'div', 'food-menu-detail-hero');
+    var picture = text(patch && patch.selectedPictureUrl);
+    if (picture) {
+      var image = add(hero, 'img', 'food-menu-picture');
+      image.src = picture;
+      image.alt = text(patch && patch.selectedProductName);
+    } else {
+      add(hero, 'div', 'food-menu-picture food-menu-picture-empty', '🍔');
+    }
+    var copy = add(hero, 'div', '');
+    add(copy, 'div', 'food-menu-detail-name', text(patch && patch.selectedProductName) || '麦当劳商品');
+    add(copy, 'div', 'food-menu-detail-price', text(patch && patch.selectedPriceText) || '以核价结果为准');
+  }
+  function renderMcDonaldsMenuBack(container, patch) {
+    var back = add(container, 'button', 'food-menu-checkout-secondary', '返回菜单');
+    back.type = 'button';
+    back.addEventListener('click', function () {
+      renderMenuProducts(patch);
+    });
+  }
+  function renderMcDonaldsDetail(patch) {
+    if (!menuScroll) { return; }
+    menuScroll.textContent = '';
+    var detail = add(menuScroll, 'div', 'food-menu-detail');
+    renderMcDonaldsHero(detail, patch);
+    renderMcDonaldsRows(detail, patch && patch.rows);
+    if (text(patch && patch.error)) {
+      add(detail, 'div', 'food-menu-warning', text(patch.error) + '，仍可按菜单默认配置核价。');
+    }
+    var quantity = Math.max(1, Math.min(20, Number(patch && patch.quantity) || 1));
+    var quantityRow = add(detail, 'div', 'food-menu-quantity');
+    add(quantityRow, 'b', '', '数量');
+    var stepper = add(quantityRow, 'div', 'food-menu-stepper');
+    var minus = add(stepper, 'button', '', '−');
+    minus.type = 'button';
+    var quantityText = add(stepper, 'strong', '', String(quantity));
+    var plus = add(stepper, 'button', '', '+');
+    plus.type = 'button';
+    function syncQuantity() {
+      quantityText.textContent = String(quantity);
+      minus.disabled = quantity <= 1;
+      plus.disabled = quantity >= 20;
+    }
+    minus.addEventListener('click', function () { quantity = Math.max(1, quantity - 1); syncQuantity(); });
+    plus.addEventListener('click', function () { quantity = Math.min(20, quantity + 1); syncQuantity(); });
+    syncQuantity();
+    var actions = add(detail, 'div', 'food-menu-checkout-actions');
+    var quote = add(actions, 'button', 'food-menu-checkout-primary', '核算价格');
+    quote.type = 'button';
+    quote.addEventListener('click', function () {
+      renderMenuState('正在向麦当劳核算真实价格…');
+      postAction({
+        id: 'food_mcd_order_quote', label: '核算价格', prompt: '核算麦当劳订单价格',
+        kind: 'client', variant: 'primary',
+        args: {
+          surfaceId: text(data.surfaceId), requestKey: text(patch && patch.requestKey),
+          productId: text(patch && patch.selectedProductId), quantity: quantity
+        }
+      });
+    });
+    renderMcDonaldsMenuBack(actions, patch);
+  }
+  function renderMcDonaldsQuote(patch) {
+    if (!menuScroll) { return; }
+    menuScroll.textContent = '';
+    var detail = add(menuScroll, 'div', 'food-menu-detail');
+    renderMcDonaldsHero(detail, patch);
+    renderMcDonaldsRows(detail, patch && patch.rows);
+    if (text(patch && patch.error)) { add(detail, 'div', 'food-menu-warning', text(patch.error)); }
+    var actions = add(detail, 'div', 'food-menu-checkout-actions');
+    var create = add(actions, 'button', 'food-menu-checkout-primary', '确认下单（将创建真实订单）');
+    create.type = 'button';
+    create.disabled = !(patch && patch.canCreate) || !text(patch && patch.quoteToken);
+    create.addEventListener('click', function () {
+      renderMenuState('正在创建真实麦当劳订单，请勿重复点击…');
+      postAction({
+        id: 'food_mcd_order_create', label: '确认下单', prompt: '确认创建真实麦当劳订单',
+        kind: 'client', variant: 'primary',
+        args: {
+          surfaceId: text(data.surfaceId), requestKey: text(patch && patch.requestKey),
+          productId: text(patch && patch.selectedProductId), quantity: Number(patch && patch.quantity) || 1,
+          quoteToken: text(patch && patch.quoteToken)
+        }
+      });
+    });
+    renderMcDonaldsMenuBack(actions, patch);
+  }
+  function renderMcDonaldsOrder(patch) {
+    if (!menuScroll) { return; }
+    menuScroll.textContent = '';
+    var detail = add(menuScroll, 'div', 'food-menu-detail');
+    if (text(patch && patch.orderId)) {
+      add(detail, 'div', 'food-menu-success', '麦当劳订单已创建' +
+        (text(patch && patch.statusText) ? ' · ' + text(patch.statusText) : ''));
+    }
+    renderMcDonaldsRows(detail, patch && patch.rows);
+    if (text(patch && patch.error)) { add(detail, 'div', 'food-menu-warning', text(patch.error)); }
+    var actions = add(detail, 'div', 'food-menu-checkout-actions');
+    if (text(patch && patch.payUrl)) {
+      var pay = add(actions, 'button', 'food-menu-checkout-primary', '打开支付页面');
+      pay.type = 'button';
+      pay.addEventListener('click', function () {
+        postAction({
+          id: 'food_mcd_pay_open', label: '打开支付页面', prompt: '打开麦当劳支付页面',
+          kind: 'client', variant: 'primary',
+          args: { surfaceId: text(data.surfaceId), requestKey: text(patch && patch.requestKey), orderId: text(patch && patch.orderId) }
+        });
+      });
+    }
+    if (text(patch && patch.orderId)) {
+      var refresh = add(actions, 'button', 'food-menu-checkout-secondary', '刷新订单状态');
+      refresh.type = 'button';
+      refresh.addEventListener('click', function () {
+        renderMenuState('正在刷新订单状态…');
+        postAction({
+          id: 'food_mcd_order_status', label: '刷新订单状态', prompt: '查询麦当劳订单状态',
+          kind: 'client', variant: 'secondary',
+          args: { surfaceId: text(data.surfaceId), requestKey: text(patch && patch.requestKey), orderId: text(patch && patch.orderId) }
+        });
+      });
+    }
+    renderMcDonaldsMenuBack(actions, patch);
+  }
   function applyMenuPatch(patchJson) {
     var patch = patchJson;
     try { if (typeof patchJson === 'string') { patch = JSON.parse(patchJson); } } catch (error) { patch = null; }
     if (!patch || text(patch.kind) !== 'food-menu') { return false; }
     if (text(patch.requestKey) && text(patch.requestKey) !== activeMenuRequestKey) { return false; }
+    activeMenuPatch = patch;
     var brandName = text(patch.brand) === 'mcdonalds' ? '麦当劳' : '瑞幸';
     if (menuTitle) { menuTitle.textContent = text(patch.storeName) || brandName + '菜单'; }
     if (menuStore) { menuStore.textContent = [text(patch.storeName), text(patch.storeAddress)].filter(Boolean).join(' · '); }
-    if (text(patch.status) === 'ready') { renderMenuProducts(patch); }
+    if (text(patch.status) === 'ready' && text(patch.brand) === 'mcdonalds' && text(patch.step) === 'detail') {
+      renderMcDonaldsDetail(patch);
+    } else if (text(patch.status) === 'ready' && text(patch.brand) === 'mcdonalds' && text(patch.step) === 'quote') {
+      renderMcDonaldsQuote(patch);
+    } else if (text(patch.brand) === 'mcdonalds' && text(patch.step) === 'order') {
+      renderMcDonaldsOrder(patch);
+    } else if (text(patch.status) === 'ready') { renderMenuProducts(patch); }
     else { renderMenuState(text(patch.error) || '菜单查询失败，请稍后再试。'); }
     return true;
   }
@@ -1524,6 +1701,7 @@ const FOOD_HOME_JS: string = `
     var isMcDonalds = text(action && action.id) === 'food_mcd_menu_open';
     var brandName = isMcDonalds ? '麦当劳' : '瑞幸';
     activeMenuRequestKey = menuRequestKey(block);
+    activeMenuPatch = null;
     if (menuTitle) { menuTitle.textContent = text(block && block.title) || brandName + '菜单'; }
     if (menuStore) { menuStore.textContent = [text(block && block.title), text(metric(block, ['address']))].filter(Boolean).join(' · '); }
     renderMenuState('正在匹配' + brandName + '门店并查询菜单…');
@@ -1818,6 +1996,7 @@ const FOOD_HOME_JS: string = `
   menuClose.addEventListener('click', function () {
     menuOverlay.classList.remove('open');
     activeMenuRequestKey = '';
+    activeMenuPatch = null;
   });
   menuStore = add(menuOverlay, 'div', 'food-menu-store');
   menuScroll = add(menuOverlay, 'div', 'food-menu-scroll');

@@ -73,6 +73,15 @@ interface FoodLuckinOrderPreviewArgs {
   skuCode?: HtmlHomePolicyValue;
 }
 
+interface FoodMcDonaldsMenuActionArgs {
+  surfaceId?: HtmlHomePolicyValue;
+  requestKey?: HtmlHomePolicyValue;
+  productId?: HtmlHomePolicyValue;
+  quantity?: HtmlHomePolicyValue;
+  quoteToken?: HtmlHomePolicyValue;
+  orderId?: HtmlHomePolicyValue;
+}
+
 type DailyBriefPreferenceValue = Object | string | number | boolean | null | undefined;
 type DailyBriefPreferenceRecord = Record<string, DailyBriefPreferenceValue>;
 
@@ -120,6 +129,12 @@ function isHtmlHomeActionAllowedInDocument(document: HtmlHomeDocument, action: A
   }
   if (document.kind === 'food' && action.kind === 'client' && action.id === 'food_luckin_order_preview' &&
     foodLuckinOrderPreviewAllowed(document, action)) {
+    return true;
+  }
+  if (document.kind === 'food' && action.kind === 'client' &&
+    (action.id === 'food_mcd_menu_detail' || action.id === 'food_mcd_order_quote' ||
+      action.id === 'food_mcd_order_create' || action.id === 'food_mcd_order_status' ||
+      action.id === 'food_mcd_pay_open') && foodMcDonaldsMenuActionAllowed(document, action)) {
     return true;
   }
   if (document.kind === 'food' && action.kind === 'client' &&
@@ -223,6 +238,37 @@ function foodLuckinOrderPreviewAllowed(document: HtmlHomeDocument, action: A2uiA
   const latitude = Number(locationParts[1]);
   return Number.isFinite(longitude) && longitude >= -180 && longitude <= 180 &&
     Number.isFinite(latitude) && latitude >= -90 && latitude <= 90;
+}
+
+function foodMcDonaldsMenuActionAllowed(document: HtmlHomeDocument, action: A2uiAction): boolean {
+  if (!foodSurfaceOwnedActionAllowed(document, action) || action.args === undefined || action.args === null) {
+    return false;
+  }
+  const args = action.args as FoodMcDonaldsMenuActionArgs;
+  const requestKey = policyText(args.requestKey).trim();
+  if (requestKey.length === 0 || requestKey.length > 512) {
+    return false;
+  }
+  if (action.id === 'food_mcd_order_status' || action.id === 'food_mcd_pay_open') {
+    const orderId = policyText(args.orderId).trim();
+    return orderId.length > 0 && orderId.length <= 128;
+  }
+  const productId = policyText(args.productId).trim();
+  if (productId.length === 0 || productId.length > 128) {
+    return false;
+  }
+  if (action.id === 'food_mcd_menu_detail') {
+    return true;
+  }
+  const quantity = Number(policyText(args.quantity));
+  if (!Number.isFinite(quantity) || Math.floor(quantity) !== quantity || quantity < 1 || quantity > 20) {
+    return false;
+  }
+  if (action.id === 'food_mcd_order_create') {
+    const quoteToken = policyText(args.quoteToken).trim();
+    return quoteToken.length > 0 && quoteToken.length <= 256;
+  }
+  return action.id === 'food_mcd_order_quote';
 }
 
 function foodLocationChangeAllowed(document: HtmlHomeDocument, action: A2uiAction): boolean {

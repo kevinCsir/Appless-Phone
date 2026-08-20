@@ -1114,6 +1114,31 @@ interface McDonaldsMealsArgs {
   beType: number;
 }
 
+interface McDonaldsMealDetailArgs extends McDonaldsMealsArgs {
+  code: string;
+}
+
+interface McDonaldsOrderItemArgs {
+  productCode: string;
+  quantity: number;
+}
+
+interface McDonaldsPriceArgs extends McDonaldsMealsArgs {
+  items: McDonaldsOrderItemArgs[];
+}
+
+interface McDonaldsCreateOrderArgs {
+  storeCode: string;
+  beCode: string;
+  takeWayCode: string;
+  beType: number;
+  items: McDonaldsOrderItemArgs[];
+}
+
+interface McDonaldsQueryOrderArgs {
+  orderId: string;
+}
+
 interface LuckinShopListArgs {
   deptName: string;
   longitude: number;
@@ -1193,6 +1218,37 @@ export interface McDonaldsFoodMenuResult {
   error: string;
 }
 
+export interface McDonaldsFoodMenuRow {
+  label: string;
+  value: string;
+}
+
+export interface McDonaldsFoodMenuDetailResult {
+  found: boolean;
+  productId: string;
+  priceText: string;
+  rows: McDonaldsFoodMenuRow[];
+  error: string;
+}
+
+export interface McDonaldsFoodOrderQuoteResult {
+  ready: boolean;
+  productId: string;
+  quantity: number;
+  takeWayCode: string;
+  rows: McDonaldsFoodMenuRow[];
+  error: string;
+}
+
+export interface McDonaldsFoodOrderResult {
+  ready: boolean;
+  orderId: string;
+  statusText: string;
+  payUrl: string;
+  rows: McDonaldsFoodMenuRow[];
+  error: string;
+}
+
 interface ScoredLuckinShopIdCandidate {
   candidate: LuckinShopIdCandidate;
   score: number;
@@ -1251,7 +1307,8 @@ type McDonaldsMcpData =
   McDonaldsMealRecord |
   McDonaldsCouponRecord[] |
   McDonaldsCouponContainer |
-  McDonaldsPriceData;
+  McDonaldsPriceData |
+  McDonaldsOrderData;
 
 interface McDonaldsPayload {
   success?: boolean | string;
@@ -1303,6 +1360,23 @@ interface McDonaldsMealRecord {
   imageUrl?: string;
   image?: string;
   tags?: string[];
+  rounds?: McDonaldsMealRound[];
+}
+
+interface McDonaldsMealChoice {
+  code?: string;
+  name?: string;
+  quantity?: string | number;
+  maxQuantity?: string | number;
+}
+
+interface McDonaldsMealRound {
+  id?: string | number;
+  name?: string;
+  quantity?: string | number;
+  maxQuantity?: string | number;
+  minQuantity?: string | number;
+  choices?: McDonaldsMealChoice[];
 }
 
 interface McDonaldsMealsData {
@@ -1343,9 +1417,23 @@ interface McDonaldsCouponContainer {
 
 interface McDonaldsPriceData {
   productList?: McDonaldsPriceProduct[];
+  productOriginalPrice?: string | number;
+  productPrice?: string | number;
+  deliveryOriginalPrice?: string | number;
   price?: string | number;
   discount?: string | number;
   deliveryPrice?: string | number;
+  originalPrice?: string | number;
+  takeWayList?: McDonaldsTakeWayRecord[];
+}
+
+interface McDonaldsTakeWayRecord {
+  code?: string;
+  takeWayCode?: string;
+  value?: string;
+  name?: string;
+  title?: string;
+  selected?: boolean | string | number;
 }
 
 interface McDonaldsPriceProduct {
@@ -1354,6 +1442,21 @@ interface McDonaldsPriceProduct {
   quantity?: string | number;
   subtotal?: string | number;
   originalSubtotal?: string | number;
+}
+
+interface McDonaldsOrderData {
+  orderId?: string | number;
+  orderStatus?: string | number;
+  orderStatusTitle?: string;
+  orderStatusSubTitle?: string;
+  payH5Url?: string;
+  payUrl?: string;
+  paymentUrl?: string;
+  pickupCode?: string;
+  lockerCode?: string;
+  storeName?: string;
+  productPrice?: string | number;
+  price?: string | number;
 }
 
 type LuckinMcpData =
@@ -2930,6 +3033,7 @@ export function isReadonlyBrandMcpTool(provider: string, toolName: string): bool
       'query-meals',
       'query-meal-detail',
       'calculate-price',
+      'create-order',
       'query-order',
       'campaign-calendar',
       'available-coupons',
@@ -9796,6 +9900,256 @@ export async function queryMcDonaldsFoodMenuForCard(item: A2uiFoodData): Promise
     };
   } catch (error) {
     return emptyResult('麦当劳菜单查询失败：' + describeThrown(error));
+  }
+}
+
+function mcDonaldsCentsMoney(value: Object | string | number | boolean | null | undefined): string {
+  const raw = textOf(value).trim();
+  if (raw.length === 0) {
+    return '';
+  }
+  const cents = Number(raw);
+  if (!Number.isFinite(cents)) {
+    return raw.charAt(0) === '¥' ? raw : '¥' + raw;
+  }
+  return '¥' + (cents / 100).toFixed(2);
+}
+
+function mcDonaldsQuantity(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 1;
+  }
+  return Math.max(1, Math.min(20, Math.floor(value)));
+}
+
+function mcDonaldsMealDetailRows(detail: McDonaldsMealRecord): McDonaldsFoodMenuRow[] {
+  const rows: McDonaldsFoodMenuRow[] = [];
+  const rounds = detail.rounds === undefined ? [] : detail.rounds;
+  for (let index = 0; index < rounds.length; index += 1) {
+    const round = rounds[index];
+    const choices = round.choices === undefined ? [] : round.choices;
+    const choiceNames: string[] = [];
+    for (let choiceIndex = 0; choiceIndex < choices.length; choiceIndex += 1) {
+      const choice = choices[choiceIndex];
+      const name = textOf(choice.name).trim();
+      if (name.length > 0) {
+        const quantity = textOf(choice.quantity).trim();
+        choiceNames.push(name + (quantity.length > 0 && quantity !== '1' ? ' ×' + quantity : ''));
+      }
+    }
+    const roundName = firstText([round.name, '组成' + (index + 1).toString()]);
+    const roundQuantity = textOf(round.quantity).trim();
+    rows.push({
+      label: roundName + (roundQuantity.length > 0 && roundQuantity !== '1' ? ' ×' + roundQuantity : ''),
+      value: choiceNames.length > 0 ? choiceNames.join('、') : '默认搭配'
+    });
+  }
+  return rows;
+}
+
+export async function queryMcDonaldsFoodMenuDetail(
+  storeCode: string,
+  beCode: string,
+  productId: string
+): Promise<McDonaldsFoodMenuDetailResult> {
+  const emptyResult = (error: string): McDonaldsFoodMenuDetailResult => ({
+    found: false,
+    productId: productId,
+    priceText: '',
+    rows: [],
+    error: error
+  });
+  const token = localProviderConfig.mcdMcpToken;
+  if (token.length === 0 || storeCode.trim().length === 0 || productId.trim().length === 0) {
+    return emptyResult(token.length === 0 ? '未配置 MCD_MCP_TOKEN。' : '麦当劳菜品详情参数不足。');
+  }
+  try {
+    const args: McDonaldsMealDetailArgs = {
+      code: productId.trim(),
+      storeCode: storeCode.trim(),
+      beCode: beCode.trim(),
+      orderType: 1,
+      beType: 1
+    };
+    const payload = await callReadonlyBrandMcpTool(
+      '麦当劳', localProviderConfig.mcdMcpUrl, token, 'query-meal-detail', args
+    );
+    const detail = mcpPayloadData(payload as McDonaldsPayload) as McDonaldsMealRecord | undefined;
+    if (detail === undefined) {
+      return emptyResult('麦当劳没有返回这个菜品的详情。');
+    }
+    const rows = mcDonaldsMealDetailRows(detail);
+    if (rows.length === 0) {
+      rows.push({ label: '餐品配置', value: '该商品按默认配置下单' });
+    }
+    return {
+      found: true,
+      productId: firstText([detail.code, detail.productCode, productId]),
+      priceText: pricePart('', firstText([detail.price, detail.currentPrice])),
+      rows: rows,
+      error: ''
+    };
+  } catch (error) {
+    return emptyResult('麦当劳菜品详情查询失败：' + describeThrown(error));
+  }
+}
+
+function selectedMcDonaldsTakeWay(data: McDonaldsPriceData): McDonaldsTakeWayRecord | null {
+  const records = data.takeWayList === undefined ? [] : data.takeWayList;
+  let fallback: McDonaldsTakeWayRecord | null = null;
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    const code = firstText([record.takeWayCode, record.code, record.value]);
+    if (code.length === 0) {
+      continue;
+    }
+    if (fallback === null) {
+      fallback = record;
+    }
+    const selected = textOf(record.selected).trim().toLowerCase();
+    if (record.selected === true || selected === 'true' || selected === '1') {
+      return record;
+    }
+  }
+  return fallback;
+}
+
+export async function quoteMcDonaldsFoodMenuOrder(
+  storeCode: string,
+  beCode: string,
+  productId: string,
+  requestedQuantity: number
+): Promise<McDonaldsFoodOrderQuoteResult> {
+  const quantity = mcDonaldsQuantity(requestedQuantity);
+  const emptyResult = (error: string): McDonaldsFoodOrderQuoteResult => ({
+    ready: false,
+    productId: productId,
+    quantity: quantity,
+    takeWayCode: '',
+    rows: [],
+    error: error
+  });
+  const token = localProviderConfig.mcdMcpToken;
+  if (token.length === 0 || storeCode.trim().length === 0 || productId.trim().length === 0) {
+    return emptyResult(token.length === 0 ? '未配置 MCD_MCP_TOKEN。' : '麦当劳核价参数不足。');
+  }
+  try {
+    const args: McDonaldsPriceArgs = {
+      storeCode: storeCode.trim(),
+      beCode: beCode.trim(),
+      orderType: 1,
+      beType: 1,
+      items: [{ productCode: productId.trim(), quantity: quantity }]
+    };
+    const payload = await callReadonlyBrandMcpTool(
+      '麦当劳', localProviderConfig.mcdMcpUrl, token, 'calculate-price', args
+    );
+    const data = mcpPayloadData(payload as McDonaldsPayload) as McDonaldsPriceData | undefined;
+    if (data === undefined) {
+      return emptyResult('麦当劳没有返回核价结果。');
+    }
+    const productList = data.productList === undefined ? [] : data.productList;
+    const rows: McDonaldsFoodMenuRow[] = [];
+    for (let index = 0; index < productList.length; index += 1) {
+      const product = productList[index];
+      rows.push({
+        label: firstText([product.productName, product.productCode, '商品']),
+        value: '×' + firstText([product.quantity, quantity]) + '　' +
+          mcDonaldsCentsMoney(firstText([product.subtotal, product.originalSubtotal]))
+      });
+    }
+    rows.push({ label: '商品原价', value: mcDonaldsCentsMoney(firstText([data.productOriginalPrice, data.originalPrice])) });
+    rows.push({ label: '优惠', value: mcDonaldsCentsMoney(data.discount) });
+    rows.push({ label: '应付', value: mcDonaldsCentsMoney(data.price) });
+    const takeWay = selectedMcDonaldsTakeWay(data);
+    const takeWayCode = takeWay === null ? '' : firstText([takeWay.takeWayCode, takeWay.code, takeWay.value]);
+    if (takeWay !== null) {
+      rows.push({ label: '取餐方式', value: firstText([takeWay.name, takeWay.title, takeWayCode]) });
+    }
+    return {
+      ready: textOf(data.price).trim().length > 0 || productList.length > 0,
+      productId: productId.trim(),
+      quantity: quantity,
+      takeWayCode: takeWayCode,
+      rows: rows,
+      error: takeWayCode.length > 0 ? '' : '核价成功，但没有返回可用于到店下单的取餐方式。'
+    };
+  } catch (error) {
+    return emptyResult('麦当劳核价失败：' + describeThrown(error));
+  }
+}
+
+function mcDonaldsOrderRows(data: McDonaldsOrderData): McDonaldsFoodMenuRow[] {
+  const rows: McDonaldsFoodMenuRow[] = [];
+  const orderId = textOf(data.orderId).trim();
+  const status = firstText([data.orderStatusTitle, data.orderStatus, data.orderStatusSubTitle]);
+  if (orderId.length > 0) { rows.push({ label: '订单号', value: orderId }); }
+  if (status.length > 0) { rows.push({ label: '订单状态', value: status }); }
+  if (textOf(data.storeName).trim().length > 0) { rows.push({ label: '门店', value: textOf(data.storeName) }); }
+  if (textOf(data.pickupCode).trim().length > 0) { rows.push({ label: '取餐码', value: textOf(data.pickupCode) }); }
+  if (textOf(data.lockerCode).trim().length > 0) { rows.push({ label: '柜号', value: textOf(data.lockerCode) }); }
+  return rows;
+}
+
+function mcDonaldsFoodOrderResult(payload: Object): McDonaldsFoodOrderResult {
+  const data = mcpPayloadData(payload as McDonaldsPayload) as McDonaldsOrderData | undefined;
+  if (data === undefined) {
+    return { ready: false, orderId: '', statusText: '', payUrl: '', rows: [], error: '麦当劳没有返回订单结果。' };
+  }
+  const orderId = textOf(data.orderId).trim();
+  const statusText = firstText([data.orderStatusTitle, data.orderStatus, data.orderStatusSubTitle]);
+  return {
+    ready: orderId.length > 0,
+    orderId: orderId,
+    statusText: statusText,
+    payUrl: firstText([data.payH5Url, data.payUrl, data.paymentUrl]),
+    rows: mcDonaldsOrderRows(data),
+    error: orderId.length > 0 ? '' : '麦当劳没有返回真实订单号。'
+  };
+}
+
+export async function createMcDonaldsFoodMenuOrder(
+  storeCode: string,
+  beCode: string,
+  productId: string,
+  requestedQuantity: number,
+  takeWayCode: string
+): Promise<McDonaldsFoodOrderResult> {
+  const token = localProviderConfig.mcdMcpToken;
+  if (token.length === 0 || storeCode.trim().length === 0 || beCode.trim().length === 0 ||
+    productId.trim().length === 0 || takeWayCode.trim().length === 0) {
+    return { ready: false, orderId: '', statusText: '', payUrl: '', rows: [], error: '麦当劳下单参数不足，请重新核价。' };
+  }
+  try {
+    const args: McDonaldsCreateOrderArgs = {
+      storeCode: storeCode.trim(),
+      beCode: beCode.trim(),
+      takeWayCode: takeWayCode.trim(),
+      beType: 1,
+      items: [{ productCode: productId.trim(), quantity: mcDonaldsQuantity(requestedQuantity) }]
+    };
+    const payload = await callReadonlyBrandMcpTool(
+      '麦当劳', localProviderConfig.mcdMcpUrl, token, 'create-order', args
+    );
+    return mcDonaldsFoodOrderResult(payload);
+  } catch (error) {
+    return { ready: false, orderId: '', statusText: '', payUrl: '', rows: [], error: '麦当劳创建订单失败：' + describeThrown(error) };
+  }
+}
+
+export async function queryMcDonaldsFoodMenuOrder(orderId: string): Promise<McDonaldsFoodOrderResult> {
+  const token = localProviderConfig.mcdMcpToken;
+  if (token.length === 0 || orderId.trim().length === 0) {
+    return { ready: false, orderId: '', statusText: '', payUrl: '', rows: [], error: '麦当劳订单号或登录状态无效。' };
+  }
+  try {
+    const args: McDonaldsQueryOrderArgs = { orderId: orderId.trim() };
+    const payload = await callReadonlyBrandMcpTool(
+      '麦当劳', localProviderConfig.mcdMcpUrl, token, 'query-order', args
+    );
+    return mcDonaldsFoodOrderResult(payload);
+  } catch (error) {
+    return { ready: false, orderId: orderId, statusText: '', payUrl: '', rows: [], error: '麦当劳订单查询失败：' + describeThrown(error) };
   }
 }
 

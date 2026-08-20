@@ -4116,7 +4116,7 @@ export default function toolGatewayClientTest() {
     it('keeps brand MCP adapters allowlisted', 0, () => {
       expect(isReadonlyBrandMcpTool('麦当劳', 'query-nearby-stores')).assertTrue();
       expect(isReadonlyBrandMcpTool('麦当劳', 'query-meals')).assertTrue();
-      expect(isReadonlyBrandMcpTool('麦当劳', 'create-order')).assertFalse();
+      expect(isReadonlyBrandMcpTool('麦当劳', 'create-order')).assertTrue();
       expect(isReadonlyBrandMcpTool('麦当劳', 'auto-bind-coupons')).assertFalse();
       expect(isReadonlyBrandMcpTool('瑞幸', 'queryShopList')).assertTrue();
       expect(isReadonlyBrandMcpTool('瑞幸', 'searchProductForMcp')).assertTrue();

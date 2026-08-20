@@ -318,6 +318,35 @@ export default function htmlHomeActionPolicyTest() {
         action('food_luckin_order_preview', '去点餐', 'client', invalidLocationArgs))).assertFalse();
     });
 
+    it('allows bounded McDonalds Web ordering actions only on the current food surface', 0, () => {
+      const doc = documentFixture();
+      doc.kind = JSON.parse('"food"') as HtmlHomeKind;
+      doc.surfaceId = 'food-surface';
+      const detailArgs = JSON.parse('{"surfaceId":"food-surface","requestKey":"store|address",' +
+        '"productId":"9900008139"}') as Object;
+      const quoteArgs = JSON.parse('{"surfaceId":"food-surface","requestKey":"store|address",' +
+        '"productId":"9900008139","quantity":2}') as Object;
+      const createArgs = JSON.parse('{"surfaceId":"food-surface","requestKey":"store|address",' +
+        '"productId":"9900008139","quantity":2,"quoteToken":"food-surface:1"}') as Object;
+      const orderArgs = JSON.parse('{"surfaceId":"food-surface","requestKey":"store|address",' +
+        '"orderId":"order-1"}') as Object;
+      const invalidQuantity = JSON.parse('{"surfaceId":"food-surface","requestKey":"store|address",' +
+        '"productId":"9900008139","quantity":0}') as Object;
+
+      expect(isHtmlHomeActionAllowed(doc,
+        action('food_mcd_menu_detail', '查看详情', 'client', detailArgs))).assertTrue();
+      expect(isHtmlHomeActionAllowed(doc,
+        action('food_mcd_order_quote', '核算价格', 'client', quoteArgs))).assertTrue();
+      expect(isHtmlHomeActionAllowed(doc,
+        action('food_mcd_order_create', '确认下单', 'client', createArgs))).assertTrue();
+      expect(isHtmlHomeActionAllowed(doc,
+        action('food_mcd_order_status', '刷新订单状态', 'client', orderArgs))).assertTrue();
+      expect(isHtmlHomeActionAllowed(doc,
+        action('food_mcd_pay_open', '打开支付页面', 'client', orderArgs))).assertTrue();
+      expect(isHtmlHomeActionAllowed(doc,
+        action('food_mcd_order_quote', '核算价格', 'client', invalidQuantity))).assertFalse();
+    });
+
     it('allows only visible Firecrawl source and monitor actions from the current document', 0, () => {
       const doc = documentFixture();
       const visibleMonitorArgs: FirecrawlMonitorArgsFixture = { id: 'monitor-current' };

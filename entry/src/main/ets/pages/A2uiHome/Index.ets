@@ -126,7 +126,12 @@ import {
   foodCardHasMcDonaldsSource,
   foodCardHasLuckinSource,
   LuckinFoodMenuProduct,
+  McDonaldsFoodMenuRow,
+  createMcDonaldsFoodMenuOrder,
+  queryMcDonaldsFoodMenuDetail,
   queryMcDonaldsFoodMenuForCard,
+  queryMcDonaldsFoodMenuOrder,
+  quoteMcDonaldsFoodMenuOrder,
   queryLuckinFoodMenuForCard,
   recheck12306TrainAvailability,
   resolveMultiTaskSlotId,
@@ -742,6 +747,7 @@ interface FoodMenuPatch {
   kind: 'food-menu';
   brand: 'luckin' | 'mcdonalds';
   status: 'ready' | 'error';
+  step?: 'menu' | 'detail' | 'quote' | 'order';
   requestKey: string;
   deptId: string;
   storeName: string;
@@ -749,6 +755,47 @@ interface FoodMenuPatch {
   storeLocation: string;
   products: LuckinFoodMenuProduct[];
   error: string;
+  selectedProductId?: string;
+  selectedProductName?: string;
+  selectedPictureUrl?: string;
+  selectedPriceText?: string;
+  quantity?: number;
+  rows?: McDonaldsFoodMenuRow[];
+  quoteToken?: string;
+  canCreate?: boolean;
+  orderId?: string;
+  payUrl?: string;
+  statusText?: string;
+}
+
+interface McDonaldsFoodMenuActionPayload {
+  surfaceId?: Object | string | number | boolean | null;
+  requestKey?: Object | string | number | boolean | null;
+  productId?: Object | string | number | boolean | null;
+  quantity?: Object | string | number | boolean | null;
+  quoteToken?: Object | string | number | boolean | null;
+  orderId?: Object | string | number | boolean | null;
+}
+
+interface McDonaldsFoodMenuQuoteContext {
+  productId: string;
+  quantity: number;
+  takeWayCode: string;
+  quoteToken: string;
+}
+
+interface McDonaldsFoodMenuContext {
+  surfaceId: string;
+  requestKey: string;
+  storeCode: string;
+  beCode: string;
+  storeName: string;
+  storeAddress: string;
+  storeLocation: string;
+  products: LuckinFoodMenuProduct[];
+  quote: McDonaldsFoodMenuQuoteContext | null;
+  orderId: string;
+  payUrl: string;
 }
 
 interface LuckinFoodMenuOrderPayload {
@@ -1080,6 +1127,8 @@ struct Index {
   @State luckinInlinePatchJson: string = '';
   @State luckinInlinePatchTick: number = 0;
   private luckinFoodMenuContext: FoodMenuPatch | null = null;
+  private mcDonaldsFoodMenuContext: McDonaldsFoodMenuContext | null = null;
+  private mcDonaldsFoodMenuQuoteSequence: number = 0;
   private luckinOptionSwitchInFlight: boolean = false;
   private luckinOptionSwitchSeq: number = 0;
   private luckinOptionSwitchPending: LuckinOptionSwitchPending | null = null;
@@ -2209,6 +2258,7 @@ struct Index {
   private clearLuckinInlinePatchState(): void {
     this.luckinInlinePatchJson = '';
     this.luckinFoodMenuContext = null;
+    this.mcDonaldsFoodMenuContext = null;
     this.clearLuckinOptionSwitchQueue();
   }
 
@@ -7143,6 +7193,26 @@ struct Index {
       await this.previewLuckinFoodMenuProduct(action);
       return;
     }
+    if (action.id === 'food_mcd_menu_detail') {
+      await this.openMcDonaldsFoodMenuDetail(action);
+      return;
+    }
+    if (action.id === 'food_mcd_order_quote') {
+      await this.quoteMcDonaldsFoodMenuProduct(action);
+      return;
+    }
+    if (action.id === 'food_mcd_order_create') {
+      await this.createMcDonaldsFoodMenuProductOrder(action);
+      return;
+    }
+    if (action.id === 'food_mcd_order_status') {
+      await this.refreshMcDonaldsFoodMenuOrder(action);
+      return;
+    }
+    if (action.id === 'food_mcd_pay_open') {
+      await this.openMcDonaldsFoodMenuPayment(action);
+      return;
+    }
     if (action.id === 'food_favorite_remove') {
       await this.removeFoodFavorite(action);
       return;
@@ -7568,10 +7638,24 @@ struct Index {
       aiLogInfo('[AIPhone][McDonaldsFoodMenuPatch] status=ignored reason=surface_changed');
       return;
     }
+    this.mcDonaldsFoodMenuContext = {
+      surfaceId: surfaceId,
+      requestKey: requestKey,
+      storeCode: result.storeCode,
+      beCode: result.beCode,
+      storeName: result.storeName.length > 0 ? result.storeName : row.name,
+      storeAddress: result.storeAddress.length > 0 ? result.storeAddress : row.address,
+      storeLocation: result.storeLocation.length > 0 ? result.storeLocation : (row.location ?? ''),
+      products: result.products,
+      quote: null,
+      orderId: '',
+      payUrl: ''
+    };
     this.publishFoodMenuPatch({
       kind: 'food-menu',
       brand: 'mcdonalds',
       status: result.found ? 'ready' : 'error',
+      step: 'menu',
       requestKey: requestKey,
       deptId: '',
       storeName: result.storeName.length > 0 ? result.storeName : row.name,
@@ -7580,6 +7664,211 @@ struct Index {
       products: result.products,
       error: result.error
     });
+  }
+
+  private mcDonaldsFoodMenuProduct(
+    context: McDonaldsFoodMenuContext,
+    productId: string
+  ): LuckinFoodMenuProduct | null {
+    for (let index = 0; index < context.products.length; index += 1) {
+      if (context.products[index].productId === productId) {
+        return context.products[index];
+      }
+    }
+    return null;
+  }
+
+  private mcDonaldsFoodMenuPatch(
+    context: McDonaldsFoodMenuContext,
+    step: 'menu' | 'detail' | 'quote' | 'order',
+    status: 'ready' | 'error',
+    error: string
+  ): FoodMenuPatch {
+    return {
+      kind: 'food-menu',
+      brand: 'mcdonalds',
+      status: status,
+      step: step,
+      requestKey: context.requestKey,
+      deptId: '',
+      storeName: context.storeName,
+      storeAddress: context.storeAddress,
+      storeLocation: context.storeLocation,
+      products: context.products,
+      error: error
+    };
+  }
+
+  private mcDonaldsFoodMenuActionContext(action: A2uiAction): McDonaldsFoodMenuContext | null {
+    if (this.currentSurface.intent !== 'food' || action.args === undefined || action.args === null ||
+      this.mcDonaldsFoodMenuContext === null) {
+      this.logHtmlHomeActionError(action, 'mcd_food_menu_context_required');
+      return null;
+    }
+    const payload = action.args as McDonaldsFoodMenuActionPayload;
+    const surfaceId = this.actionText(payload.surfaceId).trim();
+    const requestKey = this.actionText(payload.requestKey).trim();
+    const context = this.mcDonaldsFoodMenuContext;
+    if (surfaceId !== this.currentSurface.surfaceId || surfaceId !== context.surfaceId ||
+      requestKey !== context.requestKey) {
+      this.logHtmlHomeActionError(action, 'invalid_mcd_food_menu_context');
+      return null;
+    }
+    return context;
+  }
+
+  private async openMcDonaldsFoodMenuDetail(action: A2uiAction): Promise<void> {
+    const context = this.mcDonaldsFoodMenuActionContext(action);
+    if (context === null || action.args === undefined || action.args === null) {
+      return;
+    }
+    const payload = action.args as McDonaldsFoodMenuActionPayload;
+    const productId = this.actionText(payload.productId).trim();
+    const product = this.mcDonaldsFoodMenuProduct(context, productId);
+    if (product === null) {
+      this.logHtmlHomeActionError(action, 'mcd_food_menu_product_not_found');
+      return;
+    }
+    const surfaceId = context.surfaceId;
+    const result = await queryMcDonaldsFoodMenuDetail(context.storeCode, context.beCode, product.productId);
+    if (this.currentSurface.surfaceId !== surfaceId || this.mcDonaldsFoodMenuContext !== context) {
+      aiLogInfo('[AIPhone][McDonaldsFoodMenuDetailPatch] status=ignored reason=surface_changed');
+      return;
+    }
+    context.quote = null;
+    // Some promotional products are absent from query-meal-detail even though
+    // query-meals marks them as orderable. Keep the trusted menu product usable
+    // with its default configuration and surface the provider warning in Web.
+    const patch = this.mcDonaldsFoodMenuPatch(context, 'detail', 'ready', result.error);
+    patch.selectedProductId = product.productId;
+    patch.selectedProductName = product.name;
+    patch.selectedPictureUrl = product.pictureUrl;
+    patch.selectedPriceText = result.priceText.length > 0 ? result.priceText : product.priceText;
+    patch.quantity = 1;
+    patch.rows = result.rows;
+    this.publishFoodMenuPatch(patch);
+  }
+
+  private async quoteMcDonaldsFoodMenuProduct(action: A2uiAction): Promise<void> {
+    const context = this.mcDonaldsFoodMenuActionContext(action);
+    if (context === null || action.args === undefined || action.args === null) {
+      return;
+    }
+    const payload = action.args as McDonaldsFoodMenuActionPayload;
+    const productId = this.actionText(payload.productId).trim();
+    const quantity = Number(this.actionText(payload.quantity));
+    const product = this.mcDonaldsFoodMenuProduct(context, productId);
+    if (product === null || !Number.isFinite(quantity) || quantity < 1 || quantity > 20 || Math.floor(quantity) !== quantity) {
+      this.logHtmlHomeActionError(action, 'invalid_mcd_food_menu_quote');
+      return;
+    }
+    const surfaceId = context.surfaceId;
+    const result = await quoteMcDonaldsFoodMenuOrder(
+      context.storeCode, context.beCode, product.productId, quantity
+    );
+    if (this.currentSurface.surfaceId !== surfaceId || this.mcDonaldsFoodMenuContext !== context) {
+      aiLogInfo('[AIPhone][McDonaldsFoodOrderQuotePatch] status=ignored reason=surface_changed');
+      return;
+    }
+    this.mcDonaldsFoodMenuQuoteSequence = this.mcDonaldsFoodMenuQuoteSequence + 1;
+    const quoteToken = surfaceId + ':' + this.mcDonaldsFoodMenuQuoteSequence.toString();
+    context.quote = result.ready && result.takeWayCode.length > 0 ? {
+      productId: product.productId,
+      quantity: result.quantity,
+      takeWayCode: result.takeWayCode,
+      quoteToken: quoteToken
+    } : null;
+    const patch = this.mcDonaldsFoodMenuPatch(context, 'quote', result.ready ? 'ready' : 'error', result.error);
+    patch.selectedProductId = product.productId;
+    patch.selectedProductName = product.name;
+    patch.selectedPictureUrl = product.pictureUrl;
+    patch.selectedPriceText = product.priceText;
+    patch.quantity = result.quantity;
+    patch.rows = result.rows;
+    patch.quoteToken = context.quote === null ? '' : context.quote.quoteToken;
+    patch.canCreate = context.quote !== null;
+    this.publishFoodMenuPatch(patch);
+  }
+
+  private async createMcDonaldsFoodMenuProductOrder(action: A2uiAction): Promise<void> {
+    const context = this.mcDonaldsFoodMenuActionContext(action);
+    if (context === null || action.args === undefined || action.args === null || context.quote === null) {
+      this.logHtmlHomeActionError(action, 'mcd_food_menu_quote_required');
+      return;
+    }
+    const payload = action.args as McDonaldsFoodMenuActionPayload;
+    const productId = this.actionText(payload.productId).trim();
+    const quantity = Number(this.actionText(payload.quantity));
+    const quoteToken = this.actionText(payload.quoteToken).trim();
+    const quote = context.quote;
+    const product = this.mcDonaldsFoodMenuProduct(context, productId);
+    if (product === null || productId !== quote.productId || quantity !== quote.quantity ||
+      quoteToken !== quote.quoteToken) {
+      this.logHtmlHomeActionError(action, 'invalid_mcd_food_menu_create');
+      return;
+    }
+    context.quote = null;
+    const surfaceId = context.surfaceId;
+    const result = await createMcDonaldsFoodMenuOrder(
+      context.storeCode, context.beCode, product.productId, quantity, quote.takeWayCode
+    );
+    if (this.currentSurface.surfaceId !== surfaceId || this.mcDonaldsFoodMenuContext !== context) {
+      aiLogInfo('[AIPhone][McDonaldsFoodOrderCreatePatch] status=ignored reason=surface_changed');
+      return;
+    }
+    context.orderId = result.orderId;
+    context.payUrl = result.payUrl;
+    const patch = this.mcDonaldsFoodMenuPatch(context, 'order', result.ready ? 'ready' : 'error', result.error);
+    patch.selectedProductId = product.productId;
+    patch.selectedProductName = product.name;
+    patch.selectedPictureUrl = product.pictureUrl;
+    patch.quantity = quantity;
+    patch.rows = result.rows;
+    patch.orderId = result.orderId;
+    patch.payUrl = result.payUrl;
+    patch.statusText = result.statusText;
+    this.publishFoodMenuPatch(patch);
+  }
+
+  private async refreshMcDonaldsFoodMenuOrder(action: A2uiAction): Promise<void> {
+    const context = this.mcDonaldsFoodMenuActionContext(action);
+    if (context === null || action.args === undefined || action.args === null) {
+      return;
+    }
+    const payload = action.args as McDonaldsFoodMenuActionPayload;
+    const orderId = this.actionText(payload.orderId).trim();
+    if (orderId.length === 0 || orderId !== context.orderId) {
+      this.logHtmlHomeActionError(action, 'invalid_mcd_food_menu_order_status');
+      return;
+    }
+    const surfaceId = context.surfaceId;
+    const result = await queryMcDonaldsFoodMenuOrder(orderId);
+    if (this.currentSurface.surfaceId !== surfaceId || this.mcDonaldsFoodMenuContext !== context) {
+      return;
+    }
+    if (result.payUrl.length > 0) {
+      context.payUrl = result.payUrl;
+    }
+    const patch = this.mcDonaldsFoodMenuPatch(context, 'order', result.ready ? 'ready' : 'error', result.error);
+    patch.rows = result.rows;
+    patch.orderId = context.orderId;
+    patch.payUrl = context.payUrl;
+    patch.statusText = result.statusText;
+    this.publishFoodMenuPatch(patch);
+  }
+
+  private async openMcDonaldsFoodMenuPayment(action: A2uiAction): Promise<void> {
+    const context = this.mcDonaldsFoodMenuActionContext(action);
+    if (context === null || action.args === undefined || action.args === null) {
+      return;
+    }
+    const payload = action.args as McDonaldsFoodMenuActionPayload;
+    const orderId = this.actionText(payload.orderId).trim();
+    if (orderId.length === 0 || orderId !== context.orderId || context.payUrl.length === 0) {
+      this.logHtmlHomeActionError(action, 'invalid_mcd_food_menu_payment');
+      return;
+    }
+    await this.openExternalUrl(context.payUrl, ['https']);
   }
 
   private async previewLuckinFoodMenuProduct(action: A2uiAction): Promise<void> {

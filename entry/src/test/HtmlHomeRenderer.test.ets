@@ -2718,6 +2718,12 @@ export default function htmlHomeRendererTest() {
       expect(html.indexOf("brandName = isMcDonalds ? '麦当劳' : '瑞幸'")).assertLarger(-1);
       expect(html.indexOf('editorial-action mcd-menu')).assertLarger(-1);
       expect(html.indexOf('food_luckin_order_preview')).assertLarger(-1);
+      expect(html.indexOf('food_mcd_menu_detail')).assertLarger(-1);
+      expect(html.indexOf('food_mcd_order_quote')).assertLarger(-1);
+      expect(html.indexOf('food_mcd_order_create')).assertLarger(-1);
+      expect(html.indexOf('food_mcd_order_status')).assertLarger(-1);
+      expect(html.indexOf('food_mcd_pay_open')).assertLarger(-1);
+      expect(html.indexOf('确认下单（将创建真实订单）')).assertLarger(-1);
       expect(html.indexOf('food-menu-order')).assertLarger(-1);
       expect(html.indexOf('去点餐')).assertLarger(-1);
       expect(html.indexOf('openFoodMenu(featureBlock, action)')).assertLarger(-1);
