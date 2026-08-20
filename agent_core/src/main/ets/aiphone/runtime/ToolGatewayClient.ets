@@ -1163,8 +1163,10 @@ export interface LuckinFoodMenuProduct {
 
 export interface LuckinFoodMenuResult {
   found: boolean;
+  deptId: string;
   storeName: string;
   storeAddress: string;
+  storeLocation: string;
   products: LuckinFoodMenuProduct[];
   error: string;
 }
@@ -9563,11 +9565,12 @@ function luckinFoodMenuProduct(product: LuckinProductRecord): LuckinFoodMenuProd
 export async function queryLuckinFoodMenuForCard(item: A2uiFoodData): Promise<LuckinFoodMenuResult> {
   const lookup = await resolveLuckinShopIdForFoodCard(item);
   if (!lookup.found) {
-    return { found: false, storeName: '', storeAddress: '', products: [], error: lookup.error };
+    return { found: false, deptId: '', storeName: '', storeAddress: '', storeLocation: '', products: [], error: lookup.error };
   }
   const deptId = Number(lookup.deptId);
   if (!Number.isFinite(deptId)) {
-    return { found: false, storeName: lookup.name, storeAddress: lookup.address, products: [], error: '瑞幸门店 deptId 无效。' };
+    return { found: false, deptId: '', storeName: lookup.name, storeAddress: lookup.address,
+      storeLocation: lookup.location, products: [], error: '瑞幸门店 deptId 无效。' };
   }
   const token = localProviderConfig.luckinMcpToken;
   const keywords: string[] = ['咖啡', '拿铁', '茶', '轻食'];
@@ -9592,16 +9595,20 @@ export async function queryLuckinFoodMenuForCard(item: A2uiFoodData): Promise<Lu
       ' products=' + products.length.toString());
     return {
       found: products.length > 0,
+      deptId: lookup.deptId,
       storeName: lookup.name,
       storeAddress: lookup.address,
+      storeLocation: lookup.location,
       products: products,
       error: products.length > 0 ? '' : '瑞幸暂未返回这家门店的菜单商品。'
     };
   } catch (error) {
     return {
       found: false,
+      deptId: lookup.deptId,
       storeName: lookup.name,
       storeAddress: lookup.address,
+      storeLocation: lookup.location,
       products: [],
       error: '瑞幸菜单查询失败：' + describeThrown(error)
     };
@@ -9908,6 +9915,9 @@ async function callLocalLuckinPreview(rawPrompt: string, surfaceId: string, args
   const groupName = textOf(request.attrGroup);
   const choiceName = textOf(request.attrChoice);
   const isOptionSwitch = groupName.length > 0 && choiceName.length > 0 && textOf(request.productId).length > 0;
+  const pinnedProductId = Number(textOf(request.productId));
+  const pinnedSkuCode = textOf(request.skuCode);
+  const isPinnedMenuProduct = !isOptionSwitch && pinnedProductId > 0 && pinnedSkuCode.length > 0;
   let product: LuckinProductRecord;
   if (isOptionSwitch) {
     const switchedProduct = await luckinLoadProductForOptionSwitch(shop, request, prompt, token);
@@ -9917,6 +9927,14 @@ async function callLocalLuckinPreview(rawPrompt: string, surfaceId: string, args
     product = switchedProduct;
     luckinTrace('prompt_preferences', 'applied', 'luckin.order.preview',
       'selectionCount=' + luckinAttrSelectionsFromRequest(request).length.toString());
+  } else if (isPinnedMenuProduct) {
+    const detailProduct = await luckinLoadProductDetailCached(shop, pinnedProductId, token);
+    if (detailProduct === null) {
+      return luckinErrorA2ui(surfaceId, 'luckin.order.preview', '商品详情加载失败', '暂时无法加载这个菜单商品，请稍后重试。');
+    }
+    product = luckinProductWithSku(detailProduct, pinnedSkuCode);
+    luckinTrace('pinned_menu_product', 'selected', 'luckin.order.preview',
+      'hasProductId=true hasSku=true');
   } else {
     const keyword = luckinProductSearchQuery(prompt, request);
     luckinTrace('product_search_query', 'started', 'luckin.order.preview',
@@ -9963,7 +9981,7 @@ async function callLocalLuckinPreview(rawPrompt: string, surfaceId: string, args
     ' hasDiscountPrice=' + (textOf(preview.discountPrice).length > 0 ? 'true' : 'false') +
     ' hasPrivilegeMoney=' + (textOf(preview.privilegeMoney).length > 0 ? 'true' : 'false') +
     ' actionCount=1');
-  const productPictureUrl = isOptionSwitch ?
+  const productPictureUrl = isOptionSwitch || isPinnedMenuProduct ?
     luckinPinnedProductPicture(request, product) :
     luckinProductPictureUrl(product);
   const createArgs: LuckinOrderActionArgs = {

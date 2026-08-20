@@ -279,6 +279,8 @@ button:disabled { cursor: default; opacity: 0.5; }
 .food-menu-original-price { margin-left: 6px; color: #a1a6af; font-size: 11px; font-weight: 500; text-decoration: line-through; }
 .food-menu-tags { margin-top: 6px; color: #c58b25; font-size: 11px; }
 .food-menu-options { margin-top: 6px; color: #7e8794; font-size: 10px; line-height: 1.45; }
+.food-menu-order { width: 100%; min-height: 36px; margin-top: 10px; border: 0; border-radius: 11px; background: linear-gradient(135deg, #356fc0, #224f94); color: #fff; font-size: 12px; font-weight: 800; }
+.food-menu-order:disabled { background: #d9dde5; color: #8c929d; }
 .food-favorites-head { display: grid; grid-template-columns: 38px minmax(0, 1fr); align-items: center; gap: 9px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
 .food-favorites-title { font-size: 18px; font-weight: 840; }
 .food-favorites-scroll { flex: 1; overflow-y: auto; padding: 14px; }
@@ -748,7 +750,7 @@ body {
 }
 .editorial-location-bar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 40px;
+  grid-template-columns: minmax(0, 1fr) 40px 40px;
   gap: 7px;
   width: 100%;
   margin: 0 0 10px;
@@ -799,6 +801,42 @@ body {
   color: #995f4c;
 }
 .food-map-icon svg { width: 18px; height: 18px; }
+.food-card-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.food-card-topline .editorial-badge { margin-bottom: 0; }
+.food-card-head-actions {
+  display: flex;
+  align-self: stretch;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+}
+.food-card-topline .food-favorite-toggle,
+.food-card-head-actions .food-favorite-toggle {
+  position: static;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border-radius: 11px;
+  font-size: 19px;
+  box-shadow: none;
+}
+.editorial-feature .food-card-topline .food-favorite-toggle {
+  border-color: rgba(122,103,79,.25);
+  background: rgba(255,250,241,.94);
+  color: #9b9084;
+}
+.editorial-feature .food-card-topline .food-favorite-toggle.active {
+  border-color: rgba(216,166,63,.55);
+  background: #fff7df;
+  color: #d39a24;
+}
 .editorial-tabs {
   position: static;
   gap: 6px;
@@ -911,7 +949,7 @@ body {
 .food-feature-icon { display: grid; place-items: center; color: rgba(255,255,255,.92); font-style: normal; }
 .food-feature-icon svg { width: 30px; height: 30px; }
 .editorial-feature-copy { padding: 12px; }
-.editorial-feature-copy > .editorial-badge {
+.editorial-feature-copy .editorial-badge {
   display: inline-flex;
   align-items: center;
   min-height: 22px;
@@ -1320,7 +1358,7 @@ const FOOD_HOME_JS: string = `
     if (!favoritesScroll) { return; }
     favoritesScroll.textContent = '';
     if (favoriteEntries.length === 0) {
-      add(favoritesScroll, 'div', 'food-address-empty', '还没有收藏门店，点一下卡片右下角的星星试试。');
+      add(favoritesScroll, 'div', 'food-address-empty', '还没有收藏门店，点一下卡片右上角的星星试试。');
       return;
     }
     favoriteEntries.forEach(function (favorite, index) {
@@ -1336,17 +1374,17 @@ const FOOD_HOME_JS: string = `
       add(title, 'div', 'editorial-meta', [metric(block, ['distance']), metric(block, ['address']),
         metric(block, ['ratingText', 'rating']), metric(block, ['priceText', 'pricePerPerson']),
         metric(block, ['businessStatusLabel']), metric(block, ['openHoursToday']) || metric(block, ['openHoursWeek'])].filter(Boolean).join(' · '));
-      var expand = add(head, 'button', 'editorial-expand', '展开');
+      var headActions = add(head, 'div', 'food-card-head-actions');
+      addFavoriteRemoveButton(headActions, favorite, block);
+      var expand = add(headActions, 'button', 'editorial-expand', '展开');
       expand.type = 'button';
       expand.addEventListener('click', function (event) { event.stopPropagation(); setFavoriteExpanded(key); });
       savedCard.addEventListener('click', function () { setFavoriteExpanded(key); });
-      var footer = add(savedCard, 'div', 'food-card-footer');
       var sources = sourceParts(block);
       if (sources.length > 0) {
-        var sourceRow = add(footer, 'div', 'editorial-source-row');
+        var sourceRow = add(savedCard, 'div', 'editorial-source-row');
         sources.forEach(function (source) { add(sourceRow, 'span', 'editorial-source', source); });
       }
-      addFavoriteRemoveButton(footer, favorite, block);
       renderFoodCardDetail(savedCard, block, true);
     });
     applyFavoriteExpansion();
@@ -1428,6 +1466,26 @@ const FOOD_HOME_JS: string = `
         return text(group && group.name) + '：' + list(group && group.choices).map(text).filter(Boolean).join('/');
       }).filter(Boolean);
       if (options.length > 0) { add(copy, 'div', 'food-menu-options', options.join(' · ')); }
+      var orderButton = add(copy, 'button', 'food-menu-order', '去点餐');
+      orderButton.type = 'button';
+      var canOrder = text(patch && patch.deptId).length > 0 && text(patch && patch.storeLocation).length > 0 &&
+        text(product && product.productId).length > 0 && text(product && product.skuCode).length > 0;
+      orderButton.disabled = isBusy || !canOrder;
+      if (!canOrder) { orderButton.textContent = '暂不可点'; }
+      orderButton.addEventListener('click', function (event) {
+        event.stopPropagation();
+        postAction({
+          id: 'food_luckin_order_preview', label: '去点餐', prompt: '点一份' + text(product && product.name),
+          kind: 'client', variant: 'primary',
+          args: {
+            surfaceId: text(data.surfaceId), requestKey: text(patch && patch.requestKey),
+            deptId: text(patch && patch.deptId), deptName: text(patch && patch.storeName),
+            address: text(patch && patch.storeAddress), location: text(patch && patch.storeLocation),
+            productId: text(product && product.productId), productName: text(product && product.name),
+            skuCode: text(product && product.skuCode), pictureUrl: text(product && product.pictureUrl)
+          }
+        });
+      });
     });
   }
   function applyMenuPatch(patchJson) {
@@ -1499,9 +1557,10 @@ const FOOD_HOME_JS: string = `
   }
   function decorateFoodActionButton(button, id) {
     var icon = add(button, 'span', 'food-action-icon');
-    var path = id === 'html_open_food_map' ? '<path d="M12 21s6-5.4 6-11a6 6 0 1 0-12 0c0 5.6 6 11 6 11Z" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="10" r="2.2" fill="none" stroke="currentColor" stroke-width="1.7"/>' :
-      (id === 'html_call_food' ? '<path d="M7.2 4.5 9.8 7 8.2 8.8a13.5 13.5 0 0 0 7 7l1.8-1.6 2.5 2.6-1.7 2.1c-.5.6-1.4.8-2.1.5C9.1 17.1 6.9 14.9 4.6 8.3c-.3-.8-.1-1.6.5-2.1l2.1-1.7Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>' :
-        '<path d="M6 4.5h12v15l-6-3-6 3v-15Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M9 8h6M9 11h6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>');
+    var path = id === 'food_luckin_menu_open' ? '<path d="M6 7h10v7a5 5 0 0 1-10 0V7Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M16 9h1.5a2.5 2.5 0 0 1 0 5H16M8 4.5c1 1 2 1 3 0s2-1 3 0" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>' :
+      (id === 'html_open_food_map' ? '<path d="M12 21s6-5.4 6-11a6 6 0 1 0-12 0c0 5.6 6 11 6 11Z" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="10" r="2.2" fill="none" stroke="currentColor" stroke-width="1.7"/>' :
+        (id === 'html_call_food' ? '<path d="M7.2 4.5 9.8 7 8.2 8.8a13.5 13.5 0 0 0 7 7l1.8-1.6 2.5 2.6-1.7 2.1c-.5.6-1.4.8-2.1.5C9.1 17.1 6.9 14.9 4.6 8.3c-.3-.8-.1-1.6.5-2.1l2.1-1.7Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>' :
+          '<path d="M6 4.5h12v15l-6-3-6 3v-15Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M9 8h6M9 11h6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>'));
     icon.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + path + '</svg>';
     button.insertBefore(icon, button.firstChild);
   }
@@ -1681,8 +1740,9 @@ const FOOD_HOME_JS: string = `
   });
   var favoriteEntries = list(data.foodFavorites).slice();
   var favoriteExpandedId = '';
-  var favoritesEntryButton = add(locationBar, 'button', 'food-map-icon food-favorites-icon', '★');
+  var favoritesEntryButton = add(locationBar, 'button', 'food-map-icon food-favorites-icon');
   favoritesEntryButton.type = 'button';
+  favoritesEntryButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 6.5h6l1.8 2H20.5v9.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2V6.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M3.5 9h17" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>';
   favoritesEntryButton.setAttribute('aria-label', '打开收藏夹');
   renderFavoriteCount();
   favoritesEntryButton.addEventListener('click', function () {
@@ -1939,7 +1999,9 @@ const FOOD_HOME_JS: string = `
     var featureIcon = add(featureMedia, 'i', 'food-feature-icon');
     featureIcon.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8h12M7 8v8.5A2.5 2.5 0 0 0 9.5 19h5A2.5 2.5 0 0 0 17 16.5V8M9 5h6l1 3H8l1-3Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 3.5c1.2 1 2.8 1 4 0" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
     var featureCopy = add(feature, 'div', 'editorial-feature-copy appless-v2-food-copy');
-    add(featureCopy, 'span', 'editorial-badge', '为你推荐');
+    var featureTopline = add(featureCopy, 'div', 'food-card-topline');
+    add(featureTopline, 'span', 'editorial-badge', '为你推荐');
+    addFavoriteToggle(featureTopline, featureBlock);
     var featureHead = add(featureCopy, 'div', 'editorial-card-head appless-v2-card-head');
     var featureTitle = add(featureHead, 'div', 'editorial-title');
     add(featureTitle, 'small', '', sourceParts(featureBlock).join(' · ') || '附近餐饮');
@@ -1952,22 +2014,28 @@ const FOOD_HOME_JS: string = `
     detailRow(featureGrid, '电话', metric(featureBlock, ['phone']));
     var featureActions = list(featureBlock.actions).filter(function (action) {
       var id = text(action && action.id);
-      if (id !== 'html_open_food_map' && id !== 'html_pin_food' && id !== 'html_call_food') { return false; }
-      if (id !== 'html_call_food' && !hasLocation(featureBlock)) { return false; }
+      var luckinMenuAction = id === 'food_luckin_menu_open';
+      if (id !== 'html_open_food_map' && id !== 'html_pin_food' && id !== 'html_call_food' && !luckinMenuAction) { return false; }
+      if (id !== 'html_call_food' && !luckinMenuAction && !hasLocation(featureBlock)) { return false; }
+      if (luckinMenuAction && !hasLuckinSource(featureBlock)) { return false; }
       return true;
     });
     if (featureActions.length > 0) {
       var featureActionRow = add(featureDetail, 'div', 'editorial-actions food-actions appless-v2-card-actions');
       featureActions.forEach(function (action) {
         var id = text(action && action.id);
-        var button = add(featureActionRow, 'button', 'editorial-action', id === 'html_open_food_map' ? '导航去' : (id === 'html_call_food' ? '拨打电话' : '固定到桌面'));
+        var luckinMenuAction = id === 'food_luckin_menu_open';
+        var button = add(featureActionRow, 'button', luckinMenuAction ? 'editorial-action luckin-menu' : 'editorial-action',
+          luckinMenuAction ? '查询菜单' : (id === 'html_open_food_map' ? '导航去' : (id === 'html_call_food' ? '拨打电话' : '固定到桌面')));
         button.type = 'button';
         button.disabled = isBusy;
         decorateFoodActionButton(button, id);
-        button.addEventListener('click', function (event) { event.stopPropagation(); postAction(action); });
+        button.addEventListener('click', function (event) {
+          event.stopPropagation();
+          if (luckinMenuAction) { openLuckinMenu(featureBlock, action); } else { postAction(action); }
+        });
       });
     }
-    addFavoriteToggle(feature, featureBlock);
   }
   var listNode = add(shell, 'section', 'editorial-list');
   var empty = add(listNode, 'div', 'editorial-empty', '当前筛选下暂无匹配餐饮。');
@@ -1993,17 +2061,17 @@ const FOOD_HOME_JS: string = `
     var title = add(head, 'div', 'editorial-title');
     add(title, 'h2', '', text(block.title) || '餐饮结果');
     add(title, 'div', 'editorial-meta', [metric(block, ['category']) || text(block.subtitle), metric(block, ['distance']), metric(block, ['ratingText', 'rating']), metric(block, ['priceText', 'pricePerPerson']), metric(block, ['businessStatusLabel'])].filter(Boolean).join(' · '));
-    var expand = add(head, 'button', 'editorial-expand', '展开');
+    var headActions = add(head, 'div', 'food-card-head-actions');
+    addFavoriteToggle(headActions, block);
+    var expand = add(headActions, 'button', 'editorial-expand', '展开');
     expand.type = 'button';
     expand.addEventListener('click', function (event) { event.stopPropagation(); setExpanded(key); });
     card.addEventListener('click', function () { setExpanded(key); });
-    var footer = add(card, 'div', 'food-card-footer');
     var sources = sourceParts(block);
     if (sources.length > 0) {
-      var sourceRow = add(footer, 'div', 'editorial-source-row');
+      var sourceRow = add(card, 'div', 'editorial-source-row');
       sources.forEach(function (source) { add(sourceRow, 'span', 'editorial-source', source); });
     }
-    addFavoriteToggle(footer, block);
     var detail = add(card, 'div', 'editorial-detail');
     var grid = add(detail, 'div', 'editorial-detail-grid');
     detailRow(grid, '地址', metric(block, ['address']));
@@ -2021,20 +2089,27 @@ const FOOD_HOME_JS: string = `
     var canNavigate = hasLocation(block);
     var availableActions = list(block.actions).filter(function (action) {
       var id = text(action && action.id);
-      if (id !== 'html_open_food_map' && id !== 'html_pin_food' && id !== 'html_call_food') { return false; }
-      if (id !== 'html_call_food' && !canNavigate) { return false; }
+      var luckinMenuAction = id === 'food_luckin_menu_open';
+      if (id !== 'html_open_food_map' && id !== 'html_pin_food' && id !== 'html_call_food' && !luckinMenuAction) { return false; }
+      if (id !== 'html_call_food' && !luckinMenuAction && !canNavigate) { return false; }
+      if (luckinMenuAction && !hasLuckinSource(block)) { return false; }
       return true;
     });
     if (availableActions.length > 0) {
       var row = add(detail, 'div', 'editorial-actions');
       availableActions.forEach(function (action) {
         var id = text(action && action.id);
-        var button = add(row, 'button', id === 'html_open_food_map' ? 'editorial-action' : 'editorial-action secondary',
-          id === 'html_open_food_map' ? '导航去' : (id === 'html_call_food' ? '拨打电话' : '固定到桌面'));
+        var luckinMenuAction = id === 'food_luckin_menu_open';
+        var button = add(row, 'button', luckinMenuAction ? 'editorial-action luckin-menu' :
+          (id === 'html_open_food_map' ? 'editorial-action' : 'editorial-action secondary'),
+          luckinMenuAction ? '查询菜单' : (id === 'html_open_food_map' ? '导航去' : (id === 'html_call_food' ? '拨打电话' : '固定到桌面')));
         button.type = 'button';
         button.disabled = isBusy;
         decorateFoodActionButton(button, id);
-        button.addEventListener('click', function (event) { event.stopPropagation(); postAction(action); });
+        button.addEventListener('click', function (event) {
+          event.stopPropagation();
+          if (luckinMenuAction) { openLuckinMenu(block, action); } else { postAction(action); }
+        });
       });
     }
   });

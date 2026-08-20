@@ -2714,6 +2714,12 @@ export default function htmlHomeRendererTest() {
       expect(html.indexOf("text(patch.kind) !== 'food-menu'")).assertLarger(-1);
       expect(html.indexOf('正在匹配瑞幸门店并查询菜单')).assertLarger(-1);
       expect(html.indexOf('food_luckin_menu_open')).assertLarger(-1);
+      expect(html.indexOf('food_luckin_order_preview')).assertLarger(-1);
+      expect(html.indexOf('food-menu-order')).assertLarger(-1);
+      expect(html.indexOf('去点餐')).assertLarger(-1);
+      expect(html.indexOf('openLuckinMenu(featureBlock, action)')).assertLarger(-1);
+      expect(html.indexOf('luckinMenuAction && !hasLuckinSource(featureBlock)')).assertLarger(-1);
+      expect(html.indexOf('luckinMenuAction && !hasLuckinSource(block)')).assertLarger(-1);
       expect(html.indexOf('food_favorite_toggle')).assertLarger(-1);
       expect(html.indexOf('"foodFavorite":true')).assertLarger(-1);
       expect(html.indexOf('function applyFavoriteState(block, active)')).assertLarger(-1);
@@ -2724,7 +2730,7 @@ export default function htmlHomeRendererTest() {
       expect(html.indexOf('function renderFoodCardDetail(card, block, includeActions)')).assertLarger(-1);
       expect(html.indexOf('renderFoodCardDetail(savedCard, block, true)')).assertLarger(-1);
       expect(html.indexOf('data-favorite-card-key')).assertLarger(-1);
-      expect(html.indexOf('food-card-footer')).assertLarger(-1);
+      expect(html.indexOf('food-card-head-actions')).assertLarger(-1);
       expect(html.indexOf('function addFavoriteRemoveButton(parent, favorite, block)')).assertLarger(-1);
       expect(html.indexOf("id: 'food_favorite_remove'")).assertLarger(-1);
       expect(html.indexOf("id: 'food_favorite_map'")).assertLarger(-1);
@@ -2791,9 +2797,9 @@ export default function htmlHomeRendererTest() {
       expect(html.indexOf("card.setAttribute('data-source-key', sourceKey(block))")).assertLarger(-1);
       expect(html.indexOf("raw.indexOf('美团')")).assertLarger(-1);
       expect(html.indexOf("raw.indexOf('麦当劳')")).assertLarger(-1);
-      expect(html.indexOf("mapAction ? '导航去' : (callAction ? '拨打电话' : '固定到桌面')")).assertLarger(-1);
+      expect(html.indexOf("luckinMenuAction ? '查询菜单' : (mapAction ? '导航去' : (callAction ? '拨打电话' : '固定到桌面'))")).assertLarger(-1);
       expect(html.indexOf('var canNavigate = hasLocation(block)')).assertLarger(-1);
-      expect(html.indexOf('if (!callAction && !canNavigate) { return false; }')).assertLarger(-1);
+      expect(html.indexOf('if (!callAction && !luckinMenuAction && !canNavigate) { return false; }')).assertLarger(-1);
       expect(html.indexOf('setExpanded(key)')).assertLarger(-1);
       expect(html.indexOf('Food Field')).assertEqual(-1);
       expect(html.indexOf('附近餐饮探索')).assertEqual(-1);

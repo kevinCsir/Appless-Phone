@@ -297,6 +297,25 @@ export default function htmlHomeActionPolicyTest() {
         action('food_favorite_remove', '取消收藏门店', 'client', invalidIdArgs))).assertFalse();
     });
 
+    it('allows bounded Luckin menu preview actions only on the current food surface', 0, () => {
+      const doc = documentFixture();
+      doc.kind = JSON.parse('"food"') as HtmlHomeKind;
+      doc.surfaceId = 'food-surface';
+      const allowedArgs = JSON.parse('{"surfaceId":"food-surface","requestKey":"store|address",' +
+        '"deptId":"1001","location":"114.1,22.5","productId":"2002","skuCode":"sku-1"}') as Object;
+      const wrongSurfaceArgs = JSON.parse('{"surfaceId":"other-surface","requestKey":"store|address",' +
+        '"deptId":"1001","location":"114.1,22.5","productId":"2002","skuCode":"sku-1"}') as Object;
+      const invalidLocationArgs = JSON.parse('{"surfaceId":"food-surface","requestKey":"store|address",' +
+        '"deptId":"1001","location":"invalid","productId":"2002","skuCode":"sku-1"}') as Object;
+
+      expect(isHtmlHomeActionAllowed(doc,
+        action('food_luckin_order_preview', '去点餐', 'client', allowedArgs))).assertTrue();
+      expect(isHtmlHomeActionAllowed(doc,
+        action('food_luckin_order_preview', '去点餐', 'client', wrongSurfaceArgs))).assertFalse();
+      expect(isHtmlHomeActionAllowed(doc,
+        action('food_luckin_order_preview', '去点餐', 'client', invalidLocationArgs))).assertFalse();
+    });
+
     it('allows only visible Firecrawl source and monitor actions from the current document', 0, () => {
       const doc = documentFixture();
       const visibleMonitorArgs: FirecrawlMonitorArgsFixture = { id: 'monitor-current' };

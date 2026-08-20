@@ -740,10 +740,38 @@ interface LuckinFoodMenuPatch {
   kind: 'food-menu';
   status: 'ready' | 'error';
   requestKey: string;
+  deptId: string;
   storeName: string;
   storeAddress: string;
+  storeLocation: string;
   products: LuckinFoodMenuProduct[];
   error: string;
+}
+
+interface LuckinFoodMenuOrderPayload {
+  surfaceId?: Object | string | number | boolean | null;
+  requestKey?: Object | string | number | boolean | null;
+  deptId?: Object | string | number | boolean | null;
+  deptName?: Object | string | number | boolean | null;
+  address?: Object | string | number | boolean | null;
+  location?: Object | string | number | boolean | null;
+  productId?: Object | string | number | boolean | null;
+  productName?: Object | string | number | boolean | null;
+  skuCode?: Object | string | number | boolean | null;
+  pictureUrl?: Object | string | number | boolean | null;
+}
+
+interface LuckinFoodMenuPreviewArgs {
+  deptId: string;
+  deptName: string;
+  address: string;
+  location: string;
+  productId: string;
+  productName: string;
+  skuCode: string;
+  pictureUrl: string;
+  originalQuery: string;
+  previewPrompt: string;
 }
 
 interface InlineLuckinPaymentStatusPlan {
@@ -1048,6 +1076,7 @@ struct Index {
   private activeRuntimeOwner: RuntimeOwner = 'legacy';
   @State luckinInlinePatchJson: string = '';
   @State luckinInlinePatchTick: number = 0;
+  private luckinFoodMenuContext: LuckinFoodMenuPatch | null = null;
   private luckinOptionSwitchInFlight: boolean = false;
   private luckinOptionSwitchSeq: number = 0;
   private luckinOptionSwitchPending: LuckinOptionSwitchPending | null = null;
@@ -2176,6 +2205,7 @@ struct Index {
 
   private clearLuckinInlinePatchState(): void {
     this.luckinInlinePatchJson = '';
+    this.luckinFoodMenuContext = null;
     this.clearLuckinOptionSwitchQueue();
   }
 
@@ -7102,6 +7132,10 @@ struct Index {
       await this.openLuckinFoodMenu(action);
       return;
     }
+    if (action.id === 'food_luckin_order_preview') {
+      await this.previewLuckinFoodMenuProduct(action);
+      return;
+    }
     if (action.id === 'food_favorite_remove') {
       await this.removeFoodFavorite(action);
       return;
@@ -7472,6 +7506,7 @@ struct Index {
   }
 
   private publishLuckinFoodMenuPatch(patch: LuckinFoodMenuPatch): void {
+    this.luckinFoodMenuContext = patch;
     this.luckinInlinePatchJson = JSON.stringify(patch);
     this.luckinInlinePatchTick = this.luckinInlinePatchTick + 1;
     aiLogInfo('[AIPhone][LuckinFoodMenuPatch] status=' + patch.status +
@@ -7499,11 +7534,59 @@ struct Index {
       kind: 'food-menu',
       status: result.found ? 'ready' : 'error',
       requestKey: requestKey,
+      deptId: result.deptId,
       storeName: result.storeName.length > 0 ? result.storeName : row.name,
       storeAddress: result.storeAddress.length > 0 ? result.storeAddress : row.address,
+      storeLocation: result.storeLocation.length > 0 ? result.storeLocation : (row.location ?? ''),
       products: result.products,
       error: result.error
     });
+  }
+
+  private async previewLuckinFoodMenuProduct(action: A2uiAction): Promise<void> {
+    if (this.currentSurface.intent !== 'food' || action.args === undefined || action.args === null ||
+      this.luckinFoodMenuContext === null) {
+      this.logHtmlHomeActionError(action, 'food_menu_context_required');
+      return;
+    }
+    const payload = action.args as LuckinFoodMenuOrderPayload;
+    const surfaceId = this.actionText(payload.surfaceId).trim();
+    const requestKey = this.actionText(payload.requestKey).trim();
+    const deptId = this.actionText(payload.deptId).trim();
+    const productId = this.actionText(payload.productId).trim();
+    const skuCode = this.actionText(payload.skuCode).trim();
+    const context = this.luckinFoodMenuContext;
+    if (surfaceId !== this.currentSurface.surfaceId || requestKey !== context.requestKey ||
+      deptId !== context.deptId || productId.length === 0 || skuCode.length === 0) {
+      this.logHtmlHomeActionError(action, 'invalid_food_menu_order_context');
+      return;
+    }
+    let product: LuckinFoodMenuProduct | null = null;
+    for (let index = 0; index < context.products.length; index++) {
+      const candidate = context.products[index];
+      if (candidate.productId === productId && candidate.skuCode === skuCode) {
+        product = candidate;
+        break;
+      }
+    }
+    if (product === null) {
+      this.logHtmlHomeActionError(action, 'food_menu_product_not_found');
+      return;
+    }
+    const prompt = '点一份' + product.name;
+    const previewArgs: LuckinFoodMenuPreviewArgs = {
+      deptId: context.deptId,
+      deptName: context.storeName,
+      address: context.storeAddress,
+      location: context.storeLocation,
+      productId: product.productId,
+      productName: product.name,
+      skuCode: product.skuCode,
+      pictureUrl: product.pictureUrl,
+      originalQuery: prompt,
+      previewPrompt: product.name
+    };
+    await this.callToolById('luckin.order.preview', prompt, action.id, previewArgs as Object);
   }
 
   private async toggleFoodFavorite(action: A2uiAction): Promise<void> {
