@@ -4767,6 +4767,35 @@ export default function toolGatewayClientTest() {
       expect(providerIssueRows(merged.issues)[0].label).assertEqual('淘宝闪购');
     });
 
+    it('does not synthesize a store coordinate from two partial provider records', 0, () => {
+      const merged = aggregateFoodProviderResults([{
+        provider: '高德',
+        foods: [{
+          name: '测试咖啡店',
+          category: '咖啡',
+          address: '深圳市龙岗区',
+          distance: '100米',
+          longitude: 114.06
+        }],
+        error: ''
+      }, {
+        provider: '腾讯地图',
+        foods: [{
+          name: '测试咖啡店',
+          category: '咖啡',
+          address: '深圳市龙岗区',
+          distance: '100米',
+          latitude: 22.63
+        }],
+        error: ''
+      }]);
+
+      expect(merged.foods.length).assertEqual(1);
+      expect(merged.foods[0].longitude).assertUndefined();
+      expect(merged.foods[0].latitude).assertUndefined();
+      expect(merged.foods[0].location).assertUndefined();
+    });
+
     it('builds food provider progress rows for waiting, completed, and errored sources', 0, () => {
       const rice: A2uiFoodData = {
         name: '米粉店',

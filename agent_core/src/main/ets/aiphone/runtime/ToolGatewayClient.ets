@@ -11154,14 +11154,16 @@ function foodTags(item: A2uiFoodData, fallbackProvider: string): string[] {
 
 function cloneFood(item: A2uiFoodData, fallbackProvider: string): A2uiFoodData {
   const phone = normalizeFoodPhoneNumber(item.phone === undefined ? '' : item.phone);
+  const coordinates = foodRecordCoordinates(item.location === undefined ? '' : item.location,
+    item.longitude, item.latitude);
   return {
     name: item.name,
     category: item.category,
     address: item.address,
     distance: item.distance,
-    longitude: item.longitude,
-    latitude: item.latitude,
-    location: item.location,
+    longitude: coordinates.location.length > 0 ? coordinates.longitude : undefined,
+    latitude: coordinates.location.length > 0 ? coordinates.latitude : undefined,
+    location: coordinates.location.length > 0 ? coordinates.location : undefined,
     sourceTags: foodTags(item, fallbackProvider),
     phone: phone,
     phoneSource: phone.length > 0 ? (item.phoneSource === undefined || item.phoneSource.length === 0 ? fallbackProvider : item.phoneSource) : undefined,
@@ -11179,6 +11181,8 @@ function cloneFood(item: A2uiFoodData, fallbackProvider: string): A2uiFoodData {
 }
 
 function mergeFoodInto(target: A2uiFoodData, item: A2uiFoodData, fallbackProvider: string): void {
+  const itemCoordinates = foodRecordCoordinates(item.location === undefined ? '' : item.location,
+    item.longitude, item.latitude);
   const tags = foodTags(item, fallbackProvider);
   const targetTags: string[] = target.sourceTags === undefined || target.sourceTags === null ? [] : target.sourceTags;
   for (let index = 0; index < tags.length; index++) {
@@ -11187,11 +11191,10 @@ function mergeFoodInto(target: A2uiFoodData, item: A2uiFoodData, fallbackProvide
     }
   }
   target.sourceTags = targetTags;
-  if (target.longitude === undefined && item.longitude !== undefined) {
-    target.longitude = item.longitude;
-  }
-  if (target.latitude === undefined && item.latitude !== undefined) {
-    target.latitude = item.latitude;
+  if (target.longitude === undefined && target.latitude === undefined && itemCoordinates.location.length > 0) {
+    target.longitude = itemCoordinates.longitude;
+    target.latitude = itemCoordinates.latitude;
+    target.location = itemCoordinates.location;
   }
   const itemPhone = normalizeFoodPhoneNumber(item.phone === undefined ? '' : item.phone);
   const targetPhone = normalizeFoodPhoneNumber(target.phone === undefined ? '' : target.phone);
@@ -11232,13 +11235,11 @@ function mergeFoodInto(target: A2uiFoodData, item: A2uiFoodData, fallbackProvide
     }
   } else if (item.distance.length > 0 && foodDistanceMeters(item.distance) < foodDistanceMeters(target.distance)) {
     target.distance = item.distance;
-    if (item.location !== undefined && item.location.length > 0) {
-      target.location = item.location;
-      target.longitude = item.longitude;
-      target.latitude = item.latitude;
+    if (itemCoordinates.location.length > 0) {
+      target.location = itemCoordinates.location;
+      target.longitude = itemCoordinates.longitude;
+      target.latitude = itemCoordinates.latitude;
     }
-  } else if ((target.location === undefined || target.location.length === 0) && item.location !== undefined && item.location.length > 0) {
-    target.location = item.location;
   }
 }
 

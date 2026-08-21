@@ -112,6 +112,7 @@ export default function foodStoreMapTest() {
       expect(html.indexOf('selectedAddress = text(snapshotCenter.address)')).assertLarger(-1);
       expect(html.indexOf('if(channelOnly&&markers.length>0&&!fittedOnce)')).assertEqual(-1);
       expect(html.indexOf('map.setFitView')).assertEqual(-1);
+      expect(html.indexOf("if(!window.AMap){ statusNode.textContent='地图服务加载失败'; statusNode.className='map-status'; return; }")).assertLarger(-1);
     });
   });
 }

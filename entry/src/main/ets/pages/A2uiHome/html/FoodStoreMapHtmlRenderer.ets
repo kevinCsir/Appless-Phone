@@ -154,7 +154,7 @@ html,body,#map{width:100%;height:100%;margin:0;overflow:hidden;background:#f2eee
   window.__aiphoneApplyFoodMapSnapshot = function(snapshot){ pendingSnapshot = snapshot || {}; reconcile(pendingSnapshot); };
   window.__aiphoneDestroyFoodStoreMap = function(){ if(map){ map.destroy(); map = null; } };
   function initialize(){
-    if(!window.AMap){ statusNode.textContent='地图服务加载失败'; return; }
+    if(!window.AMap){ statusNode.textContent='地图服务加载失败'; statusNode.className='map-status'; return; }
     map = new AMap.Map('map',{ resizeEnable:true, viewMode:'2D', zoom:14, showLabel:true, features:['bg','road','building','point'] });
     map.on('complete',function(){applyChannelMode();if(!centerApplied){updateSelection('地图中心点');}});
     map.on('movestart',function(){if(!preserveNextName){selectedName='地图中心点';}});
