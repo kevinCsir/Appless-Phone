@@ -4513,6 +4513,8 @@ export default function toolGatewayClientTest() {
         },
         deliverablePoiInfo: {
           poiName: '茶百道 深圳科技园店',
+          longitude: 113.9542,
+          latitude: 22.5401,
           deliveryDistance: '1.2',
           distributionCost: '3.0',
           deliveryDuration: '30',
@@ -4524,6 +4526,8 @@ export default function toolGatewayClientTest() {
       expect(record.category.indexOf('双杯奶茶套餐兑换券')).assertLarger(-1);
       expect(record.address.indexOf('配送费3.0元')).assertLarger(-1);
       expect(record.distance).assertEqual('1.2千米');
+      expect(record.longitude).assertEqual(113.9542);
+      expect(record.latitude).assertEqual(22.5401);
       const tags = record.sourceTags === undefined ? [] : record.sourceTags;
       expect(tags[0]).assertEqual('美团');
     });
@@ -4536,6 +4540,8 @@ export default function toolGatewayClientTest() {
         delivery_time: 34,
         delivery_price: '4.0',
         service_rating: '4.6',
+        longitude: '113.9508',
+        latitude: '22.5386',
         items: [
           {
             title: '香辣鸡腿堡套餐',
@@ -4548,6 +4554,8 @@ export default function toolGatewayClientTest() {
       expect(record.category.indexOf('香辣鸡腿堡套餐')).assertLarger(-1);
       expect(record.address.indexOf('评分4.6')).assertLarger(-1);
       expect(record.distance).assertEqual('820米');
+      expect(record.longitude).assertEqual(113.9508);
+      expect(record.latitude).assertEqual(22.5386);
       const tags = record.sourceTags === undefined ? [] : record.sourceTags;
       expect(tags[0]).assertEqual('淘宝闪购');
     });
