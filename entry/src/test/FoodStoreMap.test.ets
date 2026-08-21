@@ -4,6 +4,7 @@ import {
   buildFoodStoreMapSnapshot,
   validFoodStoreLocation
 } from '../main/ets/pages/A2uiHome/FoodStoreMapSnapshot';
+import { favoriteFromFood } from '../main/ets/pages/A2uiHome/FoodFavoritesStore';
 import { renderFoodStoreMapHtml } from '../main/ets/pages/A2uiHome/html/FoodStoreMapHtmlRenderer';
 
 interface FoodMapTestModel {
@@ -63,6 +64,21 @@ export default function foodStoreMapTest() {
       expect(validFoodStoreLocation('181,22')).assertEqual('');
     });
 
+    it('preserves coordinate-only food data when creating a favorite', 0, () => {
+      const favorite = favoriteFromFood({
+        name: '仅外层坐标门店',
+        category: '餐饮',
+        address: '深圳市福田区',
+        distance: '300米',
+        longitude: 114.057868,
+        latitude: 22.543099
+      });
+
+      expect(favorite.longitude).assertEqual(114.057868);
+      expect(favorite.latitude).assertEqual(22.543099);
+      expect(favorite.location).assertUndefined();
+    });
+
     it('renders a clean channel-only map with road labels and dot-only store markers', 0, () => {
       const html = renderFoodStoreMapHtml('test-key');
 
@@ -72,7 +88,7 @@ export default function foodStoreMapTest() {
       expect(html.indexOf("viewMode:'2D'")).assertLarger(-1);
       expect(html.indexOf("setStatus({showLabel:true})")).assertLarger(-1);
       expect(html.indexOf("var channelOnly = false")).assertLarger(-1);
-      expect(html.indexOf("features:['bg','road']")).assertLarger(-1);
+      expect(html.indexOf("zoom:14, showLabel:true, features:['bg','road','building','point']")).assertLarger(-1);
       expect(html.indexOf('class="channel-toggle"')).assertLarger(-1);
       expect(html.indexOf('aria-checked="false"')).assertLarger(-1);
       expect(html.indexOf("channelOnly?['bg','road']")).assertLarger(-1);

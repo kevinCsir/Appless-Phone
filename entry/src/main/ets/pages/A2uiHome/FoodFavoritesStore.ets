@@ -158,7 +158,7 @@ function favoritesFromJson(raw: string): FoodFavoriteViewModel[] {
   }
 }
 
-function favoriteFromFood(item: A2uiFoodData): FoodFavoriteViewModel {
+export function favoriteFromFood(item: A2uiFoodData): FoodFavoriteViewModel {
   return {
     favoriteId: foodFavoriteId(item),
     savedAt: Date.now(),
@@ -166,6 +166,8 @@ function favoriteFromFood(item: A2uiFoodData): FoodFavoriteViewModel {
     category: item.category,
     address: item.address,
     distance: item.distance,
+    longitude: item.longitude,
+    latitude: item.latitude,
     location: item.location,
     sourceTags: item.sourceTags === undefined ? undefined : item.sourceTags.slice(),
     phone: item.phone,
