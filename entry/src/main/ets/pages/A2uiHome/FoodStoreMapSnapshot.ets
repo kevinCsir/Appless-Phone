@@ -17,6 +17,8 @@ export interface FoodStoreMapPoint {
 export interface FoodStoreMapCenter {
   longitude: number;
   latitude: number;
+  name: string;
+  address: string;
 }
 
 export interface FoodStoreMapSnapshot {
@@ -83,13 +85,17 @@ export function foodStoreMapPoints(surface: A2uiSurfaceState): FoodStoreMapPoint
 export function buildFoodStoreMapSnapshot(
   surface: A2uiSurfaceState,
   centerLongitude: number,
-  centerLatitude: number
+  centerLatitude: number,
+  centerName: string = '',
+  centerAddress: string = ''
 ): FoodStoreMapSnapshot {
   return {
     sequence: surface.sequence,
     center: {
       longitude: centerLongitude,
-      latitude: centerLatitude
+      latitude: centerLatitude,
+      name: centerName,
+      address: centerAddress
     },
     points: foodStoreMapPoints(surface)
   };

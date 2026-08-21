@@ -1626,7 +1626,9 @@ struct Index {
     const snapshotJson = JSON.stringify(buildFoodStoreMapSnapshot(
       surface,
       this.foodLocationLongitude,
-      this.foodLocationLatitude
+      this.foodLocationLatitude,
+      this.foodLocationName,
+      this.foodLocationAddress
     ));
     if (snapshotJson === this.foodStoreMapSnapshotJson) {
       return;

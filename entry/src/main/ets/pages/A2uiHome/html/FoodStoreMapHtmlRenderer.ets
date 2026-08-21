@@ -50,7 +50,6 @@ html,body,#map{width:100%;height:100%;margin:0;overflow:hidden;background:#f2eee
   var pointById = Object.create(null);
   var pendingSnapshot = null;
   var lastSequence = -1;
-  var fittedOnce = false;
   var centerApplied = false;
   var channelOnly = false;
   var infoWindow = null;
@@ -93,7 +92,6 @@ html,body,#map{width:100%;height:100%;margin:0;overflow:hidden;background:#f2eee
     toggle.setAttribute('aria-checked',channelOnly?'true':'false');
     toggle.querySelector('small').textContent=channelOnly?'已隐藏高德 POI 与建筑，渠道结果增量更新中':'关闭时显示高德默认地图信息';
     var markers=Object.keys(markerById).map(function(id){return markerById[id];});
-    if(channelOnly&&markers.length>0&&!fittedOnce){map.setFitView(markers,false,[128,24,170,24],16);fittedOnce=true;}
     statusNode.textContent=channelOnly&&markers.length===0?'当前结果暂无可用坐标':'';
     statusNode.className=channelOnly&&markers.length===0?'map-status':'map-status hidden';
   }
@@ -104,6 +102,12 @@ html,body,#map{width:100%;height:100%;margin:0;overflow:hidden;background:#f2eee
     if(isFinite(sequence)){ lastSequence = sequence; }
     var snapshotCenter = snapshot && snapshot.center;
     if(!centerApplied && snapshotCenter && isFinite(Number(snapshotCenter.longitude)) && isFinite(Number(snapshotCenter.latitude))){
+      selectedName = text(snapshotCenter.name) || '地图中心点';
+      selectedAddress = text(snapshotCenter.address);
+      selected = {longitude:Number(snapshotCenter.longitude),latitude:Number(snapshotCenter.latitude)};
+      preserveNextName = true;
+      showSelection();
+      document.getElementById('confirm').disabled=false;
       map.setCenter([Number(snapshotCenter.longitude),Number(snapshotCenter.latitude)]);
       centerApplied = true;
     }
@@ -136,7 +140,6 @@ html,body,#map{width:100%;height:100%;margin:0;overflow:hidden;background:#f2eee
     var markers = Object.keys(markerById).map(function(id){ return markerById[id]; });
     if(channelOnly && markers.length > 0){
       statusNode.className = 'map-status hidden';
-      if(!fittedOnce){ map.setFitView(markers,false,[128,24,170,24],16); fittedOnce = true; }
     } else if(channelOnly) {
       statusNode.textContent = '当前结果暂无可用坐标'; statusNode.className = 'map-status';
       if(snapshotCenter && isFinite(Number(snapshotCenter.longitude)) && isFinite(Number(snapshotCenter.latitude))){ map.setCenter([Number(snapshotCenter.longitude),Number(snapshotCenter.latitude)]); }
@@ -153,7 +156,7 @@ html,body,#map{width:100%;height:100%;margin:0;overflow:hidden;background:#f2eee
   function initialize(){
     if(!window.AMap){ statusNode.textContent='地图服务加载失败'; return; }
     map = new AMap.Map('map',{ resizeEnable:true, viewMode:'2D', zoom:14, showLabel:true, features:['bg','road','building','point'] });
-    map.on('complete',function(){applyChannelMode();updateSelection('地图中心点');});
+    map.on('complete',function(){applyChannelMode();if(!centerApplied){updateSelection('地图中心点');}});
     map.on('movestart',function(){if(!preserveNextName){selectedName='地图中心点';}});
     map.on('moveend',function(){updateSelection(preserveNextName?'':'地图中心点');preserveNextName=false;});
     map.on('click',function(event){selectedName='地图点击位置';preserveNextName=true;map.setCenter(event.lnglat);});

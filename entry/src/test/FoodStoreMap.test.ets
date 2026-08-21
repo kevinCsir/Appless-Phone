@@ -53,9 +53,11 @@ function foodSurface(): A2uiSurfaceState {
 export default function foodStoreMapTest() {
   describe('FoodStoreMap', () => {
     it('keeps coordinates optional and only creates valid map points', 0, () => {
-      const snapshot = buildFoodStoreMapSnapshot(foodSurface(), 114.06, 22.63);
+      const snapshot = buildFoodStoreMapSnapshot(foodSurface(), 114.06, 22.63, '华为 D 区', '深圳市龙岗区');
 
       expect(snapshot.sequence).assertEqual(7);
+      expect(snapshot.center.name).assertEqual('华为 D 区');
+      expect(snapshot.center.address).assertEqual('深圳市龙岗区');
       expect(snapshot.points.length).assertEqual(1);
       expect(snapshot.points[0].name).assertEqual('有坐标门店');
       expect(snapshot.points[0].source).assertEqual('高德 · 腾讯地图');
@@ -106,7 +108,10 @@ export default function foodStoreMapTest() {
       expect(html.indexOf('font-size:20px')).assertLarger(-1);
       expect(html.indexOf('__aiphoneApplyFoodMapSnapshot')).assertLarger(-1);
       expect(html.indexOf('markerById')).assertLarger(-1);
-      expect(html.indexOf('map.setFitView')).assertLarger(-1);
+      expect(html.indexOf('selectedName = text(snapshotCenter.name)')).assertLarger(-1);
+      expect(html.indexOf('selectedAddress = text(snapshotCenter.address)')).assertLarger(-1);
+      expect(html.indexOf('if(channelOnly&&markers.length>0&&!fittedOnce)')).assertEqual(-1);
+      expect(html.indexOf('map.setFitView')).assertEqual(-1);
     });
   });
 }
