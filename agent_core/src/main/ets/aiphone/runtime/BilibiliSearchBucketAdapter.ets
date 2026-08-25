@@ -6,6 +6,7 @@ import {
   FeedChannelAvailabilityListener,
   FeedChannelPhase,
   FeedChannelSnapshot,
+  SearchRoundCompletionListener,
   SearchFeedChannelAdapter
 } from './FeedChannelAdapter';
 import { DynamicGenericToolResult } from './DynamicToolTypes';
@@ -32,9 +33,25 @@ export interface BilibiliSearchBucketOptions {
   log?: (message: string) => void;
 }
 
+interface BilibiliKeywordSlot {
+  query: string;
+  continuation: WaterfallContinuation | null;
+  terminal: boolean;
+}
+
 function boundedPositive(value: number | undefined, fallback: number): number {
   if (value === undefined || !Number.isFinite(value)) return fallback;
   return Math.max(1, Math.floor(value));
+}
+
+function normalizedQueries(value: string | string[]): string[] {
+  const source = typeof value === 'string' ? [value] : value;
+  const queries: string[] = [];
+  source.forEach((query: string): void => {
+    const normalized = query.trim();
+    if (normalized.length > 0 && queries.indexOf(normalized) < 0) queries.push(normalized);
+  });
+  return queries;
 }
 
 export class BilibiliSearchBucketAdapter implements SearchFeedChannelAdapter {
@@ -52,7 +69,9 @@ export class BilibiliSearchBucketAdapter implements SearchFeedChannelAdapter {
   private readonly seenIds: Set<string> = new Set<string>();
   private readonly seenUrls: Set<string> = new Set<string>();
   private availabilityListener: FeedChannelAvailabilityListener | null = null;
+  private keywordRoundCompletionListener: SearchRoundCompletionListener | null = null;
   private query: string;
+  private readonly keywordSlots: BilibiliKeywordSlot[] = [];
   private continuation: WaterfallContinuation | null = null;
   private phase: FeedChannelPhase = 'idle';
   private message: string = '';
@@ -60,11 +79,16 @@ export class BilibiliSearchBucketAdapter implements SearchFeedChannelAdapter {
   private loadingGeneration: number = -1;
   private batchIndex: number = 0;
   private requestSequence: number = 0;
+  private roundPending: number = 0;
   private blocked: boolean = false;
   private closed: boolean = false;
 
-  constructor(query: string, options: BilibiliSearchBucketOptions = {}) {
-    this.query = query.trim();
+  constructor(query: string | string[], options: BilibiliSearchBucketOptions = {}) {
+    const queries = normalizedQueries(query);
+    this.query = queries.length > 0 ? queries[0] : '';
+    queries.forEach((keyword: string): void => {
+      this.keywordSlots.push({ query: keyword, continuation: null, terminal: false });
+    });
     this.lowWatermark = boundedPositive(
       options.refillThreshold ?? options.lowWatermark,
       10
@@ -85,27 +109,55 @@ export class BilibiliSearchBucketAdapter implements SearchFeedChannelAdapter {
     this.logState(item === null ? 'take_empty' : 'take', 0,
       'before=' + before.toString() +
       (item === null ? '' : ' candidate=' + item.id + ' source=' + item.source));
-    if (this.items.length < this.lowWatermark) this.ensureWatermark();
+    if (this.items.length < this.effectiveLowWatermark()) this.ensureWatermark();
     return item;
   }
 
   ensureWatermark(): void {
-    if (this.closed || this.blocked || this.query.length === 0 || this.items.length >= this.lowWatermark ||
-      this.loadingGeneration === this.generation || this.phase === 'exhausted') return;
+    if (this.closed || this.blocked || this.keywordSlots.length === 0 ||
+      this.items.length >= this.effectiveLowWatermark() || this.roundPending > 0 ||
+      this.phase === 'exhausted') return;
     const requestGeneration = this.generation;
     this.loadingGeneration = requestGeneration;
-    this.phase = 'loading';
+    const active = this.keywordSlots.filter((slot: BilibiliKeywordSlot): boolean => !slot.terminal);
+    if (active.length === 0) {
+      this.phase = this.items.length > 0 ? 'ready' : 'exhausted';
+      this.loadingGeneration = -1;
+      return;
+    }
+    this.roundPending = active.length;
+    if (this.items.length === 0) this.phase = 'loading';
     this.message = '';
-    this.logState('refill_start');
-    void this.refill(requestGeneration);
+    this.logState('keyword_round_started', 0, 'requests=' + active.length.toString());
+    active.forEach((slot: BilibiliKeywordSlot): void => {
+      void this.refillKeyword(slot, requestGeneration);
+    });
   }
 
   replaceQuery(query: string): void {
-    const next = query.trim();
-    if (this.closed || next === this.query) return;
-    this.query = next;
-    this.resetRecallState();
+    this.replaceQueries([query]);
+  }
+
+  replaceQueries(queries: string[]): void {
+    const next = normalizedQueries(queries);
+    if (this.closed || next.length === 0 || next.join('\n') ===
+      this.keywordSlots.map((slot: BilibiliKeywordSlot): string => slot.query).join('\n')) return;
+    this.query = next[0];
+    this.keywordSlots.splice(0, this.keywordSlots.length);
+    next.forEach((keyword: string): void => {
+      this.keywordSlots.push({ query: keyword, continuation: null, terminal: false });
+    });
+    this.resetSearchRequestState();
     this.ensureWatermark();
+  }
+
+  isKeywordRoundComplete(): boolean {
+    return !this.closed && !this.blocked && this.keywordSlots.length > 0 && this.roundPending === 0 &&
+      this.keywordSlots.every((slot: BilibiliKeywordSlot): boolean => slot.terminal);
+  }
+
+  setKeywordRoundCompletionListener(listener: SearchRoundCompletionListener | null): void {
+    this.keywordRoundCompletionListener = listener;
   }
 
   setBlocked(blocked: boolean): void {
@@ -134,10 +186,11 @@ export class BilibiliSearchBucketAdapter implements SearchFeedChannelAdapter {
       kind: this.kind,
       phase: this.closed ? 'closed' : this.phase,
       size: this.items.length,
-      lowWatermark: this.lowWatermark,
-      targetWatermark: this.targetWatermark,
+      lowWatermark: this.effectiveLowWatermark(),
+      targetWatermark: this.effectiveLowWatermark(),
       continuation: this.continuation,
       query: this.query,
+      queries: this.keywordSlots.map((slot: BilibiliKeywordSlot): string => slot.query),
       generation: this.generation,
       message: this.message
     };
@@ -150,6 +203,7 @@ export class BilibiliSearchBucketAdapter implements SearchFeedChannelAdapter {
     this.items.splice(0, this.items.length);
     this.continuation = null;
     this.loadingGeneration = -1;
+    this.roundPending = 0;
     this.phase = 'closed';
     this.availabilityListener = null;
   }
@@ -161,12 +215,90 @@ export class BilibiliSearchBucketAdapter implements SearchFeedChannelAdapter {
     this.phase = 'idle';
     this.message = '';
     this.batchIndex = 0;
+    this.roundPending = 0;
+    this.keywordSlots.forEach((slot: BilibiliKeywordSlot): void => {
+      slot.continuation = null;
+      slot.terminal = false;
+    });
+  }
+
+  private resetSearchRequestState(): void {
+    this.generation++;
+    this.continuation = null;
+    this.phase = this.items.length > 0 ? 'ready' : 'idle';
+    this.message = '';
+    this.batchIndex = 0;
+    this.roundPending = 0;
+    this.keywordSlots.forEach((slot: BilibiliKeywordSlot): void => {
+      slot.continuation = null;
+      slot.terminal = false;
+    });
+  }
+
+  private effectiveLowWatermark(): number {
+    return this.lowWatermark * Math.max(1, this.keywordSlots.length);
   }
 
   private currentPage(): number {
     if (this.continuation === null || this.continuation.kind !== 'page') return 1;
     const value = Number(this.continuation.value);
     return Number.isFinite(value) ? Math.max(1, Math.floor(value)) : 1;
+  }
+
+  private keywordPage(slot: BilibiliKeywordSlot): number {
+    if (slot.continuation === null || slot.continuation.kind !== 'page') return 1;
+    const value = Number(slot.continuation.value);
+    return Number.isFinite(value) ? Math.max(1, Math.floor(value)) : 1;
+  }
+
+  private async refillKeyword(slot: BilibiliKeywordSlot, requestGeneration: number): Promise<void> {
+    const requestId = this.id + '-' + (++this.requestSequence).toString();
+    const startedAt = Date.now();
+    try {
+      const page = this.keywordPage(slot);
+      this.logState('request_started', 0, 'requestId=' + requestId +
+        ' keyword=' + JSON.stringify(slot.query) + ' page=' + page.toString());
+      const previous: WaterfallContinuation | null = page > 1 ?
+        { kind: 'page', value: page.toString() } : null;
+      const dynamic = await this.loadPage(slot.query, page);
+      if (this.closed || requestGeneration !== this.generation) return;
+      const batch = aggregateVideoSourceBatchFromDynamicResults(
+        'bilibili', dynamic, previous, this.pageSize);
+      const added = this.enqueueBatch(batch, slot.query);
+      slot.continuation = batch.continuation;
+      slot.terminal = batch.continuation === null || batch.status.status === 'error' ||
+        batch.status.status === 'needs_auth';
+      this.message = batch.status.message;
+      if (this.items.length > 0) this.phase = 'ready';
+      this.logState('request_finished', added, 'requestId=' + requestId +
+        ' keyword=' + JSON.stringify(slot.query) + ' page=' + page.toString() +
+        ' elapsedMs=' + (Date.now() - startedAt).toString() +
+        ' received=' + dynamic.length.toString() + ' added=' + added.toString() +
+        ' terminal=' + (slot.terminal ? 'true' : 'false'));
+    } catch (error) {
+      if (requestGeneration !== this.generation || this.closed) return;
+      slot.terminal = true;
+      this.message = error instanceof Error ? error.message : 'Bilibili search refill failed.';
+      this.logState('request_failed', 0, 'requestId=' + requestId +
+        ' keyword=' + JSON.stringify(slot.query) +
+        ' elapsedMs=' + (Date.now() - startedAt).toString() +
+        ' error=' + this.message.substring(0, 160));
+    } finally {
+      if (!this.closed && requestGeneration === this.generation) this.finishKeywordRequest(requestGeneration);
+    }
+  }
+
+  private finishKeywordRequest(requestGeneration: number): void {
+    this.roundPending = Math.max(0, this.roundPending - 1);
+    if (this.roundPending > 0) return;
+    if (this.loadingGeneration === requestGeneration) this.loadingGeneration = -1;
+    const hasActive = this.keywordSlots.some((slot: BilibiliKeywordSlot): boolean => !slot.terminal);
+    this.phase = this.items.length > 0 ? 'ready' : (hasActive ? 'empty' : 'exhausted');
+    this.logState('keyword_round_finished', 0, 'active=' + (hasActive ? 'true' : 'false'));
+    if (!hasActive && this.keywordRoundCompletionListener !== null) {
+      this.keywordRoundCompletionListener(this.id);
+    }
+    if (hasActive && this.items.length < this.effectiveLowWatermark()) this.ensureWatermark();
   }
 
   private async refill(requestGeneration: number): Promise<void> {
@@ -181,7 +313,7 @@ export class BilibiliSearchBucketAdapter implements SearchFeedChannelAdapter {
       if (this.closed || requestGeneration !== this.generation) return;
       const batch = aggregateVideoSourceBatchFromDynamicResults(
         'bilibili', dynamic, previous, this.pageSize);
-      const added = this.enqueueBatch(batch);
+      const added = this.enqueueBatch(batch, this.query);
       this.message = batch.status.message;
       this.logState('refill_complete', added);
       this.logState('request_finished', 0, 'requestId=' + requestId +
@@ -210,13 +342,13 @@ export class BilibiliSearchBucketAdapter implements SearchFeedChannelAdapter {
     }
   }
 
-  private enqueueBatch(batch: AggregateSearchSourceBatch): number {
+  private enqueueBatch(batch: AggregateSearchSourceBatch, query: string): number {
     const wasEmpty = this.items.length === 0;
     const candidates = aggregateMediaCandidates(
       batch.videos,
       batch.posts,
       this.batchIndex++,
-      this.query,
+      query,
       'original',
       'search',
       1
@@ -252,8 +384,9 @@ export class BilibiliSearchBucketAdapter implements SearchFeedChannelAdapter {
       ' query=' + JSON.stringify(this.query) +
       ' size=' + this.items.length.toString() +
       ' added=' + added.toString() +
-      ' threshold=' + this.lowWatermark.toString() +
-      ' batch=' + this.pageSize.toString() +
+      ' queries=' + JSON.stringify(this.keywordSlots.map((slot: BilibiliKeywordSlot): string => slot.query)) +
+      ' threshold=' + this.effectiveLowWatermark().toString() +
+      ' batch=' + (this.pageSize * Math.max(1, this.keywordSlots.length)).toString() +
       ' generation=' + this.generation.toString() +
       (detail.length > 0 ? ' ' + detail : ''));
   }

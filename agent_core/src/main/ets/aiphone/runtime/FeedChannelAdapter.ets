@@ -13,11 +13,13 @@ export interface FeedChannelSnapshot {
   targetWatermark: number;
   continuation: WaterfallContinuation | null;
   query: string;
+  queries?: string[];
   generation: number;
   message: string;
 }
 
 export type FeedChannelAvailabilityListener = () => void;
+export type SearchRoundCompletionListener = (channelId: string) => void;
 
 /** Passed into adapters at construction so a pool can wake blocked get() calls. */
 export interface FeedChannelAvailabilityHook {
@@ -42,6 +44,9 @@ export interface FeedChannelAdapter {
 export interface SearchFeedChannelAdapter extends FeedChannelAdapter {
   readonly kind: 'search';
   replaceQuery(query: string): void;
+  replaceQueries(queries: string[]): void;
+  isKeywordRoundComplete(): boolean;
+  setKeywordRoundCompletionListener(listener: SearchRoundCompletionListener | null): void;
 }
 
 export interface RecommendFeedChannelAdapter extends FeedChannelAdapter {

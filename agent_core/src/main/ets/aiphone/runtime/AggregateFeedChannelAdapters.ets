@@ -12,6 +12,7 @@ import {
   FeedChannelPhase,
   FeedChannelSnapshot,
   RecommendFeedChannelAdapter,
+  SearchRoundCompletionListener,
   SearchFeedChannelAdapter
 } from './FeedChannelAdapter';
 import {
@@ -54,6 +55,12 @@ export interface AggregateFeedBucketOptions {
   maxConcurrentRequests?: number;
 }
 
+interface AggregateSearchKeywordSlot {
+  query: string;
+  continuation: WaterfallContinuation | null;
+  terminal: boolean;
+}
+
 class AggregateBatchHolder {
   value: AggregateSearchSourceBatch | null = null;
 }
@@ -65,6 +72,16 @@ class InterestBatchHolder {
 function boundedPositive(value: number | undefined, fallback: number): number {
   if (value === undefined || !Number.isFinite(value)) return fallback;
   return Math.max(1, Math.floor(value));
+}
+
+function normalizedQueries(value: string | string[]): string[] {
+  const source = typeof value === 'string' ? [value] : value;
+  const queries: string[] = [];
+  source.forEach((query: string): void => {
+    const normalized = query.trim();
+    if (normalized.length > 0 && queries.indexOf(normalized) < 0) queries.push(normalized);
+  });
+  return queries;
 }
 
 function phaseFromBatch(batch: AggregateSearchSourceBatch): FeedChannelPhase {
@@ -172,7 +189,9 @@ abstract class AggregateFeedBucketBase implements FeedChannelAdapter {
   private readonly seenIds: Set<string> = new Set<string>();
   private readonly seenUrls: Set<string> = new Set<string>();
   private availabilityListener: FeedChannelAvailabilityListener | null = null;
+  private keywordRoundCompletionListener: SearchRoundCompletionListener | null = null;
   private query: string;
+  private readonly searchSlots: AggregateSearchKeywordSlot[] = [];
   private continuation: WaterfallContinuation | null = null;
   private phase: FeedChannelPhase = 'idle';
   private message: string = '';
@@ -183,19 +202,26 @@ abstract class AggregateFeedBucketBase implements FeedChannelAdapter {
   private parallelHighestCompletedPage: number = -1;
   private parallelTerminal: boolean = false;
   private requestSequence: number = 0;
+  private searchRoundPending: number = 0;
   private blocked: boolean = false;
   private closed: boolean = false;
 
   protected constructor(
     source: AggregateSearchSource,
     kind: FeedChannelKind,
-    query: string,
+    query: string | string[],
     options: AggregateFeedBucketOptions
   ) {
     this.id = source + ':' + kind;
     this.platformId = source;
     this.channelKind = kind;
-    this.query = query.trim();
+    const queries = normalizedQueries(query);
+    this.query = queries.length > 0 ? queries[0] : '';
+    if (kind === 'search') {
+      queries.forEach((keyword: string): void => {
+        this.searchSlots.push({ query: keyword, continuation: null, terminal: false });
+      });
+    }
     this.refillThreshold = boundedPositive(options.refillThreshold, 10);
     this.fetchBatchSize = boundedPositive(options.fetchBatchSize, 10);
     this.loadPage = options.loadPage ??
@@ -217,18 +243,21 @@ abstract class AggregateFeedBucketBase implements FeedChannelAdapter {
     this.logState(item === null ? 'take_empty' : 'take', 0,
       'before=' + before.toString() +
       (item === null ? '' : ' candidate=' + item.id + ' source=' + item.source));
-    if (this.items.length < this.refillThreshold) this.ensureWatermark();
+    if (this.items.length < this.effectiveRefillThreshold()) this.ensureWatermark();
     return item;
   }
 
   ensureWatermark(urgency: number = 0): void {
     if (this.blocked) return;
+    if (this.channelKind === 'search') {
+      this.ensureSearchKeywordRound();
+      return;
+    }
     if (this.parallelPageMode) {
       this.ensureParallelPageWatermark(urgency);
       return;
     }
-    if (this.closed || (this.channelKind === 'search' && this.query.length === 0) ||
-      this.items.length >= this.refillThreshold ||
+    if (this.closed || this.items.length >= this.refillThreshold ||
       this.loadingGeneration === this.generation || this.phase === 'exhausted') return;
     const requestGeneration = this.generation;
     this.loadingGeneration = requestGeneration;
@@ -264,10 +293,11 @@ abstract class AggregateFeedBucketBase implements FeedChannelAdapter {
       kind: this.channelKind,
       phase: this.closed ? 'closed' : this.phase,
       size: this.items.length,
-      lowWatermark: this.refillThreshold,
-      targetWatermark: this.refillThreshold,
+      lowWatermark: this.effectiveRefillThreshold(),
+      targetWatermark: this.effectiveRefillThreshold(),
       continuation: this.continuation,
       query: this.query,
+      queries: this.searchSlots.map((slot: AggregateSearchKeywordSlot): string => slot.query),
       generation: this.generation,
       message: this.message
     };
@@ -281,18 +311,53 @@ abstract class AggregateFeedBucketBase implements FeedChannelAdapter {
     this.continuation = null;
     this.loadingGeneration = -1;
     this.parallelActiveRequests = 0;
+    this.searchRoundPending = 0;
     this.phase = 'closed';
     this.availabilityListener = null;
     this.logState('closed');
   }
 
   protected replaceStoredQuery(query: string): void {
-    const next = query.trim();
-    if (this.closed || next === this.query) return;
-    this.query = next;
-    this.resetRecallState();
-    this.logState('query_replaced');
+    this.replaceStoredQueries([query]);
+  }
+
+  protected replaceStoredQueries(queries: string[]): void {
+    const next = normalizedQueries(queries);
+    if (this.closed || next.length === 0 || next.join('\n') ===
+      this.searchSlots.map((slot: AggregateSearchKeywordSlot): string => slot.query).join('\n')) return;
+    this.query = next[0];
+    this.searchSlots.splice(0, this.searchSlots.length);
+    next.forEach((keyword: string): void => {
+      this.searchSlots.push({ query: keyword, continuation: null, terminal: false });
+    });
+    this.resetSearchRequestState();
+    this.logState('queries_replaced');
     this.ensureWatermark();
+  }
+
+  isKeywordRoundComplete(): boolean {
+    return !this.closed && !this.blocked && this.searchSlots.length > 0 && this.searchRoundPending === 0 &&
+      this.searchSlots.every((slot: AggregateSearchKeywordSlot): boolean => slot.terminal);
+  }
+
+  setKeywordRoundCompletionListener(listener: SearchRoundCompletionListener | null): void {
+    this.keywordRoundCompletionListener = listener;
+  }
+
+  private resetSearchRequestState(): void {
+    this.generation++;
+    this.continuation = null;
+    this.phase = this.items.length > 0 ? 'ready' : 'idle';
+    this.message = '';
+    this.parallelActiveRequests = 0;
+    this.parallelNextPageToSchedule = 0;
+    this.parallelHighestCompletedPage = -1;
+    this.parallelTerminal = false;
+    this.searchRoundPending = 0;
+    this.searchSlots.forEach((slot: AggregateSearchKeywordSlot): void => {
+      slot.continuation = null;
+      slot.terminal = false;
+    });
   }
 
   private resetRecallState(): void {
@@ -305,6 +370,88 @@ abstract class AggregateFeedBucketBase implements FeedChannelAdapter {
     this.parallelNextPageToSchedule = 0;
     this.parallelHighestCompletedPage = -1;
     this.parallelTerminal = false;
+    this.searchRoundPending = 0;
+    this.searchSlots.forEach((slot: AggregateSearchKeywordSlot): void => {
+      slot.continuation = null;
+      slot.terminal = false;
+    });
+  }
+
+  private effectiveRefillThreshold(): number {
+    return this.refillThreshold * Math.max(1, this.searchSlots.length);
+  }
+
+  private ensureSearchKeywordRound(): void {
+    if (this.closed || this.blocked || this.searchSlots.length === 0 ||
+      this.items.length >= this.effectiveRefillThreshold() || this.searchRoundPending > 0) return;
+    const active = this.searchSlots.filter((slot: AggregateSearchKeywordSlot): boolean => !slot.terminal);
+    if (active.length === 0) {
+      this.phase = this.items.length > 0 ? 'ready' : 'exhausted';
+      return;
+    }
+    const requestGeneration = this.generation;
+    this.loadingGeneration = requestGeneration;
+    this.searchRoundPending = active.length;
+    if (this.items.length === 0) this.phase = 'loading';
+    this.message = '';
+    this.logState('keyword_round_started', 0, 'requests=' + active.length.toString());
+    active.forEach((slot: AggregateSearchKeywordSlot): void => {
+      void this.runSearchKeywordRequest(slot, requestGeneration);
+    });
+  }
+
+  private async runSearchKeywordRequest(
+    slot: AggregateSearchKeywordSlot,
+    requestGeneration: number
+  ): Promise<void> {
+    const requestId = this.id + '-' + (++this.requestSequence).toString();
+    const startedAt = Date.now();
+    this.logState('request_started', 0, 'requestId=' + requestId +
+      ' keyword=' + JSON.stringify(slot.query) + ' continuation=' +
+      (slot.continuation === null ? 'initial' : slot.continuation.kind + ':' + slot.continuation.value));
+    try {
+      const page = await this.loadPage({
+        source: this.platformId as AggregateSearchSource,
+        kind: this.channelKind,
+        query: slot.query,
+        continuation: slot.continuation,
+        limit: this.fetchBatchSize
+      });
+      if (this.closed || requestGeneration !== this.generation) return;
+      const added = this.enqueue(page.candidates);
+      slot.continuation = page.continuation;
+      slot.terminal = page.continuation === null || page.phase === 'exhausted' || page.phase === 'error';
+      this.message = page.message;
+      if (this.items.length > 0) this.phase = 'ready';
+      this.logState('request_finished', added, 'requestId=' + requestId +
+        ' keyword=' + JSON.stringify(slot.query) +
+        ' elapsedMs=' + (Date.now() - startedAt).toString() +
+        ' received=' + page.candidates.length.toString() + ' added=' + added.toString() +
+        ' terminal=' + (slot.terminal ? 'true' : 'false'));
+    } catch (error) {
+      if (this.closed || requestGeneration !== this.generation) return;
+      slot.terminal = true;
+      this.message = error instanceof Error ? error.message : 'Search keyword request failed.';
+      this.logState('request_failed', 0, 'requestId=' + requestId +
+        ' keyword=' + JSON.stringify(slot.query) +
+        ' elapsedMs=' + (Date.now() - startedAt).toString() +
+        ' error=' + this.message.substring(0, 160));
+    } finally {
+      if (!this.closed && requestGeneration === this.generation) this.finishSearchKeywordRequest(requestGeneration);
+    }
+  }
+
+  private finishSearchKeywordRequest(requestGeneration: number): void {
+    this.searchRoundPending = Math.max(0, this.searchRoundPending - 1);
+    if (this.searchRoundPending > 0) return;
+    if (this.loadingGeneration === requestGeneration) this.loadingGeneration = -1;
+    const hasActive = this.searchSlots.some((slot: AggregateSearchKeywordSlot): boolean => !slot.terminal);
+    this.phase = this.items.length > 0 ? 'ready' : (hasActive ? 'empty' : 'exhausted');
+    this.logState('keyword_round_finished', 0, 'active=' + (hasActive ? 'true' : 'false'));
+    if (!hasActive && this.keywordRoundCompletionListener !== null) {
+      this.keywordRoundCompletionListener(this.id);
+    }
+    if (hasActive && this.items.length < this.effectiveRefillThreshold()) this.ensureWatermark();
   }
 
   private ensureParallelPageWatermark(urgency: number): void {
@@ -434,9 +581,10 @@ abstract class AggregateFeedBucketBase implements FeedChannelAdapter {
     this.log('[FeedChannelAdapter] event=' + event +
       ' id=' + this.id +
       ' query=' + JSON.stringify(this.query) +
+      ' queries=' + JSON.stringify(this.searchSlots.map((slot: AggregateSearchKeywordSlot): string => slot.query)) +
       ' size=' + this.items.length.toString() +
       ' added=' + added.toString() +
-      ' threshold=' + this.refillThreshold.toString() +
+      ' threshold=' + this.effectiveRefillThreshold().toString() +
       ' batch=' + this.fetchBatchSize.toString() +
       ' generation=' + this.generation.toString() +
       (detail.length > 0 ? ' ' + detail : ''));
@@ -448,7 +596,7 @@ export class AggregateSearchBucketAdapter extends AggregateFeedBucketBase implem
 
   constructor(
     source: AggregateSearchSource,
-    query: string,
+    query: string | string[],
     options: AggregateFeedBucketOptions = {}
   ) {
     if (aggregateSearchSearchSourceIds().indexOf(source) < 0) {
@@ -459,6 +607,10 @@ export class AggregateSearchBucketAdapter extends AggregateFeedBucketBase implem
 
   replaceQuery(query: string): void {
     this.replaceStoredQuery(query);
+  }
+
+  replaceQueries(queries: string[]): void {
+    this.replaceStoredQueries(queries);
   }
 }
 

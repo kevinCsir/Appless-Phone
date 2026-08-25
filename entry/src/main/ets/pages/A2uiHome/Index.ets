@@ -1764,7 +1764,23 @@ struct Index {
   private publishInterestWaterfallPayload(fullReset: boolean = false): void {
     const payload = buildWaterfallHomePayload(
       this.interestWaterfallDocument(), false, this.interestWaterfallFeedState, this.waterfallCardRecords);
-    if (payload !== null && fullReset) payload.fullReset = true;
+    if (payload !== null) {
+      const state = this.interestWaterfallFeedState;
+      const registry = discoveryFeedChannelRegistry().snapshot();
+      const channels = registry.channels.filter((channel): boolean =>
+        !channel.blocked && registry.enabledSources.indexOf(channel.platformId) >= 0);
+      const activeCount = state === null ? 0 : (state.current === null ? 0 : 1) +
+        state.stable.length + state.tail.length;
+      const reserveEmpty = registry.reserve === null || registry.reserve.size === 0;
+      const bucketsEmpty = channels.every((channel): boolean => channel.bucketSize === 0);
+      const terminal = channels.length > 0 && channels.every((channel): boolean =>
+        channel.phase === 'error' || channel.phase === 'exhausted' || channel.phase === 'closed');
+      payload.exhausted = state !== null && state.enabledSources.length > 0 && activeCount === 0 &&
+        reserveEmpty && bucketsEmpty && terminal;
+      payload.replenishing = state !== null && state.enabledSources.length > 0 && activeCount === 0 &&
+        !payload.exhausted;
+      if (fullReset) payload.fullReset = true;
+    }
     this.interestWaterfallPayloadJson = payload === null ? '' : JSON.stringify(payload);
     this.interestWaterfallPayloadTick = this.interestWaterfallPayloadTick + 1;
   }
