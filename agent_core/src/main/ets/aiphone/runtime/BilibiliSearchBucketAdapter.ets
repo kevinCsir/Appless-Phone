@@ -60,6 +60,7 @@ export class BilibiliSearchBucketAdapter implements SearchFeedChannelAdapter {
   private loadingGeneration: number = -1;
   private batchIndex: number = 0;
   private requestSequence: number = 0;
+  private blocked: boolean = false;
   private closed: boolean = false;
 
   constructor(query: string, options: BilibiliSearchBucketOptions = {}) {
@@ -89,7 +90,7 @@ export class BilibiliSearchBucketAdapter implements SearchFeedChannelAdapter {
   }
 
   ensureWatermark(): void {
-    if (this.closed || this.query.length === 0 || this.items.length >= this.lowWatermark ||
+    if (this.closed || this.blocked || this.query.length === 0 || this.items.length >= this.lowWatermark ||
       this.loadingGeneration === this.generation || this.phase === 'exhausted') return;
     const requestGeneration = this.generation;
     this.loadingGeneration = requestGeneration;
@@ -105,6 +106,15 @@ export class BilibiliSearchBucketAdapter implements SearchFeedChannelAdapter {
     this.query = next;
     this.resetRecallState();
     this.ensureWatermark();
+  }
+
+  setBlocked(blocked: boolean): void {
+    if (this.closed || this.blocked === blocked) return;
+    this.blocked = blocked;
+    this.resetRecallState();
+    this.loadingGeneration = -1;
+    this.logState(blocked ? 'blocked' : 'unblocked');
+    if (!blocked) this.ensureWatermark();
   }
 
   refresh(): void {

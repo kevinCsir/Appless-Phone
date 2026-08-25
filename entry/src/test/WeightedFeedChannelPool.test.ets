@@ -68,6 +68,7 @@ class TestFeedAdapter implements FeedChannelAdapter {
   private readonly items: WaterfallCandidate[] = [];
   private readonly hook: FeedChannelAvailabilityHook;
   private listener: FeedChannelAvailabilityListener | null = null;
+  private blocked: boolean = false;
 
   constructor(id: string, hook: FeedChannelAvailabilityHook) {
     this.id = id;
@@ -85,10 +86,15 @@ class TestFeedAdapter implements FeedChannelAdapter {
   }
 
   tryTake(): WaterfallCandidate | null {
-    return this.items.length === 0 ? null : this.items.shift() as WaterfallCandidate;
+    return this.blocked || this.items.length === 0 ? null : this.items.shift() as WaterfallCandidate;
   }
 
   ensureWatermark(): void {}
+
+  setBlocked(blocked: boolean): void {
+    this.blocked = blocked;
+    if (blocked) this.items.splice(0, this.items.length);
+  }
 
   refresh(): void {}
 
@@ -159,6 +165,24 @@ export default function weightedFeedChannelPoolTest() {
 
       expect(result.source).assertEqual('wake');
       expect(pool.snapshot().pendingGets).assertEqual(0);
+      pool.close();
+    });
+
+    it('skips a blocked platform without accruing debt and resumes from a clean turn', 0, () => {
+      const pool = new WeightedFeedChannelPool();
+      const first = new TestFeedAdapter('first', pool);
+      const second = new TestFeedAdapter('second', pool);
+      first.push(candidate('first', '1'));
+      second.push(candidate('second', '1'));
+      pool.register(first, 2);
+      pool.register(second, 1);
+
+      pool.setPlatformBlocked('first', true);
+      expect((pool.tryGet() as WaterfallCandidate).source).assertEqual('second');
+      expect(debtFor(pool.snapshot(), 'first')).assertEqual(0);
+      pool.setPlatformBlocked('first', false);
+      first.push(candidate('first', '2'));
+      expect((pool.tryGet() as WaterfallCandidate).source).assertEqual('first');
       pool.close();
     });
 

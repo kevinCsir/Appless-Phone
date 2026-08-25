@@ -1968,6 +1968,30 @@ struct Index {
       'received=' + batch.length.toString() + ' added=' + added.toString());
   }
 
+  private applyDiscoverySourceFilter(state: WaterfallFeedState, enabledSources: string[]): void {
+    const before = (state.current === null ? 0 : 1) + state.stable.length + state.tail.length +
+      (state.reserve ?? []).length;
+    state.enabledSources = enabledSources.slice();
+    if (state.current !== null && enabledSources.indexOf(state.current.source) < 0) state.current = null;
+    state.stable = state.stable.filter((candidate: WaterfallRankedCandidate): boolean =>
+      enabledSources.indexOf(candidate.source) >= 0);
+    state.tail = state.tail.filter((candidate: WaterfallRankedCandidate): boolean =>
+      enabledSources.indexOf(candidate.source) >= 0);
+    state.reserve = (state.reserve ?? []).filter((candidate: WaterfallRankedCandidate): boolean =>
+      enabledSources.indexOf(candidate.source) >= 0);
+    if (state.current === null) {
+      if (state.stable.length > 0) state.current = state.stable.shift() as WaterfallRankedCandidate;
+      else if (state.tail.length > 0) state.current = state.tail.shift() as WaterfallRankedCandidate;
+    }
+    while (state.stable.length < 2 && state.tail.length > 0) {
+      state.stable.push(state.tail.shift() as WaterfallRankedCandidate);
+    }
+    const after = (state.current === null ? 0 : 1) + state.stable.length + state.tail.length +
+      (state.reserve ?? []).length;
+    this.logDiscoveryPipeline('sources_filtered', 'enabled=[' + enabledSources.join(',') +
+      '] removed=' + Math.max(0, before - after).toString());
+  }
+
   private scheduleInterestDisplayTailPayload(generation: number): void {
     if (this.interestDisplayTailPublishScheduled) return;
     this.interestDisplayTailPublishScheduled = true;
@@ -2023,7 +2047,6 @@ struct Index {
 
   private ensureInterestWaterfall(): void {
     const registry = discoveryFeedChannelRegistry();
-    registry.activate(this.currentWaterfallPreferenceProfile());
     if (this.interestWaterfallFeedState === null) {
       this.interestWaterfallGeneration += 1;
       this.interestDisplayTailRefillToken += 1;
@@ -2033,6 +2056,8 @@ struct Index {
       const interestSources = aggregateSearchInterestSourceIds();
       const enabledSources = waterfallSourcesForContext(
         this.waterfallPreferenceProfile.discoveryEnabledSources, interestSources);
+      registry.setEnabledSources(enabledSources);
+      registry.activate(this.currentWaterfallPreferenceProfile());
       this.interestWaterfallFeedState = {
         mode: 'interest',
         interestFallbackStarted: true,
@@ -2063,6 +2088,7 @@ struct Index {
       this.publishInterestWaterfallPayload();
       this.logDiscoveryPipeline('page_initialized');
     }
+    registry.activate(this.currentWaterfallPreferenceProfile());
     this.interestRecallStarted = true;
     this.ensureInterestDisplayTail();
   }
@@ -2278,9 +2304,11 @@ struct Index {
       this.waterfallPreferenceProfile = this.waterfallPreferencesStore().saveDiscoveryEnabledSources(
         interestEnabledSources);
       configureWaterfallEnabledSourcesForRuntime(interestEnabledSources as AggregateSearchSource[]);
-      discoveryFeedChannelRegistry().activate(this.currentWaterfallPreferenceProfile());
-      this.applyInterestWaterfallUpdate(
-        applyWaterfallSourceSelection(state, interestEnabledSources, Date.now()));
+      const registry = discoveryFeedChannelRegistry();
+      registry.setEnabledSources(interestEnabledSources);
+      registry.activate(this.currentWaterfallPreferenceProfile());
+      this.applyDiscoverySourceFilter(state, interestEnabledSources);
+      this.applyInterestWaterfallUpdate({ state, loadRequests: [] });
       return;
     }
     if (action.id === 'waterfall.behavior.record') {
@@ -2342,22 +2370,9 @@ struct Index {
       candidate, args.action, args.active, Date.now(), args.restoreSavedAt);
     this.waterfallReactionProjection = waterfallReactionWeights(this.waterfallCardRecords);
     const current = this.currentHtmlHomeDocument();
-    if (args.action === 'save') {
-      if (this.waterfallFeedState !== null && current.kind === 'aggregate-search' &&
-        (current.surfaceId ?? '') === this.waterfallFeedSurfaceId) this.publishWaterfallPayload(current);
-      if (this.interestWaterfallFeedState !== null) this.publishInterestWaterfallPayload();
-      return;
-    }
-    configureWaterfallPreferenceProfileForRuntime(this.currentWaterfallPreferenceProfile(false));
     if (this.waterfallFeedState !== null && current.kind === 'aggregate-search' &&
-      (current.surfaceId ?? '') === this.waterfallFeedSurfaceId) {
-      this.applyWaterfallUpdate(current, applyWaterfallProfile(
-        this.waterfallFeedState, this.currentWaterfallPreferenceProfile(false), Date.now()));
-    }
-    if (this.interestWaterfallFeedState !== null) {
-      this.applyInterestWaterfallUpdate(applyWaterfallProfile(
-        this.interestWaterfallFeedState, this.currentWaterfallPreferenceProfile(), Date.now()));
-    }
+      (current.surfaceId ?? '') === this.waterfallFeedSurfaceId) this.publishWaterfallPayload(current);
+    if (this.interestWaterfallFeedState !== null) this.publishInterestWaterfallPayload();
   }
 
   private activeApplePodcastCandidate(
@@ -2620,7 +2635,10 @@ struct Index {
   }
 
   private startDiscoveryFeedChannelPool(): void {
-    const initial = discoveryFeedChannelRegistry().snapshot();
+    const registry = discoveryFeedChannelRegistry();
+    registry.setEnabledSources(waterfallSourcesForContext(
+      this.waterfallPreferenceProfile.discoveryEnabledSources, aggregateSearchInterestSourceIds()));
+    const initial = registry.snapshot();
     aiLogInfo('[AIPhone][DiscoveryFeedPool] event=adapters_prefetch channels=' +
       initial.channels.length.toString() + ' active=' + (initial.active ? 'true' : 'false'));
   }
@@ -3598,12 +3616,9 @@ struct Index {
     return {
       version: 2,
       sourceRegistryVersion: this.waterfallPreferenceProfile.sourceRegistryVersion,
-      topicWeights: this.waterfallPreferenceProfile.topicWeights.concat(
-        this.waterfallReactionProjection.topicWeights),
-      sourceWeights: this.waterfallPreferenceProfile.sourceWeights.concat(
-        this.waterfallReactionProjection.sourceWeights),
-      formatWeights: this.waterfallPreferenceProfile.formatWeights.concat(
-        this.waterfallReactionProjection.formatWeights),
+      topicWeights: this.waterfallPreferenceProfile.topicWeights.slice(),
+      sourceWeights: this.waterfallPreferenceProfile.sourceWeights.slice(),
+      formatWeights: this.waterfallPreferenceProfile.formatWeights.slice(),
       explicitRules: this.waterfallPreferenceProfile.explicitRules.concat(
         includeConversation ? this.waterfallConversationState.rules : []),
       recentEvidence: this.waterfallPreferenceProfile.recentEvidence.slice(),

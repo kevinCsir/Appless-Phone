@@ -66,6 +66,7 @@ export class DiscoveryFeedReserve {
   private ranked: WaterfallRankedCandidate[] = [];
   private headIndex: number = 0;
   private profile: WaterfallPreferenceSnapshot | undefined;
+  private enabledSources: string[] | null = null;
   private refillRunning: boolean = false;
   private closed: boolean = false;
   private rankedBatches: number = 0;
@@ -120,6 +121,22 @@ export class DiscoveryFeedReserve {
     this.drainPendingGets();
   }
 
+  setEnabledSources(sources: string[]): void {
+    const enabled: string[] = [];
+    sources.forEach((source: string): void => {
+      const normalized = source.trim();
+      if (normalized.length > 0 && enabled.indexOf(normalized) < 0) enabled.push(normalized);
+    });
+    this.enabledSources = enabled;
+    const remaining = this.remainingCandidates().filter((candidate: WaterfallCandidate): boolean =>
+      this.candidateAllowed(candidate));
+    this.ranked = remaining as WaterfallRankedCandidate[];
+    this.headIndex = 0;
+    this.logState('sources_updated', 'enabled=[' + enabled.join(',') + ']');
+    this.drainPendingGets();
+    this.ensureWatermark();
+  }
+
   snapshot(): DiscoveryFeedReserveSnapshot {
     return {
       size: this.size(),
@@ -164,7 +181,12 @@ export class DiscoveryFeedReserve {
   }
 
   private insertRankedBatch(batch: WaterfallCandidate[]): void {
-    const candidates = this.remainingCandidates().concat(batch);
+    const accepted = batch.filter((candidate: WaterfallCandidate): boolean => this.candidateAllowed(candidate));
+    if (accepted.length === 0) {
+      this.logState('batch_dropped', 'received=' + batch.length.toString());
+      return;
+    }
+    const candidates = this.remainingCandidates().concat(accepted);
     const startedAt = Date.now();
     this.logState('batch_rank_started', 'received=' + batch.length.toString() +
       ' total=' + candidates.length.toString());
@@ -193,6 +215,10 @@ export class DiscoveryFeedReserve {
     const candidates: WaterfallCandidate[] = [];
     for (let index = this.headIndex; index < this.ranked.length; index++) candidates.push(this.ranked[index]);
     return candidates;
+  }
+
+  private candidateAllowed(candidate: WaterfallCandidate): boolean {
+    return this.enabledSources === null || this.enabledSources.indexOf(candidate.source) >= 0;
   }
 
   private takeImmediate(): WaterfallRankedCandidate | null {

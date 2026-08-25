@@ -46,6 +46,7 @@ export interface DiscoveryFeedChannelRegistrySnapshot extends WeightedFeedChanne
   currentKeywordDeliveries: number;
   keywordDeliveryLimit: number;
   keywords: DiscoveryKeywordSnapshot[];
+  enabledSources: string[];
 }
 
 /**
@@ -64,6 +65,8 @@ export class DiscoveryFeedChannelRegistry {
   private currentKeyword: DiscoveryKeywordState;
   private keywordUseSequence: number = 0;
   private currentKeywordDeliveries: number = 0;
+  private enabledSources: string[] = [];
+  private sourcesConfigured: boolean = false;
 
   constructor(initialQuery: string = DEFAULT_DISCOVERY_QUERY) {
     this.currentKeyword = this.createKeywordQueue(initialQuery);
@@ -111,6 +114,25 @@ export class DiscoveryFeedChannelRegistry {
       ' keywordQueue=' + this.keywordQueueText());
   }
 
+  setEnabledSources(sources: string[]): void {
+    const available: string[] = [];
+    this.adapters.forEach((adapter: FeedChannelAdapter): void => {
+      if (available.indexOf(adapter.platformId) < 0) available.push(adapter.platformId);
+    });
+    const enabled: string[] = [];
+    sources.forEach((source: string): void => {
+      const normalized = source.trim();
+      if (available.indexOf(normalized) >= 0 && enabled.indexOf(normalized) < 0) enabled.push(normalized);
+    });
+    this.enabledSources = enabled;
+    this.sourcesConfigured = true;
+    if (this.reserve !== null) this.reserve.setEnabledSources(enabled);
+    available.forEach((platformId: string): void => {
+      this.pool.setPlatformBlocked(platformId, enabled.indexOf(platformId) < 0);
+    });
+    discoveryFeedLog('event=sources_updated enabled=[' + enabled.join(',') + ']');
+  }
+
   activate(profile?: WaterfallPreferenceSnapshot): void {
     if (this.reserve !== null) {
       this.reserve.updateProfile(profile);
@@ -123,6 +145,7 @@ export class DiscoveryFeedChannelRegistry {
       log: discoveryFeedLog
     });
     this.reserve = reserve;
+    if (this.sourcesConfigured) reserve.setEnabledSources(this.enabledSources);
     discoveryFeedLog('event=activated');
   }
 
@@ -176,7 +199,8 @@ export class DiscoveryFeedChannelRegistry {
       currentKeyword: this.currentKeyword.keyword,
       currentKeywordDeliveries: this.currentKeywordDeliveries,
       keywordDeliveryLimit: SEARCH_DELIVERIES_PER_KEYWORD,
-      keywords: this.keywordSnapshots()
+      keywords: this.keywordSnapshots(),
+      enabledSources: this.enabledSources.slice()
     };
   }
 

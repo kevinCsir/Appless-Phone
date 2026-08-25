@@ -183,6 +183,7 @@ abstract class AggregateFeedBucketBase implements FeedChannelAdapter {
   private parallelHighestCompletedPage: number = -1;
   private parallelTerminal: boolean = false;
   private requestSequence: number = 0;
+  private blocked: boolean = false;
   private closed: boolean = false;
 
   protected constructor(
@@ -221,6 +222,7 @@ abstract class AggregateFeedBucketBase implements FeedChannelAdapter {
   }
 
   ensureWatermark(urgency: number = 0): void {
+    if (this.blocked) return;
     if (this.parallelPageMode) {
       this.ensureParallelPageWatermark(urgency);
       return;
@@ -240,6 +242,15 @@ abstract class AggregateFeedBucketBase implements FeedChannelAdapter {
     if (this.closed) return;
     this.resetRecallState();
     this.ensureWatermark();
+  }
+
+  setBlocked(blocked: boolean): void {
+    if (this.closed || this.blocked === blocked) return;
+    this.blocked = blocked;
+    this.resetRecallState();
+    this.loadingGeneration = -1;
+    this.logState(blocked ? 'blocked' : 'unblocked');
+    if (!blocked) this.ensureWatermark();
   }
 
   setAvailabilityListener(listener: FeedChannelAvailabilityListener | null): void {
@@ -297,7 +308,7 @@ abstract class AggregateFeedBucketBase implements FeedChannelAdapter {
   }
 
   private ensureParallelPageWatermark(urgency: number): void {
-    if (this.closed || this.query.length === 0 || this.parallelTerminal ||
+    if (this.closed || this.blocked || this.query.length === 0 || this.parallelTerminal ||
       this.items.length >= this.refillThreshold) return;
     const desired = urgency >= this.refillThreshold * 2 ? this.maxConcurrentRequests : 1;
     while (this.parallelActiveRequests < desired) {

@@ -15,6 +15,7 @@ export interface WeightedFeedChannelRegistrationSnapshot {
   remaining: number;
   bucketSize: number;
   phase: FeedChannelPhase;
+  blocked: boolean;
 }
 
 export interface WeightedFeedChannelPoolSnapshot {
@@ -35,6 +36,7 @@ interface WeightedFeedChannelEntry {
   debt: number;
   remaining: number;
   delivered: number;
+  blocked: boolean;
 }
 
 type PendingFeedResolve = (candidate: WaterfallCandidate) => void;
@@ -81,7 +83,8 @@ export class WeightedFeedChannelPool implements FeedChannelAvailabilityHook {
       weight: normalizedWeight,
       debt: 0,
       remaining: normalizedWeight,
-      delivered: 0
+      delivered: 0,
+      blocked: false
     });
     this.logState('registered', adapter.id);
     this.drainPendingGets();
@@ -93,6 +96,12 @@ export class WeightedFeedChannelPool implements FeedChannelAvailabilityHook {
     let checked = 0;
     while (checked < this.entries.length) {
       const entry = this.entries[this.pointer];
+      if (entry.blocked) {
+        this.logState('blocked_skipped', entry.adapter.id);
+        this.advance();
+        checked++;
+        continue;
+      }
       if (entry.remaining <= 0) entry.remaining = entry.weight + entry.debt;
       let candidate = entry.adapter.tryTake();
       while (candidate !== null && this.isDuplicate(candidate)) {
@@ -143,6 +152,21 @@ export class WeightedFeedChannelPool implements FeedChannelAvailabilityHook {
     this.drainPendingGets();
   }
 
+  setPlatformBlocked(platformId: string, blocked: boolean): void {
+    let changed = false;
+    this.entries.forEach((entry: WeightedFeedChannelEntry): void => {
+      if (entry.adapter.platformId !== platformId || entry.blocked === blocked) return;
+      entry.blocked = blocked;
+      entry.debt = 0;
+      entry.remaining = entry.weight;
+      entry.adapter.setBlocked(blocked);
+      changed = true;
+    });
+    if (!changed) return;
+    this.logState(blocked ? 'platform_blocked' : 'platform_unblocked', platformId);
+    this.drainPendingGets();
+  }
+
   snapshot(): WeightedFeedChannelPoolSnapshot {
     const channels: WeightedFeedChannelRegistrationSnapshot[] = this.entries.map(
       (entry: WeightedFeedChannelEntry): WeightedFeedChannelRegistrationSnapshot => {
@@ -155,7 +179,8 @@ export class WeightedFeedChannelPool implements FeedChannelAvailabilityHook {
           debt: entry.debt,
           remaining: entry.remaining,
           bucketSize: snapshot.size,
-          phase: snapshot.phase
+          phase: snapshot.phase,
+          blocked: entry.blocked
         };
       }
     );
@@ -226,6 +251,7 @@ export class WeightedFeedChannelPool implements FeedChannelAvailabilityHook {
         ',debt=' + entry.debt.toString() +
         ',remaining=' + entry.remaining.toString() +
         ',weight=' + entry.weight.toString() +
+        ',blocked=' + (entry.blocked ? 'true' : 'false') +
         ',phase=' + snapshot.phase + '}';
     }).join(',');
     this.log('[WeightedFeedChannelPool] event=' + event +

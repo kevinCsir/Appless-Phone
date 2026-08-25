@@ -32,6 +32,7 @@ export interface FeedChannelAdapter {
 
   tryTake(): WaterfallCandidate | null;
   ensureWatermark(urgency?: number): void;
+  setBlocked(blocked: boolean): void;
   refresh(): void;
   setAvailabilityListener(listener: FeedChannelAvailabilityListener | null): void;
   snapshot(): FeedChannelSnapshot;
