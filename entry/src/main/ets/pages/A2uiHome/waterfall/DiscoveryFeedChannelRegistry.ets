@@ -1,13 +1,14 @@
 import {
-  AggregateRecommendBucketAdapter,
-  AggregateSearchBucketAdapter,
+  AggregateFeedSourceAdapter,
   AggregateSearchSource,
-  BilibiliSearchBucketAdapter,
+  BilibiliSearchSourceAdapter,
+  BufferedRecommendFeedChannel,
+  BufferedSearchFeedChannel,
   DiscoveryFeedReserve,
   DiscoveryFeedReserveSnapshot,
-  FeedChannelAdapter,
+  FeedChannel,
   FeedChannelKind,
-  SearchFeedChannelAdapter,
+  SearchFeedChannel,
   WaterfallCandidate,
   WATERFALL_EXPLORATION_QUERIES,
   WaterfallPreferenceSnapshot,
@@ -22,6 +23,8 @@ import {
 const DEFAULT_DISCOVERY_QUERY: string = '人工智能';
 const SEARCH_DELIVERIES_PER_KEYWORD: number = 40;
 const DEFAULT_SEARCH_KEYWORD_BATCH_SIZE: number = 2;
+const EMPTY_SEARCH_ROTATION_BASE_DELAY_MS: number = 15000;
+const EMPTY_SEARCH_ROTATION_MAX_DELAY_MS: number = 300000;
 
 export interface DiscoveryKeywordSnapshot {
   keyword: string;
@@ -54,15 +57,15 @@ export interface DiscoveryFeedChannelRegistrySnapshot extends WeightedFeedChanne
 /**
  * Application-wide registry for discovery feed channels.
  *
- * Constructing the registry constructs every adapter, which immediately starts
+ * Constructing the registry composes every source with a buffered channel, which immediately starts
  * its first 10-item prefetch. The weighted pool is the single blocking source
  * that the reserve layer can consume.
  */
 export class DiscoveryFeedChannelRegistry {
   private readonly pool: WeightedFeedChannelPool;
   private reserve: DiscoveryFeedReserve | null = null;
-  private readonly searchAdapters: SearchFeedChannelAdapter[] = [];
-  private readonly adapters: FeedChannelAdapter[] = [];
+  private readonly searchAdapters: SearchFeedChannel[] = [];
+  private readonly adapters: FeedChannel[] = [];
   private readonly keywordQueue: DiscoveryKeywordState[] = [];
   private currentKeyword: DiscoveryKeywordState;
   private keywordUseSequence: number = 0;
@@ -70,6 +73,8 @@ export class DiscoveryFeedChannelRegistry {
   private readonly keywordBatchSize: number;
   private enabledSources: string[] = [];
   private sourcesConfigured: boolean = false;
+  private emptySearchRounds: number = 0;
+  private emptySearchRotationTimer: number = -1;
 
   constructor(
     initialQuery: string = DEFAULT_DISCOVERY_QUERY,
@@ -85,7 +90,7 @@ export class DiscoveryFeedChannelRegistry {
     });
     const queries = this.currentKeywordQueries();
 
-    const bilibili = new BilibiliSearchBucketAdapter(queries, {
+    const bilibili = new BufferedSearchFeedChannel(new BilibiliSearchSourceAdapter(), queries, {
       refillThreshold: 10,
       fetchBatchSize: 10,
       availabilityHook: this.pool,
@@ -97,7 +102,8 @@ export class DiscoveryFeedChannelRegistry {
     const recommendSources = aggregateRecommendAdapterSources();
     searchSources.forEach((source: AggregateSearchSource): void => {
       if (source === 'bilibili') return;
-      const adapter = new AggregateSearchBucketAdapter(source, queries, {
+      const adapter = new BufferedSearchFeedChannel(
+        new AggregateFeedSourceAdapter(source, 'search'), queries, {
         refillThreshold: 10,
         fetchBatchSize: 10,
         availabilityHook: this.pool,
@@ -107,7 +113,8 @@ export class DiscoveryFeedChannelRegistry {
     });
 
     recommendSources.forEach((source: AggregateSearchSource): void => {
-      this.register(new AggregateRecommendBucketAdapter(source, {
+      this.register(new BufferedRecommendFeedChannel(
+        new AggregateFeedSourceAdapter(source, 'recommend'), {
         refillThreshold: 10,
         fetchBatchSize: 10,
         availabilityHook: this.pool,
@@ -122,7 +129,7 @@ export class DiscoveryFeedChannelRegistry {
 
   setEnabledSources(sources: string[]): void {
     const available: string[] = [];
-    this.adapters.forEach((adapter: FeedChannelAdapter): void => {
+    this.adapters.forEach((adapter: FeedChannel): void => {
       if (available.indexOf(adapter.platformId) < 0) available.push(adapter.platformId);
     });
     const enabled: string[] = [];
@@ -190,7 +197,7 @@ export class DiscoveryFeedChannelRegistry {
   }
 
   refreshAll(): void {
-    this.adapters.forEach((adapter: FeedChannelAdapter): void => adapter.refresh());
+    this.adapters.forEach((adapter: FeedChannel): void => adapter.refresh());
     discoveryFeedLog('event=refresh_all channels=' + this.adapters.length.toString());
   }
 
@@ -232,17 +239,22 @@ export class DiscoveryFeedChannelRegistry {
 
   private onPoolDelivered(channelId: string, kind: FeedChannelKind, _candidate: WaterfallCandidate): void {
     if (kind !== 'search') return;
+    this.emptySearchRounds = 0;
     this.currentKeywordDeliveries++;
     discoveryFeedLog('event=keyword_delivery channel=' + channelId +
       ' keyword=' + JSON.stringify(this.currentKeyword.keyword) +
       ' count=' + this.currentKeywordDeliveries.toString() +
       ' limit=' + this.keywordDeliveryLimit().toString());
     if (this.currentKeywordDeliveries >= this.keywordDeliveryLimit()) {
-      this.rotateKeyword();
+      this.rotateKeyword('delivery_limit');
+    } else if (this.emptySearchRotationTimer >= 0) {
+      this.cancelEmptySearchRotation();
+      this.maybeRotateCompletedSearchRound(channelId + '_delivery');
     }
   }
 
-  private rotateKeyword(): void {
+  private rotateKeyword(reason: string): void {
+    this.cancelEmptySearchRotation();
     if (this.keywordQueue.length === 0) {
       this.currentKeywordDeliveries = 0;
       return;
@@ -255,7 +267,8 @@ export class DiscoveryFeedChannelRegistry {
     this.currentKeyword = this.keywordQueue.shift() as DiscoveryKeywordState;
     this.currentKeywordDeliveries = 0;
     this.broadcastCurrentKeyword();
-    discoveryFeedLog('event=keyword_rotated previous=' + JSON.stringify(previous.keyword) +
+    discoveryFeedLog('event=keyword_rotated reason=' + reason +
+      ' previous=' + JSON.stringify(previous.keyword) +
       ' current=' + JSON.stringify(this.currentKeyword.keyword) +
       ' channels=' + this.searchAdapters.length.toString() +
       ' keywordQueue=' + this.keywordQueueText());
@@ -264,6 +277,8 @@ export class DiscoveryFeedChannelRegistry {
   private selectKeyword(keyword: string, reason: string): void {
     const normalized = keyword.trim();
     if (normalized.length === 0 || normalized === this.currentKeyword.keyword) return;
+    this.cancelEmptySearchRotation();
+    this.emptySearchRounds = 0;
     const previous = this.currentKeyword;
     previous.lastUsedSequence = ++this.keywordUseSequence;
     this.keywordQueue.push(previous);
@@ -285,7 +300,7 @@ export class DiscoveryFeedChannelRegistry {
 
   private broadcastCurrentKeyword(): void {
     const queries = this.currentKeywordQueries();
-    this.searchAdapters.forEach((adapter: SearchFeedChannelAdapter): void => {
+    this.searchAdapters.forEach((adapter: SearchFeedChannel): void => {
       adapter.replaceQueries(queries);
     });
   }
@@ -344,7 +359,7 @@ export class DiscoveryFeedChannelRegistry {
     }).join(',');
   }
 
-  private registerSearch(adapter: SearchFeedChannelAdapter, weight: number): void {
+  private registerSearch(adapter: SearchFeedChannel, weight: number): void {
     this.searchAdapters.push(adapter);
     adapter.setKeywordRoundCompletionListener((channelId: string): void => {
       this.maybeRotateCompletedSearchRound(channelId);
@@ -353,18 +368,60 @@ export class DiscoveryFeedChannelRegistry {
   }
 
   private maybeRotateCompletedSearchRound(completedChannelId: string): void {
-    const enabledSearchAdapters = this.searchAdapters.filter((adapter: SearchFeedChannelAdapter): boolean => {
-      return !this.sourcesConfigured || this.enabledSources.indexOf(adapter.platformId) >= 0;
-    });
+    const enabledSearchAdapters = this.enabledSearchAdapters();
     if (enabledSearchAdapters.length === 0 ||
-      !enabledSearchAdapters.every((adapter: SearchFeedChannelAdapter): boolean =>
-        adapter.isKeywordRoundComplete())) return;
+      !enabledSearchAdapters.every((adapter: SearchFeedChannel): boolean =>
+        adapter.isKeywordRoundComplete())) {
+      this.cancelEmptySearchRotation();
+      return;
+    }
     discoveryFeedLog('event=keyword_round_all_search_complete trigger=' + completedChannelId +
-      ' channels=[' + enabledSearchAdapters.map((adapter: SearchFeedChannelAdapter): string => adapter.id).join(',') + ']');
-    this.rotateKeyword();
+      ' channels=[' + enabledSearchAdapters.map((adapter: SearchFeedChannel): string => adapter.id).join(',') + ']');
+    if (this.currentKeywordDeliveries > 0) {
+      this.emptySearchRounds = 0;
+      this.rotateKeyword('search_round_complete_with_content');
+      return;
+    }
+    this.scheduleEmptySearchRotation();
   }
 
-  private register(adapter: FeedChannelAdapter, weight: number): void {
+  private enabledSearchAdapters(): SearchFeedChannel[] {
+    return this.searchAdapters.filter((adapter: SearchFeedChannel): boolean => {
+      return !this.sourcesConfigured || this.enabledSources.indexOf(adapter.platformId) >= 0;
+    });
+  }
+
+  private scheduleEmptySearchRotation(): void {
+    if (this.emptySearchRotationTimer >= 0) return;
+    const exponent = Math.min(this.emptySearchRounds, 5);
+    const delayMs = Math.min(EMPTY_SEARCH_ROTATION_MAX_DELAY_MS,
+      EMPTY_SEARCH_ROTATION_BASE_DELAY_MS * Math.pow(2, exponent));
+    const keyword = this.currentKeyword.keyword;
+    discoveryFeedLog('event=keyword_empty_rotation_scheduled keyword=' + JSON.stringify(keyword) +
+      ' delayMs=' + delayMs.toString() + ' emptyRounds=' + this.emptySearchRounds.toString());
+    this.emptySearchRotationTimer = setTimeout((): void => {
+      this.emptySearchRotationTimer = -1;
+      if (this.currentKeyword.keyword !== keyword) return;
+      const enabled = this.enabledSearchAdapters();
+      if (enabled.length === 0 || !enabled.every((adapter: SearchFeedChannel): boolean =>
+        adapter.isKeywordRoundComplete())) return;
+      if (this.currentKeywordDeliveries > 0) {
+        this.emptySearchRounds = 0;
+        this.rotateKeyword('search_round_complete_with_content');
+        return;
+      }
+      this.emptySearchRounds++;
+      this.rotateKeyword('empty_search_backoff');
+    }, delayMs);
+  }
+
+  private cancelEmptySearchRotation(): void {
+    if (this.emptySearchRotationTimer < 0) return;
+    clearTimeout(this.emptySearchRotationTimer);
+    this.emptySearchRotationTimer = -1;
+  }
+
+  private register(adapter: FeedChannel, weight: number): void {
     this.adapters.push(adapter);
     this.pool.register(adapter, weight);
   }

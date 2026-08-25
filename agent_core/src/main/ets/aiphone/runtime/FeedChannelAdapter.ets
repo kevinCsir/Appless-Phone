@@ -26,8 +26,8 @@ export interface FeedChannelAvailabilityHook {
   onFeedChannelAvailable(channelId: string): void;
 }
 
-/** A channel owns a local non-blocking bucket and maintains its own water level. */
-export interface FeedChannelAdapter {
+/** A schedulable buffered channel. Platform I/O lives in FeedSourceAdapter. */
+export interface FeedChannel {
   readonly id: string;
   readonly platformId: string;
   readonly kind: FeedChannelKind;
@@ -41,7 +41,7 @@ export interface FeedChannelAdapter {
   close(): void;
 }
 
-export interface SearchFeedChannelAdapter extends FeedChannelAdapter {
+export interface SearchFeedChannel extends FeedChannel {
   readonly kind: 'search';
   replaceQuery(query: string): void;
   replaceQueries(queries: string[]): void;
@@ -49,6 +49,13 @@ export interface SearchFeedChannelAdapter extends FeedChannelAdapter {
   setKeywordRoundCompletionListener(listener: SearchRoundCompletionListener | null): void;
 }
 
-export interface RecommendFeedChannelAdapter extends FeedChannelAdapter {
+export interface RecommendFeedChannel extends FeedChannel {
   readonly kind: 'recommend';
 }
+
+/** @deprecated Use FeedChannel. */
+export interface FeedChannelAdapter extends FeedChannel {}
+/** @deprecated Use SearchFeedChannel. */
+export interface SearchFeedChannelAdapter extends SearchFeedChannel {}
+/** @deprecated Use RecommendFeedChannel. */
+export interface RecommendFeedChannelAdapter extends RecommendFeedChannel {}

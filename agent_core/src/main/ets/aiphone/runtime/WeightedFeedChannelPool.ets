@@ -1,5 +1,5 @@
 import {
-  FeedChannelAdapter,
+  FeedChannel,
   FeedChannelAvailabilityHook,
   FeedChannelKind,
   FeedChannelPhase
@@ -31,7 +31,7 @@ export interface WeightedFeedChannelPoolOptions {
 }
 
 interface WeightedFeedChannelEntry {
-  adapter: FeedChannelAdapter;
+  adapter: FeedChannel;
   weight: number;
   debt: number;
   remaining: number;
@@ -72,7 +72,7 @@ export class WeightedFeedChannelPool implements FeedChannelAvailabilityHook {
     this.logState('constructed');
   }
 
-  register(adapter: FeedChannelAdapter, weight: number = 1): void {
+  register(adapter: FeedChannel, weight: number = 1): void {
     if (this.closed) throw new Error('WeightedFeedChannelPool is closed.');
     if (this.indexOf(adapter.id) >= 0) {
       throw new Error('Feed channel already registered: ' + adapter.id);

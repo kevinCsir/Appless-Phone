@@ -864,7 +864,7 @@ body.waterfall-direct .waterfall-track { background: transparent; }
 .waterfall-track::-webkit-scrollbar { display: none; }
 .waterfall-card {
   position: relative; width: min(100%, 720px); height: auto; min-height: 0; margin: 0 auto 28px;
-  scroll-snap-align: center; scroll-snap-stop: normal; overflow: visible;
+  scroll-snap-align: center; scroll-snap-stop: always; overflow: visible;
   background: transparent; isolation: isolate; contain: layout;
   opacity: 0.14; transform: translate3d(0, 0, 0) scale(0.955); transform-origin: center;
   transition: opacity 120ms var(--ease-out), transform 140ms var(--ease-out);
