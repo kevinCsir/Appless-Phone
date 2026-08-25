@@ -230,6 +230,7 @@ import {
   WaterfallConversationCommand,
   WaterfallConversationState
 } from './waterfall/WaterfallConversation';
+import { discoveryFeedChannelRegistry } from './waterfall/DiscoveryFeedChannelRegistry';
 import {
   cancelScheduledTrainPresaleTask,
   emptyTrainPresaleTrip,
@@ -1136,6 +1137,9 @@ struct Index {
   private waterfallContinuationBatchIndex: number = 100;
   private interestWaterfallFeedState: WaterfallFeedState | null = null;
   private interestRecallStarted: boolean = false;
+  private interestDisplayTailRefillRunning: boolean = false;
+  private interestDisplayTailRefillToken: number = 0;
+  private interestDisplayTailPublishScheduled: boolean = false;
   private interestRecallRound: number = 0;
   private interestExplorationSources: string[] = [];
   private interestWaterfallGeneration: number = 0;
@@ -1804,19 +1808,8 @@ struct Index {
   private applyInterestWaterfallUpdate(update: WaterfallFeedUpdate): void {
     this.interestWaterfallFeedState = update.state;
     this.publishInterestWaterfallPayload();
-    if (update.loadRequests.length > 0) {
-      const requests: WaterfallInterestRecallRequest[] = update.loadRequests.map(
-        (request: WaterfallLoadRequest): WaterfallInterestRecallRequest => ({
-          route: request.route ?? 'explore',
-          query: request.query ?? '',
-          sources: [request.source],
-          weight: 1,
-          continuation: request.continuation
-        }));
-      this.runInterestRecallRequests(requests);
-      return;
-    }
-    this.runNextInterestExplorationIfNeeded();
+    this.logDiscoveryPipeline('state_applied');
+    this.ensureInterestDisplayTail();
   }
 
   private runNextInterestExplorationIfNeeded(): void {
@@ -1931,9 +1924,110 @@ struct Index {
     this.runInterestRecallRequests(requests);
   }
 
+  private discoverySourceList(candidates: WaterfallRankedCandidate[]): string {
+    return candidates.map((candidate: WaterfallRankedCandidate): string => candidate.source).join(',');
+  }
+
+  private logDiscoveryPipeline(event: string, detail: string = ''): void {
+    const state = this.interestWaterfallFeedState;
+    const registry = discoveryFeedChannelRegistry().snapshot();
+    aiLogInfo('[AIPhone][DiscoveryPipeline] event=' + event +
+      ' generation=' + this.interestWaterfallGeneration.toString() +
+      ' current=' + (state?.current?.source ?? 'none') +
+      ' stableCount=' + (state?.stable.length ?? 0).toString() +
+      ' stableSources=[' + (state === null ? '' : this.discoverySourceList(state.stable)) + ']' +
+      ' tailCount=' + (state?.tail.length ?? 0).toString() +
+      ' tailSources=[' + (state === null ? '' : this.discoverySourceList(state.tail)) + ']' +
+      ' stateReserve=' + (state?.reserve?.length ?? 0).toString() +
+      ' refillRunning=' + (this.interestDisplayTailRefillRunning ? 'true' : 'false') +
+      ' registry=' + JSON.stringify(registry) +
+      (detail.length > 0 ? ' ' + detail : ''));
+  }
+
+  private appendDiscoveryTailBatch(batch: WaterfallRankedCandidate[]): void {
+    const state = this.interestWaterfallFeedState;
+    if (state === null) return;
+    let added = 0;
+    batch.forEach((candidate: WaterfallRankedCandidate): void => {
+      if (state.enabledSources.indexOf(candidate.source) < 0 ||
+        this.waterfallCandidate(candidate.id, state) !== null) return;
+      state.tail.push(candidate);
+      added++;
+    });
+    if (state.current === null) {
+      if (state.stable.length > 0) {
+        state.current = state.stable.shift() as WaterfallRankedCandidate;
+      } else if (state.tail.length > 0) {
+        state.current = state.tail.shift() as WaterfallRankedCandidate;
+      }
+    }
+    while (state.stable.length < 2 && state.tail.length > 0) {
+      state.stable.push(state.tail.shift() as WaterfallRankedCandidate);
+    }
+    this.logDiscoveryPipeline('page_tail_batch_inserted',
+      'received=' + batch.length.toString() + ' added=' + added.toString());
+  }
+
+  private scheduleInterestDisplayTailPayload(generation: number): void {
+    if (this.interestDisplayTailPublishScheduled) return;
+    this.interestDisplayTailPublishScheduled = true;
+    setTimeout((): void => {
+      this.interestDisplayTailPublishScheduled = false;
+      if (generation !== this.interestWaterfallGeneration || this.interestWaterfallFeedState === null) return;
+      this.publishInterestWaterfallPayload();
+      this.logDiscoveryPipeline('page_tail_payload_published');
+    }, 16);
+  }
+
+  private ensureInterestDisplayTail(): void {
+    const state = this.interestWaterfallFeedState;
+    if (state === null || state.enabledSources.length === 0 ||
+      this.interestDisplayTailRefillRunning || state.tail.length >= 17) return;
+    this.interestDisplayTailRefillRunning = true;
+    const token = ++this.interestDisplayTailRefillToken;
+    const generation = this.interestWaterfallGeneration;
+    this.logDiscoveryPipeline('page_tail_refill_started', 'token=' + token.toString());
+    void this.runInterestDisplayTailRefill(generation, token);
+  }
+
+  private async runInterestDisplayTailRefill(generation: number, token: number): Promise<void> {
+    const registry = discoveryFeedChannelRegistry();
+    try {
+      while (generation === this.interestWaterfallGeneration && token === this.interestDisplayTailRefillToken) {
+        const state = this.interestWaterfallFeedState;
+        if (state === null || state.enabledSources.length === 0 || state.tail.length >= 17) break;
+        this.logDiscoveryPipeline('page_tail_upstream_get_started',
+          'token=' + token.toString() + ' slot=1');
+        const candidate = await registry.get();
+        if (generation !== this.interestWaterfallGeneration ||
+          token !== this.interestDisplayTailRefillToken) return;
+        this.logDiscoveryPipeline('page_tail_upstream_get_returned',
+          'token=' + token.toString() + ' slot=1 candidate=' + candidate.id +
+          ' source=' + candidate.source);
+        this.appendDiscoveryTailBatch([candidate]);
+        this.scheduleInterestDisplayTailPayload(generation);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown discovery tail refill error.';
+      aiLogError('[AIPhone][DiscoveryPipeline] event=page_tail_refill_failed token=' +
+        token.toString() + ' error=' + message.substring(0, 240));
+    } finally {
+      if (token === this.interestDisplayTailRefillToken) {
+        this.interestDisplayTailRefillRunning = false;
+        this.logDiscoveryPipeline('page_tail_refill_stopped', 'token=' + token.toString());
+        const state = this.interestWaterfallFeedState;
+        if (state !== null && state.tail.length < 17) this.ensureInterestDisplayTail();
+      }
+    }
+  }
+
   private ensureInterestWaterfall(): void {
+    const registry = discoveryFeedChannelRegistry();
+    registry.activate(this.currentWaterfallPreferenceProfile());
     if (this.interestWaterfallFeedState === null) {
       this.interestWaterfallGeneration += 1;
+      this.interestDisplayTailRefillToken += 1;
+      this.interestDisplayTailRefillRunning = false;
       this.interestRecallRound = 0;
       this.interestExplorationSources = [];
       const interestSources = aggregateSearchInterestSourceIds();
@@ -1957,21 +2051,20 @@ struct Index {
         sources: interestSources.map(
           (source: string): WaterfallSourceState => ({
           source,
-          phase: enabledSources.indexOf(source) >= 0 ? 'loading' : 'exhausted',
+          phase: 'exhausted',
           continuation: null,
-          inFlight: enabledSources.indexOf(source) >= 0,
+          inFlight: false,
           reservedCount: 0,
-          message: '正在汇集内容'
+          message: ''
         }))
       };
       const document = this.interestWaterfallDocument();
       this.interestWaterfallHtml = renderAggregateSearchHomeDocument(document, false, true);
       this.publishInterestWaterfallPayload();
+      this.logDiscoveryPipeline('page_initialized');
     }
-    if (!this.interestRecallStarted) {
-      this.interestRecallStarted = true;
-      this.runInterestRecall();
-    }
+    this.interestRecallStarted = true;
+    this.ensureInterestDisplayTail();
   }
 
   private applyWaterfallUpdate(document: HtmlHomeDocument, update: WaterfallFeedUpdate): void {
@@ -2182,16 +2275,12 @@ struct Index {
       if (selectedSources === null) return;
       const interestEnabledSources = waterfallSourcesForContext(
         selectedSources, aggregateSearchInterestSourceIds());
-      const addedSources = interestEnabledSources.filter((source: string): boolean =>
-        state.enabledSources.indexOf(source) < 0);
       this.waterfallPreferenceProfile = this.waterfallPreferencesStore().saveDiscoveryEnabledSources(
         interestEnabledSources);
       configureWaterfallEnabledSourcesForRuntime(interestEnabledSources as AggregateSearchSource[]);
-      const update = applyWaterfallSourceSelection(state, interestEnabledSources, Date.now());
-      const plannedSources = update.loadRequests.map((request: WaterfallLoadRequest): string => request.source);
-      const recallSources = addedSources.filter((source: string): boolean => plannedSources.indexOf(source) < 0);
-      this.applyInterestWaterfallUpdate(update);
-      if (recallSources.length > 0) this.runInterestRecall(recallSources);
+      discoveryFeedChannelRegistry().activate(this.currentWaterfallPreferenceProfile());
+      this.applyInterestWaterfallUpdate(
+        applyWaterfallSourceSelection(state, interestEnabledSources, Date.now()));
       return;
     }
     if (action.id === 'waterfall.behavior.record') {
@@ -2206,6 +2295,8 @@ struct Index {
       if (state.current === null) return;
       const targetId = visibleId ?? '';
       if (currentId !== null && state.current.id !== currentId && targetId.length === 0) return;
+      this.logDiscoveryPipeline('advance_started',
+        'current=' + state.current.id + ' visible=' + targetId);
       this.applyInterestWaterfallUpdate(advanceWaterfallFeed(state, Date.now(), targetId));
     }
   }
@@ -2528,6 +2619,12 @@ struct Index {
     this.clearLuckinOptionSwitchQueue();
   }
 
+  private startDiscoveryFeedChannelPool(): void {
+    const initial = discoveryFeedChannelRegistry().snapshot();
+    aiLogInfo('[AIPhone][DiscoveryFeedPool] event=adapters_prefetch channels=' +
+      initial.channels.length.toString() + ' active=' + (initial.active ? 'true' : 'false'));
+  }
+
   aboutToAppear(): void {
     this.loadModelPreset();
     this.loadAggregateSearchPolicy();
@@ -2535,6 +2632,7 @@ struct Index {
     this.readDebugBuildState();
     this.configureComposioRuntimeForCurrentUser();
     this.loadWaterfallPreferences();
+    this.startDiscoveryFeedChannelPool();
     this.loadFoodAddressBook();
     this.loadFoodFavorites();
     this.subscribeTrainPresaleHandoff();
@@ -4699,6 +4797,8 @@ struct Index {
     this.waterfallConversationMessage = '';
     this.waterfallConversationBusy = false;
     this.interestWaterfallGeneration += 1;
+    this.interestDisplayTailRefillToken += 1;
+    this.interestDisplayTailRefillRunning = false;
     this.interestRecallStarted = false;
     this.interestRecallRound = 0;
     this.interestExplorationSources = [];
@@ -5456,6 +5556,7 @@ struct Index {
     this.waterfallConversationMessage = this.waterfallConversationState.summary;
     this.waterfallConversationBusy = false;
     if (this.interestWaterfallFeedState === null) return;
+    discoveryFeedChannelRegistry().activate(this.currentWaterfallPreferenceProfile());
     this.applyInterestWaterfallUpdate(applyWaterfallProfile(
       this.interestWaterfallFeedState,
       this.currentWaterfallPreferenceProfile(),

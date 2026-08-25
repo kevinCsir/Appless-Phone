@@ -1515,6 +1515,26 @@ export default function aggregateSearchClientTest() {
       expect(update.state.stable.map((item) => item.id).join(',')).assertEqual('tail-later');
     });
 
+    it('caps one visible checkpoint acknowledgement at five consumed candidates', 0, () => {
+      const state = feedState(
+        rankedWaterfallCandidate('ack-current', 'youtube', 'current', 0),
+        [rankedWaterfallCandidate('ack-stable-1', 'youtube', 'stable one', 1),
+          rankedWaterfallCandidate('ack-stable-2', 'youtube', 'stable two', 2)],
+        [rankedWaterfallCandidate('ack-tail-1', 'youtube', 'tail one', 3),
+          rankedWaterfallCandidate('ack-tail-2', 'youtube', 'tail two', 4),
+          rankedWaterfallCandidate('ack-tail-3', 'youtube', 'tail three', 5),
+          rankedWaterfallCandidate('ack-tail-4', 'youtube', 'tail four', 6),
+          rankedWaterfallCandidate('ack-tail-5', 'youtube', 'tail five', 7),
+          rankedWaterfallCandidate('ack-tail-6', 'youtube', 'tail six', 8)],
+        [sourceState('youtube', null)]
+      );
+
+      const update = advanceWaterfallFeed(state, WATERFALL_NOW_MS, 'ack-tail-6');
+
+      expect(update.state.shown.length).assertEqual(5);
+      expect(update.state.current?.id).assertEqual('ack-tail-3');
+    });
+
     it('reorders all unshown items after an explicit source toggle', 0, () => {
       const state = feedState(
         rankedWaterfallCandidate('youtube-current', 'youtube', 'OpenAI Codex YouTube', 0),

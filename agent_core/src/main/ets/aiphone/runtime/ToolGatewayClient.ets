@@ -15651,6 +15651,20 @@ async function runWaterfallInterestRecallBody(
       (source === 'twitch' ? ' mode=provider-discovery' :
         ' query=' + waterfallInterestDiagnosticText(recall.query, 80)));
   });
+  if (recall.route === 'explore' && allowedSources.indexOf('zhihu') >= 0) {
+    const batch = await aggregateZhihuHotListBatch(
+      { apiKey: localProviderConfig.zhihuApiKey },
+      waterfallInterestRecallLimitForSource('zhihu')
+    );
+    logWaterfallInterestBatch(recall, batch);
+    onBatch({
+      request: recall,
+      batch,
+      candidates: aggregateMediaCandidates(
+        batch.videos, batch.posts, requestIndex * 10, '', 'done', 'explore', recall.weight)
+    });
+    return;
+  }
   if (recall.route === 'popular' && allowedSources.indexOf('youtube') >= 0) {
     const token = recall.continuation !== undefined && recall.continuation !== null &&
       recall.continuation.kind === 'cursor' ? recall.continuation.value : '';

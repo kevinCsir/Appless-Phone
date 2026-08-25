@@ -1450,10 +1450,10 @@ function zhihuTimestamp(): string {
   return Math.floor(Date.now() / 1000).toString();
 }
 
-async function requestZhihuSearch(query: string, apiKey: string): Promise<AggregateHttpResult> {
+async function requestZhihuUrl(url: string, apiKey: string): Promise<AggregateHttpResult> {
   const request = http.createHttp();
   try {
-    const response = await request.request(zhihuSearchUrl(query, 10), {
+    const response = await request.request(url, {
       method: http.RequestMethod.GET,
       header: {
         'Accept': 'application/json',
@@ -1474,28 +1474,12 @@ async function requestZhihuSearch(query: string, apiKey: string): Promise<Aggreg
   }
 }
 
+async function requestZhihuSearch(query: string, apiKey: string): Promise<AggregateHttpResult> {
+  return requestZhihuUrl(zhihuSearchUrl(query, 10), apiKey);
+}
+
 async function requestZhihuHotList(limit: number, apiKey: string): Promise<AggregateHttpResult> {
-  const request = http.createHttp();
-  try {
-    const response = await request.request(zhihuHotListUrl(limit), {
-      method: http.RequestMethod.GET,
-      header: {
-        'Accept': 'application/json',
-        'Authorization': 'Bearer ' + apiKey.trim(),
-        'X-Request-Timestamp': zhihuTimestamp(),
-        'Content-Type': 'application/json'
-      },
-      usingProtocol: http.HttpProtocol.HTTP1_1,
-      connectTimeout: 10000,
-      readTimeout: 30000
-    });
-    return {
-      code: response.responseCode,
-      text: responseText(response.result)
-    };
-  } finally {
-    request.destroy();
-  }
+  return requestZhihuUrl(zhihuHotListUrl(limit), apiKey);
 }
 
 function zhihuDataRecord(payload: DynamicPostRecord): DynamicPostRecord {
@@ -1511,6 +1495,10 @@ function zhihuItemsFromPayload(rawJson: string): Object[] {
   const code = textOf(payload.Code ?? payload.code).trim();
   if (code.length > 0 && code !== '0') {
     throw new Error(recordText(payload, ['Message', 'message', 'msg']) || 'Zhihu API returned Code=' + code);
+  }
+  const directData = payload.Data ?? payload.data;
+  if (Array.isArray(directData)) {
+    return directData as Object[];
   }
   const data = zhihuDataRecord(payload);
   const items = data.Items ?? data.items ?? data.Results ?? data.results ?? data.List ?? data.list;
@@ -1541,12 +1529,16 @@ function zhihuPostFromItem(item: Object, index: number): AggregateSearchPost {
     { label: 'score', value: score },
     { label: 'comments', value: commentCount }
   ];
+  const thumbnail = recordText(record, ['ThumbnailUrl', 'thumbnailUrl', 'thumbnail_url']);
+  if (thumbnail.length > 0) {
+    rows.push({ label: 'Thumbnail', value: thumbnail });
+  }
   const avatar = recordText(record, ['AuthorAvatar', 'authorAvatar', 'AuthorBadge', 'authorBadge']);
   if (avatar.length > 0) {
     rows.push({ label: 'authorAvatar', value: avatar });
   }
   return {
-    id: 'zhihu-' + (recordText(record, ['ContentID', 'contentID', 'id']) || index.toString()),
+    id: 'zhihu-' + (recordText(record, ['ContentID', 'contentID', 'id']) || url || index.toString()),
     source: 'zhihu',
     provider: '知乎',
     title: title.length > 0 ? title : '知乎内容',

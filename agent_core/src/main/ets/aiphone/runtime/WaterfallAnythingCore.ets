@@ -37,7 +37,7 @@ export interface WaterfallPreferenceSnapshot {
   sessionFormatWeights?: WaterfallPreferenceWeight[];
 }
 
-const WATERFALL_EXPLORATION_QUERIES: string[] = ['人工智能', '科技数码', '编程开发', '科学科普'];
+export const WATERFALL_EXPLORATION_QUERIES: string[] = ['人工智能', '科技数码', '编程开发', '科学科普'];
 const WATERFALL_WESTERN_EXPLORATION_QUERIES: string[] = [
   'tech news', 'artificial intelligence', 'programming', 'computer science'
 ];
@@ -1783,7 +1783,7 @@ export function advanceWaterfallFeed(
   const next = copyState(state);
   const target = targetId.trim();
   let steps = 0;
-  const maxSteps = totalCandidateCount(next);
+  const maxSteps = Math.min(5, totalCandidateCount(next));
   while (next.current !== null && steps < maxSteps) {
     if (target.length === 0) {
       next.shown.push(next.current);

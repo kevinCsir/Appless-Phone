@@ -3986,6 +3986,7 @@ export default function htmlHomeRendererTest() {
       expect(update.state.current?.id).assertEqual('post-3');
       expect(update.state.stable.length).assertEqual(0);
       expect(html.indexOf('waterfall.feed.advance')).assertLarger(-1);
+      expect(html.indexOf('acknowledgedCount: acknowledgedIndex - currentIndex')).assertLarger(-1);
       expect(html.indexOf("track.addEventListener('scroll'")).assertLarger(-1);
       expect(html.indexOf('data-waterfall-id')).assertLarger(-1);
     });
