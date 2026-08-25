@@ -1688,6 +1688,7 @@ const WATERFALL_JS: string = `
   var emittedBehavior = {};
   var pendingPayload = null;
   window.__aiphoneApplyWaterfallUpdate = function (payload) {
+    if (pendingPayload && pendingPayload.fullReset === true && payload) payload.fullReset = true;
     pendingPayload = payload;
     if (mode === 'collection') {
       mergePayload(payload);
@@ -1707,10 +1708,11 @@ const WATERFALL_JS: string = `
     if (!preserveMotion) scrollActive = false;
     var payload = pendingPayload;
     pendingPayload = null;
+    var fullReset = payload && payload.fullReset === true;
     var previousCurrentId = state ? text(state.currentId) : '';
     mergePayload(payload);
     if (enabledOverride) enabledSources = enabledOverride.slice();
-    var changed = render();
+    var changed = fullReset ? renderFullReset() : render();
     if (!changed) scheduleAdvance(updateCardPresentation());
     if (state && Array.isArray(state.cardStates)) {
       state.cardStates.forEach(function (cardState) { syncCardActionControls(cardState.candidateId); });
@@ -3138,6 +3140,42 @@ const WATERFALL_JS: string = `
     else updateCardPresentation(false);
     syncActiveInlinePlayer();
     return domChanged;
+  }
+  function renderFullReset() {
+    if (!track || !state) return false;
+    pauseCurrentBehavior(false);
+    destroyInlinePlayer(true);
+    scrollActive = false;
+    interactionActive = false;
+    advancePending = false;
+    advanceTargetId = '';
+    alignToCurrent = false;
+    alignToCandidateId = '';
+    var items = renderedOrderCandidates(state);
+    showNewAudioError(items);
+    var empty = enabledSources.length === 0 ? '<div class="waterfall-empty"><span>至少开启一个来源</span><button type="button" data-waterfall-empty-sources>打开内容来源</button></div>' : '';
+    var status = '';
+    if (enabledSources.length > 0 && items.length === 0) {
+      status = state.exhausted ? '<div class="waterfall-status waterfall-status--empty"><span>本轮内容已结束</span><button type="button" data-waterfall-empty-sources>调整内容来源</button></div>' :
+        (state.replenishing ? '<div class="waterfall-status">正在补充内容</div>' :
+          '<div class="waterfall-status">正在汇集内容…</div>');
+    }
+    var tailStatus = items.length > 0 && state.exhausted ? '<div class="waterfall-tail-status"></div>' : '';
+    var cardHtml = items.map(renderCandidate);
+    track.innerHTML = status + empty + cardHtml.join('') + tailStatus;
+    renderedCards = items.map(function (item, index) {
+      return { id: text(item.id), html: cardHtml[index] };
+    });
+    renderedCurrentId = text(state.currentId);
+    cardMetrics = [];
+    track.scrollTop = 0;
+    var sourceControl = document.querySelector('.waterfall-source-control-logos');
+    if (sourceControl) {
+      sourceControl.innerHTML = items.length > 0 ? sourceLogoMarkup(items[0].source) : '';
+    }
+    syncCardsAfterPaint();
+    syncActiveInlinePlayer();
+    return true;
   }
   function dropRenderedCardsMissingFrom(items, nodes) {
     if (renderedCards.length === 0 || nodes.length !== renderedCards.length) return false;

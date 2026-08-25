@@ -115,6 +115,7 @@ export interface WaterfallHomePayload {
   savedCards: WaterfallSavedCardView[];
   replenishing: boolean;
   exhausted: boolean;
+  fullReset?: boolean;
 }
 
 export interface WaterfallCardViewState {

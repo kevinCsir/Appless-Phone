@@ -1761,9 +1761,10 @@ struct Index {
     };
   }
 
-  private publishInterestWaterfallPayload(): void {
+  private publishInterestWaterfallPayload(fullReset: boolean = false): void {
     const payload = buildWaterfallHomePayload(
       this.interestWaterfallDocument(), false, this.interestWaterfallFeedState, this.waterfallCardRecords);
+    if (payload !== null && fullReset) payload.fullReset = true;
     this.interestWaterfallPayloadJson = payload === null ? '' : JSON.stringify(payload);
     this.interestWaterfallPayloadTick = this.interestWaterfallPayloadTick + 1;
   }
@@ -1805,9 +1806,9 @@ struct Index {
     return candidates;
   }
 
-  private applyInterestWaterfallUpdate(update: WaterfallFeedUpdate): void {
+  private applyInterestWaterfallUpdate(update: WaterfallFeedUpdate, fullReset: boolean = false): void {
     this.interestWaterfallFeedState = update.state;
-    this.publishInterestWaterfallPayload();
+    this.publishInterestWaterfallPayload(fullReset);
     this.logDiscoveryPipeline('state_applied');
     this.ensureInterestDisplayTail();
   }
@@ -1971,21 +1972,23 @@ struct Index {
   private applyDiscoverySourceFilter(state: WaterfallFeedState, enabledSources: string[]): void {
     const before = (state.current === null ? 0 : 1) + state.stable.length + state.tail.length +
       (state.reserve ?? []).length;
+    const inventory: WaterfallRankedCandidate[] = [];
+    const seen: string[] = [];
+    const append = (candidate: WaterfallRankedCandidate): void => {
+      if (enabledSources.indexOf(candidate.source) < 0 || seen.indexOf(candidate.id) >= 0) return;
+      seen.push(candidate.id);
+      inventory.push(candidate);
+    };
+    if (state.current !== null) append(state.current);
+    state.stable.forEach(append);
+    state.tail.forEach(append);
+    (state.reserve ?? []).forEach(append);
     state.enabledSources = enabledSources.slice();
-    if (state.current !== null && enabledSources.indexOf(state.current.source) < 0) state.current = null;
-    state.stable = state.stable.filter((candidate: WaterfallRankedCandidate): boolean =>
-      enabledSources.indexOf(candidate.source) >= 0);
-    state.tail = state.tail.filter((candidate: WaterfallRankedCandidate): boolean =>
-      enabledSources.indexOf(candidate.source) >= 0);
-    state.reserve = (state.reserve ?? []).filter((candidate: WaterfallRankedCandidate): boolean =>
-      enabledSources.indexOf(candidate.source) >= 0);
-    if (state.current === null) {
-      if (state.stable.length > 0) state.current = state.stable.shift() as WaterfallRankedCandidate;
-      else if (state.tail.length > 0) state.current = state.tail.shift() as WaterfallRankedCandidate;
-    }
-    while (state.stable.length < 2 && state.tail.length > 0) {
-      state.stable.push(state.tail.shift() as WaterfallRankedCandidate);
-    }
+    state.shown = [];
+    state.current = inventory.length > 0 ? inventory.shift() as WaterfallRankedCandidate : null;
+    state.stable = inventory.splice(0, Math.min(2, inventory.length));
+    state.tail = inventory;
+    state.reserve = [];
     const after = (state.current === null ? 0 : 1) + state.stable.length + state.tail.length +
       (state.reserve ?? []).length;
     this.logDiscoveryPipeline('sources_filtered', 'enabled=[' + enabledSources.join(',') +
@@ -2305,10 +2308,12 @@ struct Index {
         interestEnabledSources);
       configureWaterfallEnabledSourcesForRuntime(interestEnabledSources as AggregateSearchSource[]);
       const registry = discoveryFeedChannelRegistry();
+      this.interestDisplayTailRefillToken += 1;
+      this.interestDisplayTailRefillRunning = false;
       registry.setEnabledSources(interestEnabledSources);
       registry.activate(this.currentWaterfallPreferenceProfile());
       this.applyDiscoverySourceFilter(state, interestEnabledSources);
-      this.applyInterestWaterfallUpdate({ state, loadRequests: [] });
+      this.applyInterestWaterfallUpdate({ state, loadRequests: [] }, true);
       return;
     }
     if (action.id === 'waterfall.behavior.record') {
