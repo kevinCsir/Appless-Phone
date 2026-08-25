@@ -9,6 +9,7 @@ import {
   FeedChannelAdapter,
   FeedChannelAvailabilityHook,
   FeedChannelAvailabilityListener,
+  FeedChannelPhase,
   FeedChannelSnapshot,
   WaterfallCandidate,
   WaterfallContinuation,
@@ -69,6 +70,7 @@ class TestFeedAdapter implements FeedChannelAdapter {
   private readonly hook: FeedChannelAvailabilityHook;
   private listener: FeedChannelAvailabilityListener | null = null;
   private blocked: boolean = false;
+  private emptyPhase: FeedChannelPhase = 'empty';
 
   constructor(id: string, hook: FeedChannelAvailabilityHook) {
     this.id = id;
@@ -83,6 +85,10 @@ class TestFeedAdapter implements FeedChannelAdapter {
       this.hook.onFeedChannelAvailable(this.id);
       if (this.listener !== null) this.listener();
     }
+  }
+
+  setEmptyPhase(phase: FeedChannelPhase): void {
+    this.emptyPhase = phase;
   }
 
   tryTake(): WaterfallCandidate | null {
@@ -107,7 +113,7 @@ class TestFeedAdapter implements FeedChannelAdapter {
       id: this.id,
       platformId: this.platformId,
       kind: this.kind,
-      phase: this.items.length > 0 ? 'ready' : 'empty',
+      phase: this.items.length > 0 ? 'ready' : this.emptyPhase,
       size: this.items.length,
       lowWatermark: 1,
       targetWatermark: 1,
@@ -183,6 +189,20 @@ export default function weightedFeedChannelPoolTest() {
       pool.setPlatformBlocked('first', false);
       first.push(candidate('first', '2'));
       expect((pool.tryGet() as WaterfallCandidate).source).assertEqual('first');
+      pool.close();
+    });
+
+    it('skips an exhausted channel without carrying debt into a later refresh', 0, () => {
+      const pool = new WeightedFeedChannelPool();
+      const exhausted = new TestFeedAdapter('exhausted:recommend', pool);
+      const available = new TestFeedAdapter('available:recommend', pool);
+      exhausted.setEmptyPhase('exhausted');
+      available.push(candidate('available', '1'));
+      pool.register(exhausted, 2);
+      pool.register(available, 1);
+
+      expect((pool.tryGet() as WaterfallCandidate).source).assertEqual('available');
+      expect(debtFor(pool.snapshot(), 'exhausted:recommend')).assertEqual(0);
       pool.close();
     });
 

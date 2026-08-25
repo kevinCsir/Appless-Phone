@@ -125,6 +125,15 @@ export class WeightedFeedChannelPool implements FeedChannelAvailabilityHook {
         }
         return candidate;
       }
+      const phase = entry.adapter.snapshot().phase;
+      if (phase === 'exhausted' || phase === 'error' || phase === 'closed') {
+        entry.debt = 0;
+        entry.remaining = 0;
+        this.logState('terminal_skipped', entry.adapter.id);
+        this.advance();
+        checked++;
+        continue;
+      }
       entry.debt++;
       entry.adapter.ensureWatermark(entry.debt);
       entry.remaining = 0;

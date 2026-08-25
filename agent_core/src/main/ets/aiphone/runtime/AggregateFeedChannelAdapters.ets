@@ -144,7 +144,7 @@ export async function loadAggregateRecommendFeedPage(
 ): Promise<AggregateFeedChannelPage> {
   const holder = new InterestBatchHolder();
   const recall: WaterfallInterestRecallRequest = {
-    route: request.source === 'youtube' ? 'popular' : 'explore',
+    route: request.source === 'twitch' ? 'explore' : 'popular',
     query: '',
     sources: [request.source],
     weight: 1,
@@ -165,10 +165,11 @@ export async function loadAggregateRecommendFeedPage(
       message: 'No recommendation batch returned for ' + request.source + '.'
     };
   }
+  const phase = phaseFromBatch(result.batch);
   return {
     candidates: result.candidates,
     continuation: result.batch.continuation,
-    phase: request.source === 'zhihu' ? 'exhausted' : phaseFromBatch(result.batch),
+    phase: result.batch.continuation === null && phase !== 'error' ? 'exhausted' : phase,
     message: result.batch.status.message
   };
 }
@@ -622,7 +623,7 @@ export class AggregateRecommendBucketAdapter extends AggregateFeedBucketBase
     source: AggregateSearchSource,
     options: AggregateFeedBucketOptions = {}
   ) {
-    if (source !== 'youtube' && source !== 'twitch' && source !== 'zhihu') {
+    if (aggregateRecommendAdapterSources().indexOf(source) < 0) {
       throw new Error(source + ' does not expose a keyword-free recommendation channel.');
     }
     super(source, 'recommend', '', options);
@@ -634,5 +635,5 @@ export function aggregateSearchAdapterSources(): AggregateSearchSource[] {
 }
 
 export function aggregateRecommendAdapterSources(): AggregateSearchSource[] {
-  return ['youtube', 'zhihu', 'twitch'];
+  return ['youtube', 'zhihu', 'twitch', 'github', 'steam', 'cnnews', 'globalnews'];
 }
