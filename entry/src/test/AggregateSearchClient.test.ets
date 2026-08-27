@@ -1502,7 +1502,7 @@ export default function aggregateSearchClientTest() {
       expect(update.state.stable.map((item) => item.id).join(',')).assertEqual('second');
     });
 
-    it('does not rerank shown items or the four-card stable buffer', 0, () => {
+    it('does not rerank shown items or the two-card stable buffer', 0, () => {
       const current = rankedWaterfallCandidate('current-1', 'youtube', 'OpenAI Codex current', 1);
       const nextOne = rankedWaterfallCandidate('next-1', 'youtube', 'OpenAI Codex next one', 2);
       const nextTwo = rankedWaterfallCandidate('next-2', 'youtube', 'OpenAI Codex next two', 3);
@@ -1516,11 +1516,12 @@ export default function aggregateSearchClientTest() {
       expect(update.state.shown.map((item) => item.id).join(',')).assertEqual('shown-1');
       expect(update.state.current?.id).assertEqual('current-1');
       expect(update.state.stable.map((item) => item.id).join(','))
-        .assertEqual('next-1,next-2,late-exact,tail-old');
-      expect(update.state.tail.length).assertEqual(0);
+        .assertEqual('next-1,next-2');
+      expect(update.state.tail.map((item) => item.id).join(','))
+        .assertEqual('late-exact,tail-old');
     });
 
-    it('lets a later source enter the four-card stable buffer after the frozen prefix', 0, () => {
+    it('keeps a later source in tail after the frozen two-card stable prefix', 0, () => {
       const current = rankedWaterfallCandidate('zh-0', 'zhihu', '知乎 人工智能 讨论', 0);
       const nextOne = rankedWaterfallCandidate('zh-1', 'zhihu', '知乎 科技数码 一', 1);
       const nextTwo = rankedWaterfallCandidate('zh-2', 'zhihu', '知乎 科技数码 二', 2);
@@ -1542,10 +1543,10 @@ export default function aggregateSearchClientTest() {
       const update = mergeWaterfallBatch(state, incoming, sourceState('bilibili', null), WATERFALL_NOW_MS);
 
       expect(update.state.current?.id).assertEqual('zh-0');
-      expect(update.state.stable.length).assertEqual(4);
+      expect(update.state.stable.length).assertEqual(2);
       expect(update.state.stable[0].id).assertEqual('zh-1');
       expect(update.state.stable[1].id).assertEqual('zh-2');
-      expect(update.state.stable[2].source).assertEqual('bilibili');
+      expect(update.state.tail.some((item) => item.source === 'bilibili')).assertTrue();
     });
 
     it('moves the stable window after advancing', 0, () => {
