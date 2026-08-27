@@ -889,8 +889,9 @@ function stableEpsilon(value: string): number {
   return (hash >>> 0) / 4294967295 * 0.000001;
 }
 
-const WATERFALL_STABLE_LIMIT: number = 2;
-const WATERFALL_LOW_WATERMARK: number = 3;
+const WATERFALL_STABLE_LIMIT: number = 4;
+const WATERFALL_MAX_SOURCE_RUN: number = 2;
+const WATERFALL_LOW_WATERMARK: number = 8;
 const WATERFALL_TARGET_INVENTORY: number = 20;
 const WATERFALL_MAX_REQUEST: number = 10;
 
@@ -1378,7 +1379,7 @@ export function applyWaterfallProfile(
       idsOf(next.stable),
       nowMs
     ),
-    WATERFALL_STABLE_LIMIT,
+    WATERFALL_MAX_SOURCE_RUN,
     frozenPrefix(next)
   );
   next.reserve = [];
@@ -1641,7 +1642,7 @@ function sortTail(state: WaterfallFeedState, incoming: WaterfallCandidate[], now
   // ponytail: cap same-source runs at the frozen window; full MMR source-sim if this over-mixes.
   return limitConsecutiveSources(
     rankUnshownCandidates(state, candidates, fixedIds, idsOf(state.stable), nowMs),
-    WATERFALL_STABLE_LIMIT,
+    WATERFALL_MAX_SOURCE_RUN,
     frozenPrefix(state)
   );
 }
