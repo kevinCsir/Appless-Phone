@@ -158,6 +158,16 @@ assert.match(indexPage, /plannedSources\.indexOf\(source\) < 0/,
   're-enabling a source must not start a fresh recall when continuation is already planned');
 assert.match(indexPage, /WaterfallInterestRecallBatch[\s\S]*result\.request\.query/,
   'each discovery source must log route, query, and whether it returned cards');
+assert.match(indexPage,
+  /if \(result\.candidates\.length > 0\)[\s\S]*?finalizeInterestWaterfallRecallRanking\([\s\S]*?this\.interestWaterfallDisplayCommitted\)/,
+  'every non-empty discovery source batch must flatten the complete unseen inventory');
+assert.doesNotMatch(indexPage, /flattenWhenFastSourcesSettle|fastSourceFlattenApplied/,
+  'tail flattening must not depend on a Bilibili and YouTube special case');
+assert.match(indexPage,
+  /private commitInterestWaterfallDisplay\(\)[\s\S]*?preload_display_committed/,
+  'opening discovery must commit the pre-ranked preload inventory exactly once');
+assert.match(indexPage, /this\.loadWaterfallPreferences\(\);\s*this\.ensureInterestWaterfall\(\);/,
+  'discovery recall must preload after persisted source preferences are available');
 assert.doesNotMatch(indexPage, /waitingForInitialPeers/,
   'the first source with cards must paint immediately instead of waiting for slower peers');
 assert.doesNotMatch(waterfallJs, /function interleaveBySource/,
@@ -211,8 +221,17 @@ assert.match(indexPage, /if \(active > 8\) return/,
   'discovery refill must start before the user can swipe through the last three cards');
 assert.match(waterfallCore, /WATERFALL_LOW_WATERMARK: number = 8/,
   'native inventory must refill before the rendered tail is exhausted');
+assert.match(waterfallCore, /WATERFALL_STABLE_LIMIT: number = 2/,
+  'the frozen DOM runway must remain a two-card experiment');
 assert.match(waterfallCore, /function limitConsecutiveSources/,
   'a later source must break a same-source run after the frozen window');
+assert.match(waterfallCore, /WATERFALL_MAX_SOURCE_RUN: number = 1/,
+  'an available alternate source must break every same-source tail run');
+assert.match(waterfallCore,
+  /finalizeInterestWaterfallRecallRanking[\s\S]*?refreshDisplayWindow:\s*boolean = true[\s\S]*?limitConsecutiveSources\(rankWaterfallCandidates[\s\S]*?if \(refreshDisplayWindow\) refreshCurrentAndStable\(next\)/,
+  'fast-source discovery finalization must hard-limit source runs only after the frozen prefix');
+assert.match(indexPage, /logWaterfallTailTakes\(state, update\.state\)/,
+  'each advance must log candidates promoted out of the data-only tail');
 assert.match(waterfallCore, /targetId: string = ''/,
   'one advance may catch the feed pointer up to the visible card');
 const mergePayloadSource = waterfallJs.slice(

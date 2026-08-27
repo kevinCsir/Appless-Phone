@@ -889,8 +889,8 @@ function stableEpsilon(value: string): number {
   return (hash >>> 0) / 4294967295 * 0.000001;
 }
 
-const WATERFALL_STABLE_LIMIT: number = 4;
-const WATERFALL_MAX_SOURCE_RUN: number = 2;
+const WATERFALL_STABLE_LIMIT: number = 2;
+const WATERFALL_MAX_SOURCE_RUN: number = 1;
 const WATERFALL_LOW_WATERMARK: number = 8;
 const WATERFALL_TARGET_INVENTORY: number = 20;
 const WATERFALL_MAX_REQUEST: number = 10;
@@ -1565,7 +1565,8 @@ export function finalizeDeferredWaterfallRanking(
 
 export function finalizeInterestWaterfallRecallRanking(
   state: WaterfallFeedState,
-  nowMs: number
+  nowMs: number,
+  refreshDisplayWindow: boolean = true
 ): WaterfallFeedState {
   const next = copyState(state);
   const fixedActiveCount = (next.current !== null && next.enabledSources.indexOf(next.current.source) >= 0 ? 1 : 0) +
@@ -1573,7 +1574,7 @@ export function finalizeInterestWaterfallRecallRanking(
   const availableTailSlots = Math.max(0, WATERFALL_TARGET_INVENTORY - fixedActiveCount);
   const corpus = boundedInterestRankingCorpus(
     next, rankedToCandidates(next.tail.concat(next.reserve ?? [])), availableTailSlots);
-  next.tail = rankWaterfallCandidates({
+  next.tail = limitConsecutiveSources(rankWaterfallCandidates({
     query: next.query,
     candidates: corpus.active,
     enabledSources: next.enabledSources,
@@ -1582,9 +1583,9 @@ export function finalizeInterestWaterfallRecallRanking(
     preferenceDescription: next.preferenceDescription,
     mode: 'interest',
     profile: next.profile
-  }, nowMs).slice(0, availableTailSlots);
+  }, nowMs).slice(0, availableTailSlots), WATERFALL_MAX_SOURCE_RUN, frozenPrefix(next));
   next.reserve = [];
-  refreshCurrentAndStable(next);
+  if (refreshDisplayWindow) refreshCurrentAndStable(next);
   trimWaterfallInventory(next);
   next.reserve = corpus.overflow.map(
     (candidate: WaterfallCandidate): WaterfallRankedCandidate => deferredRankedCandidate(candidate));

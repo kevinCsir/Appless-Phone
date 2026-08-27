@@ -1164,6 +1164,7 @@ struct Index {
   private waterfallContinuationBatchIndex: number = 100;
   private interestWaterfallFeedState: WaterfallFeedState | null = null;
   private interestWaterfallSearchSnapshot: WaterfallFeedState | null = null;
+  private interestWaterfallDisplayCommitted: boolean = false;
   private interestRecallStarted: boolean = false;
   private interestRecallRound: number = 0;
   private interestExplorationSources: string[] = [];
@@ -1861,6 +1862,22 @@ struct Index {
       (detail.length > 0 ? ' ' + detail : ''));
   }
 
+  private logWaterfallTailTakes(before: WaterfallFeedState, after: WaterfallFeedState): void {
+    const remainingIds = after.tail.concat(after.reserve ?? []).map(
+      (candidate: WaterfallRankedCandidate): string => candidate.id);
+    const promotedIds: string[] = after.shown.map(
+      (candidate: WaterfallRankedCandidate): string => candidate.id);
+    if (after.current !== null) promotedIds.push(after.current.id);
+    after.stable.forEach((candidate: WaterfallRankedCandidate): void => {
+      promotedIds.push(candidate.id);
+    });
+    before.tail.forEach((candidate: WaterfallRankedCandidate): void => {
+      if (remainingIds.indexOf(candidate.id) >= 0 || promotedIds.indexOf(candidate.id) < 0) return;
+      this.logWaterfallInventory('tail_take', after,
+        'source=' + candidate.source + ' candidateId=' + candidate.id.substring(0, 96));
+    });
+  }
+
   private applyInterestWaterfallUpdate(update: WaterfallFeedUpdate): void {
     this.interestWaterfallFeedState = update.state;
     this.logWaterfallInventory('update_applied', update.state,
@@ -1964,12 +1981,23 @@ struct Index {
         ' count=' + result.candidates.length.toString() +
         ' route=' + result.request.route + ' query=' + result.request.query);
       current = mergeWaterfallBatchDeferredRanking(
-        current, result.candidates, this.interestSourceState(result)).state;
+        current, result.candidates, this.interestSourceState(result), false).state;
+      if (result.candidates.length > 0) {
+        const beforeSources = current.tail.concat(current.reserve ?? []).slice(0, 12).map(
+          (candidate: WaterfallRankedCandidate): string => candidate.source).join(',');
+        current = finalizeInterestWaterfallRecallRanking(
+          current, Date.now(), this.interestWaterfallDisplayCommitted);
+        const afterSources = current.tail.concat(current.reserve ?? []).slice(0, 12).map(
+          (candidate: WaterfallRankedCandidate): string => candidate.source).join(',');
+        this.logWaterfallInventory('source_batch_tail_flattened', current,
+          'source=' + source + ' before=' + beforeSources + ' after=' + afterSources +
+          ' displayCommitted=' + (this.interestWaterfallDisplayCommitted ? '1' : '0'));
+      }
       this.interestWaterfallFeedState = current;
       this.logWaterfallInventory('refill_batch_merged', current,
         'source=' + source + ' received=' + result.candidates.length.toString() +
         ' status=' + result.batch.status.status);
-      this.publishInterestWaterfallPayload();
+      if (this.interestWaterfallDisplayCommitted) this.publishInterestWaterfallPayload();
     }).then((): void => {
       let current = this.interestWaterfallFeedState;
       if (current === null || generation !== this.interestWaterfallGeneration) return;
@@ -1983,11 +2011,16 @@ struct Index {
           source.reservedCount = 0;
         }
       });
-      current = finalizeInterestWaterfallRecallRanking(current, Date.now());
+      current = finalizeInterestWaterfallRecallRanking(
+        current, Date.now(), this.interestWaterfallDisplayCommitted);
       this.interestWaterfallFeedState = current;
       this.logWaterfallInventory('refill_ranking_finalized', current,
         'sources=' + requestedSources.length.toString());
-      this.applyInterestWaterfallUpdate(planWaterfallContinuation(current));
+      if (this.interestWaterfallDisplayCommitted) {
+        this.applyInterestWaterfallUpdate(planWaterfallContinuation(current));
+      } else {
+        this.runNextInterestExplorationIfNeeded();
+      }
       aiLogInfo('[AIPhone][WaterfallInterestRecallReady] generation=' + generation.toString());
     }).catch((error: Error): void => {
       const current = this.interestWaterfallFeedState;
@@ -2001,11 +2034,16 @@ struct Index {
             source.message = '内容补充失败';
           }
         });
-        const finalized = finalizeInterestWaterfallRecallRanking(current, Date.now());
+        const finalized = finalizeInterestWaterfallRecallRanking(
+          current, Date.now(), this.interestWaterfallDisplayCommitted);
         this.interestWaterfallFeedState = finalized;
         this.logWaterfallInventory('refill_failed', finalized,
           'sources=' + requestedSources.length.toString());
-        this.applyInterestWaterfallUpdate(planWaterfallContinuation(finalized));
+        if (this.interestWaterfallDisplayCommitted) {
+          this.applyInterestWaterfallUpdate(planWaterfallContinuation(finalized));
+        } else {
+          this.runNextInterestExplorationIfNeeded();
+        }
       }
       aiLogError('[AIPhone][WaterfallInterestRecallFailed] generation=' + generation.toString() +
         ' error=' + error.message.substring(0, 240));
@@ -2026,7 +2064,7 @@ struct Index {
     });
     this.logWaterfallInventory('exploration_refill_prepared', state,
       'sources=' + enabledSources.length.toString());
-    this.publishInterestWaterfallPayload();
+    if (this.interestWaterfallDisplayCommitted) this.publishInterestWaterfallPayload();
     const requests = planWaterfallInterestRecall(
       this.currentWaterfallPreferenceProfile(), this.recentPositiveWaterfallCandidates(),
       enabledSources, this.interestRecallRound++);
@@ -2172,6 +2210,16 @@ struct Index {
       this.interestRecallStarted = true;
       this.runInterestRecall();
     }
+  }
+
+  private commitInterestWaterfallDisplay(): void {
+    if (this.interestWaterfallDisplayCommitted) return;
+    this.interestWaterfallDisplayCommitted = true;
+    const state = this.interestWaterfallFeedState;
+    if (state === null || state.mode === 'search') return;
+    const committed = finalizeInterestWaterfallRecallRanking(state, Date.now(), true);
+    this.logWaterfallInventory('preload_display_committed', committed);
+    this.applyInterestWaterfallUpdate(planWaterfallContinuation(committed));
   }
 
   private applyWaterfallUpdate(document: HtmlHomeDocument, update: WaterfallFeedUpdate): void {
@@ -2455,6 +2503,7 @@ struct Index {
         return;
       }
       const update = advanceWaterfallFeed(state, Date.now(), targetId);
+      this.logWaterfallTailTakes(state, update.state);
       this.logWaterfallInventory('advance_applied', update.state,
         'loadRequests=' + update.loadRequests.length.toString());
       this.applyInterestWaterfallUpdate(update);
@@ -2841,6 +2890,7 @@ struct Index {
     this.readDebugBuildState();
     this.configureComposioRuntimeForCurrentUser();
     this.loadWaterfallPreferences();
+    this.ensureInterestWaterfall();
     this.loadFoodAddressBook();
     this.loadFoodFavorites();
     this.loadPublicPersona();
@@ -5030,6 +5080,7 @@ struct Index {
     this.waterfallConversationMessage = '';
     this.waterfallConversationBusy = false;
     this.interestWaterfallGeneration += 1;
+    this.interestWaterfallDisplayCommitted = false;
     this.interestRecallStarted = false;
     this.interestRecallRound = 0;
     this.interestExplorationSources = [];
@@ -5619,6 +5670,7 @@ struct Index {
         this.appendMessage('user', visibleText);
         if (this.showDeepSearch) this.closeDeepSearch();
         this.ensureInterestWaterfall(false);
+        this.commitInterestWaterfallDisplay();
         this.interestRecallStarted = true;
         this.startInterestWaterfallSearch(waterfallQuery);
         this.bimRootController.changeIndex(1, !this.bimReduceMotion);
@@ -10310,6 +10362,7 @@ struct Index {
         },
         onOpenWaterfall: (): void => {
           this.ensureInterestWaterfall();
+          this.commitInterestWaterfallDisplay();
           this.bimRootController.changeIndex(1, !this.bimReduceMotion);
         },
         onStartVoiceInput: () => {
@@ -10434,7 +10487,10 @@ struct Index {
       .curve(A2UI_MOTION_MOVE_CURVE)
       .onChange((index: number) => {
         this.bimRootIndex = index;
-        if (index === 1) this.ensureInterestWaterfall();
+        if (index === 1) {
+          this.ensureInterestWaterfall();
+          this.commitInterestWaterfallDisplay();
+        }
         else inputMethod.getController().hideTextInput().catch((_error: BusinessError): void => {});
       })
     }
