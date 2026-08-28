@@ -83,7 +83,8 @@ export function planWaterfallInterestRecall(
   _profile: WaterfallPreferenceSnapshot,
   _recentPositiveCandidates: WaterfallRankedCandidate[],
   enabledSources: string[],
-  queryGroup: number = 0
+  queryGroup: number = 0,
+  queryOffset: number = 0
 ): WaterfallInterestRecallRequest[] {
   const sources: string[] = [];
   enabledSources.forEach((source: string): void => {
@@ -91,6 +92,7 @@ export function planWaterfallInterestRecall(
   });
   if (sources.length === 0) return [];
   const normalizedGroup = Math.max(0, Math.floor(queryGroup)) % WATERFALL_INTEREST_QUERY_GROUP_COUNT;
+  const normalizedOffset = Math.max(0, Math.floor(queryOffset)) % WATERFALL_INTEREST_QUERY_GROUP_SIZE;
   const groupStart = normalizedGroup * WATERFALL_INTEREST_QUERY_GROUP_SIZE;
   let fallbackIndex = 0;
   return sources.map((source: string): WaterfallInterestRecallRequest => {
@@ -99,7 +101,7 @@ export function planWaterfallInterestRecall(
     }
     if (source === 'zhihu') {
       const query = WATERFALL_EXPLORATION_QUERIES[
-        groupStart + fallbackIndex++ % WATERFALL_INTEREST_QUERY_GROUP_SIZE
+        groupStart + (normalizedOffset + fallbackIndex++) % WATERFALL_INTEREST_QUERY_GROUP_SIZE
       ];
       return { route: 'popular', query, sources: [source], weight: 1, continuation: null };
     }
@@ -112,7 +114,9 @@ export function planWaterfallInterestRecall(
     // ponytail: ignore profile n-grams as search queries; they leak source names like 知乎
     const pool = usesChineseDiscoveryQuery(source) ?
       WATERFALL_EXPLORATION_QUERIES : WATERFALL_WESTERN_EXPLORATION_QUERIES;
-    const query = pool[groupStart + fallbackIndex++ % WATERFALL_INTEREST_QUERY_GROUP_SIZE];
+    const query = pool[
+      groupStart + (normalizedOffset + fallbackIndex++) % WATERFALL_INTEREST_QUERY_GROUP_SIZE
+    ];
     return { route: 'explore', query, sources: [source], weight: 1, continuation: null };
   });
 }

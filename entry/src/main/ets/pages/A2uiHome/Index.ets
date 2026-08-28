@@ -2176,7 +2176,7 @@ struct Index {
     if (this.interestWaterfallDisplayCommitted) this.publishInterestWaterfallPayload();
     const requests = planWaterfallInterestRecall(
       this.currentWaterfallPreferenceProfile(), this.recentPositiveWaterfallCandidates(),
-      enabledSources, this.interestDiscoveryQueryGroup);
+      enabledSources, this.interestDiscoveryQueryGroup, this.interestRecallRound);
     this.interestRecallRound += 1;
     this.runInterestRecallRequests(requests);
   }

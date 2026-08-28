@@ -1396,6 +1396,18 @@ export default function aggregateSearchClientTest() {
         .assertEqual('artificial intelligence,consumer technology,编程开发,科学科普');
     });
 
+    it('rotates automatic refills within the active four-keyword group', 0, () => {
+      const firstRound = planWaterfallInterestRecall(
+        emptyPreferenceProfile(), [], ['x', 'reddit', 'zhihu', 'bilibili'], 1, 0);
+      const secondRound = planWaterfallInterestRecall(
+        emptyPreferenceProfile(), [], ['x', 'reddit', 'zhihu', 'bilibili'], 1, 1);
+
+      expect(firstRound.map((request: WaterfallInterestRecallRequest): string => request.query).join(','))
+        .assertEqual('food and restaurants,home cooking,旅行攻略,城市生活');
+      expect(secondRound.map((request: WaterfallInterestRecallRequest): string => request.query).join(','))
+        .assertEqual('home cooking,travel guides,城市生活,美食餐饮');
+    });
+
     it('gives Zhihu discovery a search query so platform metrics stay available', 0, () => {
       const request = planWaterfallInterestRecall(emptyPreferenceProfile(), [], ['zhihu'])[0];
 

@@ -269,6 +269,10 @@ assert.match(waterfallJs, /track\.innerHTML = renderSourceConvergence\(refreshSo
   'full refresh must synchronously clear cards into the existing prepared convergence page');
 assert.match(waterfallJs, /Number\(payload\.feedRevision \|\| 0\) < expectedRefreshRevision/,
   'stale payloads must not repopulate cards after a full refresh');
+assert.match(waterfallJs, /payload\.mode === 'search'\) clearRefreshInFlight\(\);[\s\S]*?Number\(payload\.feedRevision \|\| 0\) < expectedRefreshRevision/,
+  'search payloads must leave the full-refresh gate before stale revision filtering');
+assert.match(waterfallJs, /function submitSearch\(\)[\s\S]*?clearRefreshInFlight\(\);[\s\S]*?waterfall\.search\.submit/,
+  'submitting a search must cancel the web refresh gate immediately');
 assert.match(waterfallCore, /function copyState[\s\S]*?feedRevision: state\.feedRevision \?\? 0/,
   'rank and merge updates must preserve the active full-refresh revision');
 assert.match(indexPage, /interestDiscoveryQueryGroup[\s\S]*?WATERFALL_INTEREST_QUERY_GROUP_COUNT/,

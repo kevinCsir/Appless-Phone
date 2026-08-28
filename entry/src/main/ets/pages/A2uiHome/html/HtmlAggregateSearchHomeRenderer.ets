@@ -1907,7 +1907,16 @@ const WATERFALL_JS: string = `
   var refreshPullTracking = false;
   var refreshInFlight = false;
   var expectedRefreshRevision = -1;
+  function clearRefreshInFlight() {
+    refreshInFlight = false;
+    expectedRefreshRevision = -1;
+    if (refreshIndicator) {
+      refreshIndicator.textContent = '刷新';
+      refreshIndicator.classList.remove('is-visible', 'is-ready');
+    }
+  }
   window.__aiphoneApplyWaterfallUpdate = function (payload) {
+    if (refreshInFlight && payload && payload.mode === 'search') clearRefreshInFlight();
     if (refreshInFlight && payload && Number(payload.feedRevision || 0) < expectedRefreshRevision) return;
     applyCardActionAcknowledgement(payload);
     syncSearchMode(payload);
@@ -1934,12 +1943,7 @@ const WATERFALL_JS: string = `
     pendingPayload = payload;
     if (refreshInFlight && payload && Array.isArray(payload.candidates) &&
       (payload.candidates.length > 0 || payload.replenishing !== true)) {
-      refreshInFlight = false;
-      expectedRefreshRevision = -1;
-      if (refreshIndicator) {
-        refreshIndicator.textContent = '刷新';
-        refreshIndicator.classList.remove('is-visible', 'is-ready');
-      }
+      clearRefreshInFlight();
     }
     if (mode === 'collection') {
       mergePayload(payload);
@@ -2715,6 +2719,7 @@ const WATERFALL_JS: string = `
     var query = text(searchInput.value).trim();
     if (!query || query.length > 160) return;
     searchQuery = query;
+    clearRefreshInFlight();
     searchSubmitted = true;
     searchPending = true;
     searchRestorePending = false;
