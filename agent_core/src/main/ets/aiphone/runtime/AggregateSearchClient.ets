@@ -771,12 +771,6 @@ function videoFromDynamic(source: AggregateSearchSource, result: DynamicGenericT
   };
 }
 
-export function bilibiliVideoPassesQuality(video: AggregateSearchVideo): boolean {
-  if (video.source !== 'bilibili') return true;
-  const views = metricNumber(aggregateRowText(video.rows, ['Views', 'View Count', 'Play']));
-  return views !== undefined && views > 1000;
-}
-
 function urlFromText(value: string): string {
   const urlStart = value.indexOf('http');
   return urlStart >= 0 ? value.substring(urlStart).split(' ')[0].trim() : '';
@@ -2012,7 +2006,7 @@ export function aggregateVideoSourceBatchFromDynamicResults(
       rawVideos.push(video);
     }
   });
-  const videos = rawVideos.filter((video: AggregateSearchVideo): boolean => bilibiliVideoPassesQuality(video));
+  const videos = rawVideos;
   const matching = mediaResults.filter((result: DynamicGenericToolResult): boolean => dynamicSource(result) === source);
   const rawStatus = videos.length > 0 ? 'success' : (matching.length > 0 ? matching[0].status : 'empty');
   let next: WaterfallContinuation | null = null;
@@ -2351,7 +2345,7 @@ async function aggregateTwitchSourceBatch(
   };
 }
 
-function aggregateSourceBatch(
+export function loadAggregateSourceBatch(
   source: AggregateSearchSource,
   query: string,
   youtubeApiKey: string,
@@ -2442,7 +2436,7 @@ export async function callAggregateSearchContinuation(
   youtubeApiKey: string,
   zhihuConfig: AggregateZhihuConfig,
   onBatch: AggregateSearchBatchObserver,
-  loadSource: AggregateSearchSourceLoader = aggregateSourceBatch
+  loadSource: AggregateSearchSourceLoader = loadAggregateSourceBatch
 ): Promise<void> {
   return callAggregateSearchContinuationForContext(
     'search', query, requests, youtubeApiKey, zhihuConfig, onBatch, loadSource
@@ -2456,7 +2450,7 @@ export async function callAggregateSearchContinuationForContext(
   youtubeApiKey: string,
   zhihuConfig: AggregateZhihuConfig,
   onBatch: AggregateSearchBatchObserver,
-  loadSource: AggregateSearchSourceLoader = aggregateSourceBatch
+  loadSource: AggregateSearchSourceLoader = loadAggregateSourceBatch
 ): Promise<void> {
   const availableSources = aggregateSearchSourceIdsForContext(context);
   const availableRequests = requests.filter((request: WaterfallLoadRequest): boolean => {
@@ -2525,7 +2519,7 @@ export async function callAggregateSearch(
   const preferenceDescription = args === null ? '' : textOf((args as AggregateArgRecord).preferenceDescription).trim();
   const tasks: Promise<AggregateSearchSourceBatch>[] = [];
   sources.forEach((source: AggregateSearchSource): void => {
-    tasks.push(aggregateSourceBatch(source, query, youtubeApiKey, zhihuConfig, null, 10, policy));
+    tasks.push(loadAggregateSourceBatch(source, query, youtubeApiKey, zhihuConfig, null, 10, policy));
   });
   const observer: AggregateSearchPartialObserver = onPartial === null ? (() => {}) : onPartial;
   return streamAggregateSearchSourceBatches(query, sources, tasks, observer, nowMs, preferenceDescription);

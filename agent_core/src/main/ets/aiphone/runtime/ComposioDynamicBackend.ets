@@ -2048,6 +2048,27 @@ export function currentComposioConfig(): ComposioConfig {
   return configForCurrentUser();
 }
 
+interface ComposioWorkerConfigSnapshot {
+  apiKey: string;
+  baseUrl: string;
+  userId: string;
+  proxyBaseUrl: string;
+  proxyApiKey: string;
+}
+
+/** Same-application ThreadWorker bootstrap payload. Never write this value to logs. */
+export function composioConfigSnapshotJsonForWorker(): string {
+  const config = configForCurrentUser();
+  const snapshot: ComposioWorkerConfigSnapshot = {
+    apiKey: config.apiKey,
+    baseUrl: config.baseUrl,
+    userId: config.userId,
+    proxyBaseUrl: config.proxyBaseUrl,
+    proxyApiKey: config.proxyApiKey
+  };
+  return JSON.stringify(snapshot);
+}
+
 export function isComposioConfigured(): boolean {
   return composioConfig.isConfigured();
 }
