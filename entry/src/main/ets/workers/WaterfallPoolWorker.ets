@@ -24,6 +24,7 @@ interface WaterfallPoolWorkerCommand {
   topic?: WaterfallColdStartTopic;
   profile?: WaterfallPreferenceSnapshot;
   enabledSources?: string[];
+  enabledAdapterIds?: string[];
   limit?: number;
   initialTopicCount?: number;
   topicIntervalMs?: number;
@@ -189,6 +190,10 @@ workerPort.onmessage = (event: MessageEvents): void => {
   }
   if (command.type === 'supply') {
     void supplyRuntime().catch((_error: Error): void => {});
+    return;
+  }
+  if (command.type === 'set_enabled_adapters') {
+    requirePool().setEnabledAdapters(command.enabledAdapterIds ?? []);
     return;
   }
   if (command.type === 'take_or_wait') {

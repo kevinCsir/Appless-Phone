@@ -15590,6 +15590,45 @@ export function localProviderConfigSnapshotJsonForWorker(): string {
 
 export type ConfiguredWaterfallSourceAdapters = WaterfallSourceAdapterRegistry;
 
+export interface WaterfallPlatformAdapterBinding {
+  platformId: AggregateSearchSource;
+  adapterIds: string[];
+}
+
+const WATERFALL_PLATFORM_ADAPTER_BINDINGS: WaterfallPlatformAdapterBinding[] = [
+  { platformId: 'youtube', adapterIds: ['youtube.search', 'youtube.most_popular'] },
+  { platformId: 'bilibili', adapterIds: ['bilibili.search'] },
+  { platformId: 'x', adapterIds: ['x.search'] },
+  { platformId: 'hackernews', adapterIds: ['hackernews.search'] },
+  { platformId: 'reddit', adapterIds: ['reddit.search'] },
+  { platformId: 'zhihu', adapterIds: ['zhihu.search', 'zhihu.hot_list'] },
+  { platformId: 'applepodcasts', adapterIds: ['applepodcasts.search'] },
+  { platformId: 'twitch', adapterIds: ['twitch.search', 'twitch.live_discovery'] },
+  { platformId: 'github', adapterIds: ['github.search', 'github.public_discovery'] },
+  { platformId: 'globalnews', adapterIds: ['globalnews.search', 'globalnews.latest'] },
+  { platformId: 'steam', adapterIds: ['steam.news'] },
+  { platformId: 'cnnews', adapterIds: ['cnnews.latest'] }
+];
+
+export function waterfallPlatformAdapterBindings(): WaterfallPlatformAdapterBinding[] {
+  return WATERFALL_PLATFORM_ADAPTER_BINDINGS.map(
+    (binding: WaterfallPlatformAdapterBinding): WaterfallPlatformAdapterBinding => ({
+      platformId: binding.platformId,
+      adapterIds: binding.adapterIds.slice()
+    }));
+}
+
+export function waterfallAdapterIdsForPlatforms(platformIds: string[]): string[] {
+  const adapterIds: string[] = [];
+  WATERFALL_PLATFORM_ADAPTER_BINDINGS.forEach((binding: WaterfallPlatformAdapterBinding): void => {
+    if (platformIds.indexOf(binding.platformId) < 0) return;
+    binding.adapterIds.forEach((adapterId: string): void => {
+      if (adapterIds.indexOf(adapterId) < 0) adapterIds.push(adapterId);
+    });
+  });
+  return adapterIds;
+}
+
 const WATERFALL_SCHEDULED_LIMIT: number = 10;
 const WATERFALL_FAST_REFRESH_MS: number = 5 * 60 * 1000;
 const WATERFALL_STANDARD_REFRESH_MS: number = 15 * 60 * 1000;

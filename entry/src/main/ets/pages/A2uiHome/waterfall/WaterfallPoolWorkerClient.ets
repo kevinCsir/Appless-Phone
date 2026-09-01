@@ -16,6 +16,7 @@ interface WaterfallPoolWorkerCommand {
   topic?: WaterfallColdStartTopic;
   profile?: WaterfallPreferenceSnapshot;
   enabledSources?: string[];
+  enabledAdapterIds?: string[];
   limit?: number;
   initialTopicCount?: number;
   topicIntervalMs?: number;
@@ -92,6 +93,10 @@ export class WaterfallPoolWorkerClient {
 
   supply(): void {
     this.post({ type: 'supply' });
+  }
+
+  setEnabledAdapters(enabledAdapterIds: string[]): void {
+    this.post({ type: 'set_enabled_adapters', enabledAdapterIds: enabledAdapterIds.slice() });
   }
 
   takeOrWait(

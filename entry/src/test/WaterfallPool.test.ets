@@ -1,5 +1,6 @@
 import { describe, expect, it } from '@ohos/hypium';
 import {
+  AggregateSearchPost,
   AggregateSearchSourceBatch,
   AggregateWaterfallDiscoveryAdapter,
   AggregateWaterfallSearchAdapter,
@@ -14,6 +15,7 @@ import {
   WaterfallSourceAdapterRegistry,
   WaterfallSourceDiscoveryRequest,
   WaterfallSourcePage,
+  WaterfallSourcePoolEntry,
   WaterfallSourceSubscription
 } from '@loop/agent-core';
 
@@ -32,6 +34,14 @@ function poolTestCandidate(id: string, source: 'youtube' | 'bilibili' = 'youtube
   };
 }
 
+function requiredFirstPoolEntry(pool: WaterfallPool, sourceId: string): WaterfallSourcePoolEntry {
+  const container = pool.containerFor(sourceId);
+  if (container === null) throw new Error('Missing pool container: ' + sourceId);
+  const entry = container.entries()[0];
+  if (entry === undefined) throw new Error('Missing pool entry: ' + sourceId);
+  return entry;
+}
+
 function poolTestBatch(
   source: 'youtube' | 'bilibili',
   ids: string[],
@@ -40,7 +50,7 @@ function poolTestBatch(
   return {
     source,
     videos: [],
-    posts: ids.map((id: string) => ({
+    posts: ids.map((id: string): AggregateSearchPost => ({
       id,
       source,
       provider: 'test',
@@ -156,7 +166,35 @@ export default function waterfallPoolTest() {
       expect(result.results.length).assertEqual(2);
       expect(pool.containerFor('youtube')?.size).assertEqual(1);
       expect(pool.containerFor('bilibili')?.size).assertEqual(1);
-      expect(pool.containerFor('youtube')?.entries()[0].keywords.indexOf('人工智能') >= 0).assertTrue();
+      expect(requiredFirstPoolEntry(pool, 'youtube').keywords.indexOf('人工智能') >= 0).assertTrue();
+    });
+
+    it('keeps disabled adapter data while skipping new requests and pool output', 0, async () => {
+      let calls = 0;
+      const search = new AggregateWaterfallSearchAdapter(
+        'youtube.search_test', 'youtube', 'cursor',
+        (query, _continuation, _limit) => {
+          calls++;
+          return Promise.resolve(poolTestBatch('youtube', [query]));
+        }
+      );
+      const pool = new WaterfallPool({
+        search: [search], discovery: [], scheduledDiscovery: []
+      });
+      const profile: WaterfallPreferenceSnapshot = {
+        topicWeights: [], sourceWeights: [], formatWeights: [], explicitRules: []
+      };
+      await pool.supplement('cached');
+
+      expect(pool.setAdapterEnabled('youtube.search_test', false)).assertTrue();
+      expect((await pool.supplement('disabled')).results.length).assertEqual(0);
+      expect(calls).assertEqual(1);
+      expect(pool.containerFor('youtube')?.size).assertEqual(1);
+      expect(pool.takeUpToForProfile(profile, ['youtube'], 1).length).assertEqual(0);
+
+      pool.setAdapterEnabled('youtube.search_test', true);
+      expect(pool.takeUpToForProfile(profile, ['youtube'], 1).length).assertEqual(1);
+      expect(pool.containerFor('youtube')?.size).assertEqual(0);
     });
 
     it('selects one language variant per adapter for a bilingual topic', 0, async () => {
@@ -379,6 +417,31 @@ export default function waterfallPoolTest() {
       expect(result[0].reachedWatermark).assertTrue();
     });
 
+    it('does not request from a disabled pull discovery adapter', 0, async () => {
+      let calls = 0;
+      const discovery = new AggregateWaterfallDiscoveryAdapter(
+        'youtube.discovery_test', 'youtube', 'cursor',
+        (_query, _continuation, _limit) => {
+          calls++;
+          return Promise.resolve(poolTestBatch('youtube', ['one']));
+        }
+      );
+      const pool = new WaterfallPool(
+        { search: [], discovery: [discovery], scheduledDiscovery: [] },
+        { requestLimit: 1, discoveryWatermark: 1 }
+      );
+
+      pool.setAdapterEnabled(discovery.adapterId, false);
+      await pool.refillDiscoveries();
+      expect(calls).assertEqual(0);
+      expect(pool.containerFor('youtube')?.size).assertEqual(0);
+
+      pool.setAdapterEnabled(discovery.adapterId, true);
+      await pool.refillDiscoveries();
+      expect(calls).assertEqual(1);
+      expect(pool.containerFor('youtube')?.size).assertEqual(1);
+    });
+
     it('accepts scheduled snapshots only while the pool is started', 0, async () => {
       const scheduled = new PoolTestScheduledAdapter();
       const pool = new WaterfallPool({
@@ -391,7 +454,24 @@ export default function waterfallPoolTest() {
       scheduled.publish('after-stop');
 
       expect(pool.containerFor('youtube')?.size).assertEqual(1);
-      expect(pool.containerFor('youtube')?.entries()[0].candidate.id).assertEqual('first');
+      expect(requiredFirstPoolEntry(pool, 'youtube').candidate.id).assertEqual('first');
+    });
+
+    it('unsubscribes and restores a scheduled adapter when its switch changes', 0, async () => {
+      const scheduled = new PoolTestScheduledAdapter();
+      const pool = new WaterfallPool({
+        search: [], discovery: [], scheduledDiscovery: [scheduled]
+      });
+      await pool.start();
+
+      pool.setAdapterEnabled(scheduled.adapterId, false);
+      scheduled.publish('disabled');
+      expect(pool.containerFor('youtube')?.size).assertEqual(0);
+
+      pool.setAdapterEnabled(scheduled.adapterId, true);
+      scheduled.publish('enabled');
+      expect(pool.containerFor('youtube')?.size).assertEqual(1);
+      expect(requiredFirstPoolEntry(pool, 'youtube').candidate.id).assertEqual('enabled');
     });
 
     it('can refresh scheduled sources manually without waiting for their timer', 0, async () => {
@@ -403,7 +483,7 @@ export default function waterfallPoolTest() {
       const results = await pool.refreshScheduledDiscoveries();
 
       expect(results.length).assertEqual(1);
-      expect(pool.containerFor('youtube')?.entries()[0].candidate.id).assertEqual('manual');
+      expect(requiredFirstPoolEntry(pool, 'youtube').candidate.id).assertEqual('manual');
       expect(pool.isStarted).assertFalse();
     });
 

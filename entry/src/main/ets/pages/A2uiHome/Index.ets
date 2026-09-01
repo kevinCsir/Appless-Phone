@@ -69,7 +69,9 @@ import {
   WATERFALL_MAX_CONSECUTIVE_EMPTY_BATCHES,
   WATERFALL_TARGET_INVENTORY,
   waterfallCommentSourceSupported,
+  waterfallAdapterIdsForPlatforms,
   waterfallExpansionPrompt,
+  waterfallInterestSourceAllowedForRuntime,
   waterfallSearchPolicyForRuntime
 } from '@loop/agent-core';
 
@@ -2004,8 +2006,21 @@ struct Index {
       this.waterfallPoolWorkerClient = new WaterfallPoolWorkerClient(
         localProviderConfigSnapshotJsonForWorker(), composioConfigSnapshotJsonForWorker(),
         waterfallSearchPolicyForRuntime());
+      this.waterfallPoolWorkerClient.setEnabledAdapters(this.currentWaterfallPoolAdapterIds());
     }
     return this.waterfallPoolWorkerClient;
+  }
+
+  private currentWaterfallPoolAdapterIds(platforms?: string[]): string[] {
+    const selectedPlatforms = platforms ?? this.waterfallPreferenceProfile.discoveryEnabledSources;
+    const enabledPlatforms = selectedPlatforms.filter((platformId: string): boolean =>
+      waterfallInterestSourceAllowedForRuntime(platformId));
+    return waterfallAdapterIdsForPlatforms(enabledPlatforms);
+  }
+
+  private syncWaterfallPoolAdapterSelection(platforms?: string[]): void {
+    if (this.waterfallPoolWorkerClient === null) return;
+    this.waterfallPoolWorkerClient.setEnabledAdapters(this.currentWaterfallPoolAdapterIds(platforms));
   }
 
   private startWaterfallPoolRuntime(): void {
@@ -2920,6 +2935,7 @@ struct Index {
       this.waterfallPreferenceProfile = this.waterfallPreferencesStore().saveDiscoveryEnabledSources(
         interestEnabledSources);
       configureWaterfallEnabledSourcesForRuntime(interestEnabledSources as AggregateSearchSource[]);
+      this.syncWaterfallPoolAdapterSelection(interestEnabledSources);
       const update = applyWaterfallSourceSelection(state, interestEnabledSources, Date.now());
       const plannedSources = update.loadRequests.map((request: WaterfallLoadRequest): string => request.source);
       const recallSources = addedSources.filter((source: string): boolean => plannedSources.indexOf(source) < 0);
@@ -4271,6 +4287,7 @@ struct Index {
 
   private saveAggregateSearchPolicy(): void {
     this.syncAggregateSearchRuntimePolicy();
+    this.syncWaterfallPoolAdapterSelection();
     const store = this.aggregateSearchPolicyPreferences();
     if (store === null) {
       return;

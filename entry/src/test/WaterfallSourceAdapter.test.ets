@@ -5,7 +5,9 @@ import {
   ScheduledAggregateWaterfallDiscoveryAdapter,
   WaterfallContinuation,
   WaterfallSourcePage,
-  configuredWaterfallSourceAdapters
+  configuredWaterfallSourceAdapters,
+  waterfallAdapterIdsForPlatforms,
+  waterfallPlatformAdapterBindings
 } from '@loop/agent-core';
 
 function adapterBatch(id: string, continuation: WaterfallContinuation | null): AggregateSearchSourceBatch {
@@ -99,6 +101,33 @@ export default function waterfallSourceAdapterTest() {
       expect(scheduledIds.indexOf('zhihu.hot_list') >= 0).assertTrue();
       expect(scheduledIds.indexOf('steam.news') >= 0).assertTrue();
       expect(scheduledIds.indexOf('globalnews.latest') >= 0).assertTrue();
+    });
+
+    it('maps one platform switch to all of its registered adapters', 0, () => {
+      const youtube = waterfallAdapterIdsForPlatforms(['youtube']);
+      const zhihu = waterfallAdapterIdsForPlatforms(['zhihu']);
+      const registered = configuredWaterfallSourceAdapters();
+      const registeredIds: string[] = [];
+      registered.search.forEach((adapter): void => {
+        registeredIds.push(adapter.adapterId);
+      });
+      registered.discovery.forEach((adapter): void => {
+        registeredIds.push(adapter.adapterId);
+      });
+      registered.scheduledDiscovery.forEach((adapter): void => {
+        registeredIds.push(adapter.adapterId);
+      });
+      const mappedIds: string[] = [];
+      waterfallPlatformAdapterBindings().forEach((binding): void => {
+        binding.adapterIds.forEach((adapterId: string): void => {
+          if (mappedIds.indexOf(adapterId) < 0) mappedIds.push(adapterId);
+        });
+      });
+
+      expect(youtube.join(',')).assertEqual('youtube.search,youtube.most_popular');
+      expect(zhihu.join(',')).assertEqual('zhihu.search,zhihu.hot_list');
+      expect(mappedIds.length).assertEqual(registeredIds.length);
+      expect(registeredIds.every((adapterId: string): boolean => mappedIds.indexOf(adapterId) >= 0)).assertTrue();
     });
   });
 }
