@@ -2,7 +2,8 @@ import { describe, expect, it } from '@ohos/hypium';
 import {
   WaterfallCandidate,
   WaterfallPreferenceSnapshot,
-  WaterfallSourcePoolContainer
+  WaterfallSourcePoolContainer,
+  WaterfallSourcePoolEntry
 } from '@loop/agent-core';
 
 function poolCandidate(id: string, source: string = 'youtube', title: string = ''): WaterfallCandidate {
@@ -75,6 +76,22 @@ export default function waterfallSourcePoolContainerTest() {
       expect(result.evicted[0].candidate.id).assertEqual('one');
       expect(entries[0].candidate.id).assertEqual('two');
       expect(entries[1].candidate.id).assertEqual('three');
+    });
+
+    it('expands capacity without moving or evicting existing entries', 0, () => {
+      const container = new WaterfallSourcePoolContainer('youtube', 2);
+      container.putOne(poolCandidate('one'), { insertedAt: 100 });
+      container.putOne(poolCandidate('two'), { insertedAt: 200 });
+
+      expect(container.expandCapacity(4)).assertTrue();
+      expect(container.capacity).assertEqual(4);
+      expect(container.entries().map((entry: WaterfallSourcePoolEntry): string =>
+        entry.candidate.id).join(',')).assertEqual('one,two');
+      container.putOne(poolCandidate('three'), { insertedAt: 300 });
+      container.putOne(poolCandidate('four'), { insertedAt: 400 });
+      expect(container.size).assertEqual(4);
+      expect(container.expandCapacity(3)).assertFalse();
+      expect(container.capacity).assertEqual(4);
     });
 
     it('selects the strongest title match even when a newer item does not match', 0, () => {

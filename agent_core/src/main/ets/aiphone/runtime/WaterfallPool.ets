@@ -25,6 +25,7 @@ import {
   WaterfallSourcePoolInsertResult,
   WaterfallSourcePoolTakeProfileResult
 } from './WaterfallSourcePoolContainer';
+import { filterWaterfallPoolCandidates, WaterfallPoolQualityFilterResult } from './WaterfallPoolQualityPolicy';
 
 export const DEFAULT_WATERFALL_POOL_REQUEST_LIMIT: number = 10;
 export const DEFAULT_WATERFALL_POOL_DISCOVERY_WATERMARK: number = 50;
@@ -252,9 +253,9 @@ class DefaultWaterfallPoolAvailabilityWait implements WaterfallPoolAvailabilityW
  * while every adapter with the same sourceId writes into one shared container.
  */
 export class WaterfallPool {
-  readonly sourceCapacity: number;
+  sourceCapacity: number;
   readonly requestLimit: number;
-  readonly discoveryWatermark: number;
+  discoveryWatermark: number;
   readonly defaultQueryLanguage: WaterfallQueryLanguage;
   private readonly searchAdaptersById: Map<string, WaterfallSearchAdapter> =
     new Map<string, WaterfallSearchAdapter>();
@@ -357,6 +358,20 @@ export class WaterfallPool {
     return this.containersBySource.get(sourceId) ?? null;
   }
 
+  expandSourceCapacity(capacity: number, discoveryWatermark: number): boolean {
+    const nextCapacity = Math.max(this.sourceCapacity,
+      normalizedPositive(capacity, this.sourceCapacity));
+    const nextWatermark = Math.max(this.discoveryWatermark, Math.min(nextCapacity,
+      normalizedPositive(discoveryWatermark, this.discoveryWatermark)));
+    if (nextCapacity === this.sourceCapacity && nextWatermark === this.discoveryWatermark) return false;
+    this.sourceCapacity = nextCapacity;
+    this.discoveryWatermark = nextWatermark;
+    this.containersBySource.forEach((container: WaterfallSourcePoolContainer): void => {
+      container.expandCapacity(nextCapacity);
+    });
+    return true;
+  }
+
   accept(
     page: WaterfallSourcePage,
     keyword: string = '',
@@ -366,9 +381,13 @@ export class WaterfallPool {
     if (container === undefined) {
       return { page, insert: emptyInsertResult(page.items.length) };
     }
+    const quality: WaterfallPoolQualityFilterResult =
+      filterWaterfallPoolCandidates(page.adapterId, page.items);
+    const insert = container.put(quality.items, { keyword, insertedAt: page.fetchedAt });
+    insert.rejected += quality.rejected;
     const accepted: WaterfallPoolAcceptedPage = {
       page,
-      insert: container.put(page.items, { keyword, insertedAt: page.fetchedAt })
+      insert
     };
     if (this.observer !== null) {
       try {

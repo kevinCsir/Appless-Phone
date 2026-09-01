@@ -50,6 +50,11 @@ let started: boolean = false;
 let coldStartIndex: number = 0;
 let coldStartTimerId: number = -1;
 let supplyInFlight: boolean = false;
+let activated: boolean = false;
+
+const COLD_SOURCE_CAPACITY: number = 20;
+const ACTIVE_SOURCE_CAPACITY: number = 200;
+const ACTIVE_DISCOVERY_WATERMARK: number = 50;
 
 function errorMessage(error: Error | Object | string): string {
   return error instanceof Error ? error.message : (typeof error === 'string' ? error : 'unknown pool error');
@@ -98,6 +103,14 @@ async function supplyRuntime(): Promise<void> {
   } finally {
     supplyInFlight = false;
   }
+}
+
+function activateRuntime(): void {
+  if (activated) return;
+  activated = true;
+  requirePool().expandSourceCapacity(ACTIVE_SOURCE_CAPACITY, ACTIVE_DISCOVERY_WATERMARK);
+  enqueueNextTopic();
+  void supplyRuntime().catch((_error: Error): void => {});
 }
 
 function postTakeResult(
@@ -168,6 +181,8 @@ workerPort.onmessage = (event: MessageEvents): void => {
       multilingual: true
     });
     pool = new WaterfallPool(configuredWaterfallSourceAdapters(), {
+      sourceCapacity: COLD_SOURCE_CAPACITY,
+      discoveryWatermark: COLD_SOURCE_CAPACITY,
       observer: (accepted: WaterfallPoolAcceptedEvent): void => {
         aiLogInfo('[AIPhone][WaterfallPoolWorkerLevel] source=' + accepted.accepted.page.sourceId +
           ' adapter=' + accepted.accepted.page.adapterId +
@@ -190,6 +205,10 @@ workerPort.onmessage = (event: MessageEvents): void => {
   }
   if (command.type === 'supply') {
     void supplyRuntime().catch((_error: Error): void => {});
+    return;
+  }
+  if (command.type === 'activate') {
+    activateRuntime();
     return;
   }
   if (command.type === 'set_enabled_adapters') {

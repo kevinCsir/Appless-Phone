@@ -153,18 +153,29 @@ function scoreOutranks(
  */
 export class WaterfallSourcePoolContainer {
   readonly sourceId: string;
-  readonly capacity: number;
+  private capacityValue: number;
   private readonly orderedEntries: WaterfallSourcePoolEntry[] = [];
   private readonly entriesByKey: Map<string, WaterfallSourcePoolEntry> =
     new Map<string, WaterfallSourcePoolEntry>();
 
   constructor(sourceId: string, capacity: number = DEFAULT_WATERFALL_SOURCE_POOL_CAPACITY) {
     this.sourceId = sourceId.trim();
-    this.capacity = normalizedCapacity(capacity);
+    this.capacityValue = normalizedCapacity(capacity);
+  }
+
+  get capacity(): number {
+    return this.capacityValue;
   }
 
   get size(): number {
     return this.orderedEntries.length;
+  }
+
+  expandCapacity(capacity: number): boolean {
+    const next = normalizedCapacity(capacity);
+    if (next <= this.capacityValue) return false;
+    this.capacityValue = next;
+    return true;
   }
 
   putOne(

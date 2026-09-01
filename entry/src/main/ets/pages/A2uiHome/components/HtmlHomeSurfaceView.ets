@@ -58,6 +58,10 @@ class HtmlHomeActionBridge {
         aiLogInfo('[AIPhone][RideMapRoute] ' + JSON.stringify(action.args));
         return;
       }
+      if (action.id === 'waterfall.feed.trace') {
+        aiLogInfo('[AIPhone][WaterfallSlideToDomWeb] ' + JSON.stringify(action.args));
+        return;
+      }
       if (action.id === 'luckin.pay.open' ||
         action.id === 'luckin.demo.alipay.open' ||
         action.id === 'luckin.demo.googlepay.open' ||

@@ -71,6 +71,7 @@ import waterfallShareServiceTest from './WaterfallShareService.test';
 import waterfallSourceAdapterTest from './WaterfallSourceAdapter.test';
 import waterfallSourcePoolContainerTest from './WaterfallSourcePoolContainer.test';
 import waterfallPoolTest from './WaterfallPool.test';
+import waterfallPoolQualityPolicyTest from './WaterfallPoolQualityPolicy.test';
 import waterfallColdStartKeywordsTest from './WaterfallColdStartKeywords.test';
 import aggregateSearchPolicyTest from './AggregateSearchPolicy.test';
 import paymentCoreTest from './PaymentCore.test';
@@ -222,6 +223,7 @@ export default function testsuite() {
   waterfallSourceAdapterTest();
   waterfallSourcePoolContainerTest();
   waterfallPoolTest();
+  waterfallPoolQualityPolicyTest();
   waterfallColdStartKeywordsTest();
   aggregateSearchPolicyTest();
   paymentCoreTest();

@@ -395,6 +395,7 @@ import {
   renderAggregateSearchHomeDocument,
   waterfallApplePodcastCandidateFromAction,
   waterfallAdvanceCurrentFromAction,
+  waterfallAdvanceTraceFromAction,
   waterfallAdvanceVisibleFromAction,
   waterfallBehaviorFromAction,
   waterfallCardActionFromAction,
@@ -1238,6 +1239,7 @@ struct Index {
   private interestWaterfallGeneration: number = 0;
   private waterfallPoolWorkerClient: WaterfallPoolWorkerClient | null = null;
   private waterfallPoolStarted: boolean = false;
+  private waterfallPoolActivated: boolean = false;
   private interestPoolAvailabilityWait: WaterfallPoolWorkerTake | null = null;
   private interestPoolRequestedSources: string[] = [];
   private interestRefreshPreloadTail: WaterfallRankedCandidate[] = [];
@@ -2067,6 +2069,13 @@ struct Index {
     this.ensureWaterfallPoolRuntime().supply();
   }
 
+  private activateWaterfallPoolRuntime(): void {
+    if (this.waterfallPoolActivated) return;
+    this.waterfallPoolActivated = true;
+    this.startWaterfallPoolRuntime();
+    this.ensureWaterfallPoolRuntime().activate();
+  }
+
   private cancelInterestPoolRefill(): void {
     const wait = this.interestPoolAvailabilityWait;
     const requestedSources = this.interestPoolRequestedSources.slice();
@@ -2740,7 +2749,7 @@ struct Index {
     }
     if (startRecall && !this.interestRecallStarted) {
       this.interestRecallStarted = true;
-      this.startWaterfallPoolRuntime();
+      this.activateWaterfallPoolRuntime();
       this.runInterestRecall();
     }
   }
@@ -2748,6 +2757,7 @@ struct Index {
   private commitInterestWaterfallDisplay(): void {
     if (this.interestWaterfallDisplayCommitted) return;
     this.interestWaterfallDisplayCommitted = true;
+    this.activateWaterfallPoolRuntime();
     const state = this.interestWaterfallFeedState;
     if (state === null || state.mode === 'search') return;
     const generation = this.interestWaterfallGeneration;
@@ -3054,6 +3064,8 @@ struct Index {
       return;
     }
     if (action.id === 'waterfall.feed.advance') {
+      const trace = waterfallAdvanceTraceFromAction(action, surfaceId);
+      const nativeReceivedAtMs = Date.now();
       const currentId = waterfallAdvanceCurrentFromAction(action, surfaceId);
       const visibleId = waterfallAdvanceVisibleFromAction(action, surfaceId);
       this.logWaterfallInventory('advance_received', state,
@@ -3068,10 +3080,21 @@ struct Index {
         return;
       }
       const update = advanceWaterfallFeed(state, Date.now(), targetId);
+      const stateAppliedAtMs = Date.now();
       this.logWaterfallTailTakes(state, update.state);
       this.logWaterfallInventory('advance_applied', update.state,
         'loadRequests=' + update.loadRequests.length.toString());
       this.applyInterestWaterfallUpdate(update);
+      const payloadPublishedAtMs = Date.now();
+      if (trace !== null) {
+        aiLogInfo('[AIPhone][WaterfallSlideToDomNative] traceId=' + trace.traceId +
+          ' webToNativeMs=' + Math.max(0, nativeReceivedAtMs - trace.webDispatchedAtMs).toString() +
+          ' stateApplyMs=' + Math.max(0, stateAppliedAtMs - nativeReceivedAtMs).toString() +
+          ' payloadPublishMs=' + Math.max(0, payloadPublishedAtMs - stateAppliedAtMs).toString() +
+          ' webDetectedToPayloadMs=' + Math.max(0, payloadPublishedAtMs - trace.webDetectedAtMs).toString() +
+          ' tailBefore=' + state.tail.length.toString() + ' tailAfter=' + update.state.tail.length.toString() +
+          ' targetId=' + targetId);
+      }
     }
   }
 
@@ -3458,7 +3481,8 @@ struct Index {
     this.readDebugBuildState();
     this.configureComposioRuntimeForCurrentUser();
     this.loadWaterfallPreferences();
-    this.ensureInterestWaterfall();
+    this.startWaterfallPoolRuntime();
+    this.ensureInterestWaterfall(false);
     this.loadFoodAddressBook();
     this.loadFoodFavorites();
     this.loadPublicPersona();
@@ -3486,6 +3510,7 @@ struct Index {
     if (this.waterfallPoolWorkerClient !== null) this.waterfallPoolWorkerClient.dispose();
     this.waterfallPoolWorkerClient = null;
     this.waterfallPoolStarted = false;
+    this.waterfallPoolActivated = false;
     this.interestWaterfallRankingRevision += 1;
     this.interestRefreshPreloadRankingRevision += 1;
     this.waterfallRankingWorkerClient.dispose();

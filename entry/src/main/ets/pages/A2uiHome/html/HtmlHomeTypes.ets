@@ -142,6 +142,8 @@ export interface WaterfallHomePatchUpdate {
   feedRevision: number;
   currentId: string;
   stableIds: string[];
+  appendRenderedCandidateIds: string[];
+  updateRenderedCandidateIds: string[];
   candidateIds?: string[];
   upsertCandidates: WaterfallRankedCandidate[];
   removedCandidateIds: string[];

@@ -249,7 +249,13 @@ function postMetrics(post: AggregateSearchPost): WaterfallMetric[] {
     addMetric(metrics, 'favorite', recordText(publicMetrics, ['bookmark_count']));
     return metrics;
   }
-  addMetric(metrics, post.source === 'zhihu' ? 'like' : 'score', post.score);
+  if (post.source === 'zhihu') {
+    addMetric(metrics, 'like', aggregateRowText(post.rows, ['Vote Up Count']));
+  } else if (post.source === 'twitch') {
+    addMetric(metrics, 'viewer', aggregateRowText(post.rows, ['Viewers']));
+  } else {
+    addMetric(metrics, 'score', post.score);
+  }
   addMetric(metrics, 'comment', post.commentCount);
   return metrics;
 }
@@ -1569,7 +1575,9 @@ function zhihuPostFromItem(item: Object, index: number): AggregateSearchPost {
   const text = plainPostText(recordText(record, ['ContentText', 'contentText', 'content_text', 'Snippet', 'snippet', 'Summary', 'summary', 'Abstract', 'abstract', 'Description', 'description']));
   const url = recordText(record, ['Url', 'url', 'URI', 'uri', 'Link', 'link']);
   const author = recordText(record, ['AuthorName', 'authorName', 'author', 'Source', 'source', 'Site', 'site']);
-  const score = recordText(record, ['VoteUpCount', 'voteUpCount', 'Score', 'score', 'Relevance', 'relevance']);
+  const voteUpCount = recordText(record, ['VoteUpCount', 'voteUpCount']);
+  const score = voteUpCount.length > 0 ? voteUpCount :
+    recordText(record, ['Score', 'score', 'Relevance', 'relevance']);
   const commentCount = recordText(record, ['CommentCount', 'commentCount', 'comments_count', 'num_comments']);
   const contentId = recordText(record, ['ContentID', 'contentID', 'id']);
   const rows: AggregateSearchRowData[] = [
@@ -1580,6 +1588,7 @@ function zhihuPostFromItem(item: Object, index: number): AggregateSearchPost {
     { label: 'score', value: score },
     { label: 'comments', value: commentCount }
   ];
+  if (voteUpCount.length > 0) rows.push({ label: 'Vote Up Count', value: voteUpCount });
   if (contentId.length > 0) {
     rows.push({ label: 'Content ID', value: contentId });
   }
@@ -2272,7 +2281,7 @@ function twitchPost(item: TwitchChannelSearchItem): AggregateSearchPost {
   }
   rows.push({ label: 'Live', value: item.isLive ? 'true' : 'false' });
   rows.push({ label: 'Kind', value: item.kind });
-  rows.push({ label: 'Viewers', value: item.viewerCount.toString() });
+  if (item.kind !== 'search') rows.push({ label: 'Viewers', value: item.viewerCount.toString() });
   if (item.gameName.length > 0) {
     rows.push({ label: 'Game', value: item.gameName });
   }

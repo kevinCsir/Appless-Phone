@@ -34,6 +34,12 @@ function poolTestCandidate(id: string, source: 'youtube' | 'bilibili' = 'youtube
   };
 }
 
+function poolTestCandidateWithViews(id: string, views: number): WaterfallCandidate {
+  const candidate = poolTestCandidate(id, 'bilibili');
+  candidate.metrics = [{ kind: 'view', value: views }];
+  return candidate;
+}
+
 function requiredFirstPoolEntry(pool: WaterfallPool, sourceId: string): WaterfallSourcePoolEntry {
   const container = pool.containerFor(sourceId);
   if (container === null) throw new Error('Missing pool container: ' + sourceId);
@@ -148,6 +154,28 @@ export default function waterfallPoolTest() {
       expect(pool.containerFor('youtube')?.capacity).assertEqual(200);
     });
 
+    it('expands every source container and raises the discovery watermark', 0, () => {
+      const youtube = new AggregateWaterfallSearchAdapter(
+        'youtube.search_test', 'youtube', 'cursor',
+        (_query, _continuation, _limit) => Promise.resolve(poolTestBatch('youtube', []))
+      );
+      const bilibili = new AggregateWaterfallSearchAdapter(
+        'bilibili.search_test', 'bilibili', 'page',
+        (_query, _continuation, _limit) => Promise.resolve(poolTestBatch('bilibili', []))
+      );
+      const pool = new WaterfallPool(
+        { search: [youtube, bilibili], discovery: [], scheduledDiscovery: [] },
+        { sourceCapacity: 20, discoveryWatermark: 20 }
+      );
+
+      expect(pool.expandSourceCapacity(200, 50)).assertTrue();
+      expect(pool.sourceCapacity).assertEqual(200);
+      expect(pool.discoveryWatermark).assertEqual(50);
+      expect(pool.containerFor('youtube')?.capacity).assertEqual(200);
+      expect(pool.containerFor('bilibili')?.capacity).assertEqual(200);
+      expect(pool.expandSourceCapacity(20, 20)).assertFalse();
+    });
+
     it('supplements every search source and routes results into source containers', 0, async () => {
       const youtube = new AggregateWaterfallSearchAdapter(
         'youtube.search_test', 'youtube', 'cursor',
@@ -167,6 +195,35 @@ export default function waterfallPoolTest() {
       expect(pool.containerFor('youtube')?.size).assertEqual(1);
       expect(pool.containerFor('bilibili')?.size).assertEqual(1);
       expect(requiredFirstPoolEntry(pool, 'youtube').keywords.indexOf('人工智能') >= 0).assertTrue();
+    });
+
+    it('rejects bilibili search items below 2000 views when entering the pool', 0, () => {
+      const bilibili = new AggregateWaterfallSearchAdapter(
+        'bilibili.search', 'bilibili', 'page',
+        (_query, _continuation, _limit) => Promise.resolve(poolTestBatch('bilibili', []))
+      );
+      const pool = new WaterfallPool({
+        search: [bilibili], discovery: [], scheduledDiscovery: []
+      });
+
+      pool.accept({
+        adapterId: 'bilibili.search',
+        sourceId: 'bilibili',
+        items: [
+          poolTestCandidateWithViews('low', 1999),
+          poolTestCandidateWithViews('enough', 2000),
+          poolTestCandidate('missing', 'bilibili')
+        ],
+        continuation: null,
+        exhausted: true,
+        status: 'success',
+        message: 'ok',
+        fetchedAt: 100
+      });
+
+      expect(pool.containerFor('bilibili')?.size).assertEqual(2);
+      expect(pool.containerFor('bilibili')?.entries().map((entry: WaterfallSourcePoolEntry): string =>
+        entry.candidate.id).join(',')).assertEqual('enough,missing');
     });
 
     it('keeps disabled adapter data while skipping new requests and pool output', 0, async () => {

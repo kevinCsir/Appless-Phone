@@ -95,6 +95,10 @@ export class WaterfallPoolWorkerClient {
     this.post({ type: 'supply' });
   }
 
+  activate(): void {
+    this.post({ type: 'activate' });
+  }
+
   setEnabledAdapters(enabledAdapterIds: string[]): void {
     this.post({ type: 'set_enabled_adapters', enabledAdapterIds: enabledAdapterIds.slice() });
   }
