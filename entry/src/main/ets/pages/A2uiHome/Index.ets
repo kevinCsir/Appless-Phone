@@ -42,7 +42,6 @@ import {
   failWaterfallExpansion,
   finalizeInterestWaterfallRecallRanking,
   localProviderConfigSnapshotJsonForWorker,
-  mergeWaterfallPoolCandidates,
   mergeAggregateSearchContinuationBatch,
   mergeWaterfallBatchDeferredRanking,
   mergeWaterfallFeedSnapshot,
@@ -392,6 +391,7 @@ import { createHtmlHomeDocument } from './html/HtmlHomeSnapshot';
 import { buildMultiTaskHomePayload, renderHtmlHomeDocument } from './html/HtmlHomeRenderer';
 import {
   buildWaterfallHomePayload,
+  buildWaterfallHomeUpdate,
   renderAggregateSearchHomeDocument,
   waterfallApplePodcastCandidateFromAction,
   waterfallAdvanceCurrentFromAction,
@@ -402,7 +402,8 @@ import {
   waterfallEnabledSourcesFromAction,
   waterfallRefreshFromAction,
   waterfallSearchExitFromAction,
-  waterfallSearchQueryFromAction
+  waterfallSearchQueryFromAction,
+  waterfallSnapshotRequestFromAction
 } from './html/HtmlAggregateSearchHomeRenderer';
 import { createFirecrawlPendingDocument, isFirecrawlToolId } from './html/HtmlFirecrawlHomeRenderer';
 import { FoodAddressBookStore, FoodSavedAddressViewModel } from './FoodAddressBookStore';
@@ -414,7 +415,8 @@ import {
   HtmlHomeBlock,
   HtmlHomeDocument,
   WaterfallBehaviorActionArgs,
-  WaterfallCardActionArgs
+  WaterfallCardActionArgs,
+  WaterfallHomePayload
 } from './html/HtmlHomeTypes';
 import {
   ensureReminderNotificationEnabled,
@@ -1218,11 +1220,15 @@ struct Index {
   private waterfallShellSurfaceId: string = '';
   private waterfallFeedState: WaterfallFeedState | null = null;
   private waterfallFeedSurfaceId: string = '';
+  private waterfallPublishedPayload: WaterfallHomePayload | null = null;
+  private waterfallTransportRevision: number = 0;
   private dailyBriefSnapshot: DailyBriefSnapshot | null = null;
   private dailyBriefGeneration: number = 0;
   private dailyBriefCatchUpPending: boolean = false;
   private waterfallContinuationBatchIndex: number = 100;
   private interestWaterfallFeedState: WaterfallFeedState | null = null;
+  private interestWaterfallPublishedPayload: WaterfallHomePayload | null = null;
+  private interestWaterfallTransportRevision: number = 0;
   private interestWaterfallSearchSnapshot: WaterfallFeedState | null = null;
   private interestWaterfallDisplayCommitted: boolean = false;
   private interestRecallStarted: boolean = false;
@@ -1233,6 +1239,7 @@ struct Index {
   private waterfallPoolWorkerClient: WaterfallPoolWorkerClient | null = null;
   private waterfallPoolStarted: boolean = false;
   private interestPoolAvailabilityWait: WaterfallPoolWorkerTake | null = null;
+  private interestPoolRequestedSources: string[] = [];
   private interestRefreshPreloadTail: WaterfallRankedCandidate[] = [];
   private interestRefreshPreloadReserve: WaterfallRankedCandidate[] = [];
   private interestRefreshPreloadSources: WaterfallSourceState[] = [];
@@ -1837,10 +1844,23 @@ struct Index {
     this.waterfallShellSurfaceId = surfaceId;
   }
 
-  private publishWaterfallPayload(document: HtmlHomeDocument): void {
+  private publishWaterfallPayload(
+    document: HtmlHomeDocument,
+    forceSnapshot: boolean = false,
+    forceCandidateIds: string[] = []
+  ): void {
     const payload = buildWaterfallHomePayload(
       document, this.isBusy, this.waterfallFeedState, this.waterfallCardRecords);
-    this.waterfallPayloadJson = payload === null ? '' : JSON.stringify(payload);
+    if (payload === null) {
+      this.waterfallPayloadJson = '';
+      this.waterfallPublishedPayload = null;
+      return;
+    }
+    this.waterfallTransportRevision += 1;
+    this.waterfallPayloadJson = JSON.stringify(buildWaterfallHomeUpdate(
+      this.waterfallPublishedPayload, payload, this.waterfallTransportRevision,
+      forceSnapshot, forceCandidateIds));
+    this.waterfallPublishedPayload = payload;
     this.waterfallPayloadTick = this.waterfallPayloadTick + 1;
   }
 
@@ -1867,10 +1887,22 @@ struct Index {
     };
   }
 
-  private publishInterestWaterfallPayload(): void {
+  private publishInterestWaterfallPayload(
+    forceSnapshot: boolean = false,
+    forceCandidateIds: string[] = []
+  ): void {
     const payload = buildWaterfallHomePayload(
       this.interestWaterfallDocument(), false, this.interestWaterfallFeedState, this.waterfallCardRecords);
-    this.interestWaterfallPayloadJson = payload === null ? '' : JSON.stringify(payload);
+    if (payload === null) {
+      this.interestWaterfallPayloadJson = '';
+      this.interestWaterfallPublishedPayload = null;
+      return;
+    }
+    this.interestWaterfallTransportRevision += 1;
+    this.interestWaterfallPayloadJson = JSON.stringify(buildWaterfallHomeUpdate(
+      this.interestWaterfallPublishedPayload, payload, this.interestWaterfallTransportRevision,
+      forceSnapshot, forceCandidateIds));
+    this.interestWaterfallPublishedPayload = payload;
     this.interestWaterfallPayloadTick = this.interestWaterfallPayloadTick + 1;
   }
 
@@ -2037,8 +2069,41 @@ struct Index {
 
   private cancelInterestPoolRefill(): void {
     const wait = this.interestPoolAvailabilityWait;
+    const requestedSources = this.interestPoolRequestedSources.slice();
     this.interestPoolAvailabilityWait = null;
+    this.interestPoolRequestedSources = [];
+    const state = this.interestWaterfallFeedState;
+    if (state !== null && requestedSources.length > 0) {
+      state.sources.forEach((source: WaterfallSourceState): void => {
+        if (requestedSources.indexOf(source.source) < 0) return;
+        source.phase = 'success';
+        source.inFlight = false;
+        source.reservedCount = 0;
+        source.message = '';
+      });
+    }
     if (wait !== null) wait.cancel();
+  }
+
+  private interestPoolSourceState(
+    state: WaterfallFeedState,
+    sourceId: string,
+    phase: WaterfallSourcePhase,
+    message: string
+  ): WaterfallSourceState {
+    const existing = state.sources.find((source: WaterfallSourceState): boolean => source.source === sourceId);
+    return {
+      source: sourceId,
+      phase,
+      continuation: null,
+      inFlight: false,
+      reservedCount: 0,
+      message,
+      query: existing?.query,
+      recallRoute: existing?.recallRoute,
+      loadMode: existing?.loadMode,
+      consecutiveEmptyBatches: existing?.consecutiveEmptyBatches ?? 0
+    };
   }
 
   private runInterestPoolRecallRequests(requests: WaterfallInterestRecallRequest[]): void {
@@ -2054,11 +2119,13 @@ struct Index {
         if (requestedSources.indexOf(source) < 0) requestedSources.push(source);
       });
     });
+    if (requestedSources.length === 0) return;
     const pool = this.ensureWaterfallPoolRuntime();
     const refillStartedAtMs = Date.now();
     const availabilityWait = pool.takeOrWait(
-      profile, state.enabledSources, Math.max(1, WATERFALL_TARGET_INVENTORY - active));
+      profile, requestedSources, Math.max(1, WATERFALL_TARGET_INVENTORY - active));
     this.interestPoolAvailabilityWait = availabilityWait;
+    this.interestPoolRequestedSources = requestedSources.slice();
     this.logWaterfallInventory('pool_refill_started', state,
       'requests=' + requests.length.toString() + ' sources=' + requestedSources.length.toString());
     this.requestWaterfallPoolSupply();
@@ -2066,31 +2133,31 @@ struct Index {
       const waitResolvedAtMs = Date.now();
       if (this.interestPoolAvailabilityWait !== availabilityWait) return;
       this.interestPoolAvailabilityWait = null;
+      this.interestPoolRequestedSources = [];
       if (entries.length === 0 || generation !== this.interestWaterfallGeneration) return;
       const latest = this.interestWaterfallFeedState;
       if (latest === null || latest.mode === 'search') return;
-      latest.sources.forEach((source: WaterfallSourceState): void => {
-        if (requestedSources.indexOf(source.source) < 0) return;
-        source.phase = 'success';
-        source.inFlight = false;
-        source.reservedCount = 0;
-        source.message = '';
-      });
       const mergeStartedAtMs = Date.now();
-      const update = mergeWaterfallPoolCandidates(
-        latest,
-        entries.map((entry: WaterfallSourcePoolEntry): WaterfallCandidate => entry.candidate),
-        Date.now(),
-        false
-      );
+      let merged = latest;
+      requestedSources.forEach((sourceId: string): void => {
+        const candidates = entries.filter((entry: WaterfallSourcePoolEntry): boolean =>
+          entry.candidate.source === sourceId).map(
+          (entry: WaterfallSourcePoolEntry): WaterfallCandidate => entry.candidate);
+        merged = mergeWaterfallBatchDeferredRanking(
+          merged,
+          candidates,
+          this.interestPoolSourceState(merged, sourceId, 'success', ''),
+          false
+        ).state;
+      });
       const mergeFinishedAtMs = Date.now();
-      this.interestWaterfallFeedState = update.state;
+      this.interestWaterfallFeedState = merged;
       this.interestWaterfallRankingRevision += 1;
       const rankingRevision = this.interestWaterfallRankingRevision;
-      this.logWaterfallInventory('pool_batch_received', update.state,
+      this.logWaterfallInventory('pool_batch_received', merged,
         'count=' + entries.length.toString());
       this.rankInterestWaterfallInWorker(
-        'active', update.state, this.interestWaterfallDisplayCommitted,
+        'active', merged, this.interestWaterfallDisplayCommitted,
         generation, rankingRevision, 'pool_batch', (ranked: WaterfallFeedState): void => {
           const rankingFinishedAtMs = Date.now();
           this.applyInterestWaterfallUpdate(planWaterfallContinuation(ranked));
@@ -2106,7 +2173,27 @@ struct Index {
     }).catch((error: Error): void => {
       if (this.interestPoolAvailabilityWait !== availabilityWait) return;
       this.interestPoolAvailabilityWait = null;
+      this.interestPoolRequestedSources = [];
       aiLogError('[AIPhone][WaterfallPoolWorkerFailed] error=' + error.message.substring(0, 240));
+      const latest = this.interestWaterfallFeedState;
+      if (latest === null || latest.mode === 'search' || generation !== this.interestWaterfallGeneration) return;
+      let failed = latest;
+      requestedSources.forEach((sourceId: string): void => {
+        failed = mergeWaterfallBatchDeferredRanking(
+          failed,
+          [],
+          this.interestPoolSourceState(failed, sourceId, 'error', '内容补充失败'),
+          false
+        ).state;
+      });
+      this.interestWaterfallFeedState = failed;
+      this.interestWaterfallRankingRevision += 1;
+      const rankingRevision = this.interestWaterfallRankingRevision;
+      this.rankInterestWaterfallInWorker(
+        'active', failed, this.interestWaterfallDisplayCommitted,
+        generation, rankingRevision, 'pool_failed', (ranked: WaterfallFeedState): void => {
+          this.applyInterestWaterfallUpdate(planWaterfallContinuation(ranked));
+        });
     });
   }
 
@@ -2753,6 +2840,7 @@ struct Index {
       this.waterfallPayloadJson = '';
       this.waterfallFeedState = null;
       this.waterfallFeedSurfaceId = '';
+      this.waterfallPublishedPayload = null;
       return;
     }
     const surfaceId = document.surfaceId ?? '';
@@ -2773,6 +2861,7 @@ struct Index {
 
   private handleWaterfallClientAction(action: A2uiAction): boolean {
     if (action.id !== 'waterfall.sources.select' && action.id !== 'waterfall.feed.advance' &&
+      action.id !== 'waterfall.feed.snapshot.request' &&
       action.id !== 'waterfall.behavior.record' && action.id !== 'waterfall.card.action' &&
       action.id !== 'waterfall.applepodcasts.resolve' && action.id !== 'waterfall.comments.load') {
       return false;
@@ -2786,6 +2875,11 @@ struct Index {
     if (this.waterfallFeedState === null || this.waterfallFeedSurfaceId !== surfaceId) {
       this.waterfallFeedState = document.waterfall;
       this.waterfallFeedSurfaceId = surfaceId;
+    }
+    if (action.id === 'waterfall.feed.snapshot.request') {
+      if (waterfallSnapshotRequestFromAction(action, surfaceId)) this.publishWaterfallPayload(document, true);
+      else this.logHtmlHomeActionError(action, 'invalid_waterfall_snapshot_request');
+      return true;
     }
     if (action.id === 'waterfall.card.action') {
       const cardAction = waterfallCardActionFromAction(action, surfaceId);
@@ -2863,6 +2957,14 @@ struct Index {
   private handleInterestWaterfallClientAction(action: A2uiAction): void {
     const state = this.interestWaterfallFeedState;
     const surfaceId = 'waterfall-interest-home';
+    if (action.id === 'waterfall.feed.snapshot.request') {
+      if (state !== null && waterfallSnapshotRequestFromAction(action, surfaceId)) {
+        this.publishInterestWaterfallPayload(true);
+      } else {
+        this.logHtmlHomeActionError(action, 'invalid_waterfall_snapshot_request');
+      }
+      return;
+    }
     if (action.id === 'waterfall.home.back') {
       this.bimRootController.changeIndex(0, !this.bimReduceMotion);
       return;
@@ -3070,14 +3172,18 @@ struct Index {
       (candidate.feedUrl ?? '').trim() === feedUrl ? candidate : null;
   }
 
-  private publishWaterfallCandidate(target: 'search' | 'interest', surfaceId: string): void {
+  private publishWaterfallCandidate(
+    target: 'search' | 'interest',
+    surfaceId: string,
+    candidateId: string
+  ): void {
     if (target === 'interest') {
-      if (surfaceId === 'waterfall-interest-home') this.publishInterestWaterfallPayload();
+      if (surfaceId === 'waterfall-interest-home') this.publishInterestWaterfallPayload(false, [candidateId]);
       return;
     }
     const document = this.currentHtmlHomeDocument();
     if (this.waterfallFeedSurfaceId === surfaceId && document.kind === 'aggregate-search' &&
-      (document.surfaceId ?? '') === surfaceId) this.publishWaterfallPayload(document);
+      (document.surfaceId ?? '') === surfaceId) this.publishWaterfallPayload(document, false, [candidateId]);
   }
 
   private resolveApplePodcastCandidate(
@@ -3094,7 +3200,7 @@ struct Index {
     candidate.audioLoadState = 'loading';
     candidate.audioError = '';
     candidate.audioRetryable = true;
-    this.publishWaterfallCandidate(target, surfaceId);
+    this.publishWaterfallCandidate(target, surfaceId, candidateId);
     aiLogInfo('[AIPhone][ApplePodcastResolve] phase=loading surface=' + surfaceId + ' candidate=' + candidateId);
     resolveApplePodcastEpisode(feedUrl).then((episode: ApplePodcastEpisodeAudio): void => {
       const current = this.activeApplePodcastCandidate(
@@ -3111,7 +3217,7 @@ struct Index {
       current.audioLoadState = 'ready';
       current.audioError = '';
       current.audioRetryable = false;
-      this.publishWaterfallCandidate(target, surfaceId);
+      this.publishWaterfallCandidate(target, surfaceId, candidateId);
       aiLogInfo('[AIPhone][ApplePodcastResolve] phase=ready surface=' + surfaceId + ' candidate=' + candidateId);
     }).catch((error: Error): void => {
       const current = this.activeApplePodcastCandidate(
@@ -3121,7 +3227,7 @@ struct Index {
       current.audioLoadState = 'error';
       current.audioError = failure.message;
       current.audioRetryable = failure.retryable;
-      this.publishWaterfallCandidate(target, surfaceId);
+      this.publishWaterfallCandidate(target, surfaceId, candidateId);
       aiLogError('[AIPhone][ApplePodcastResolve] phase=error surface=' + surfaceId + ' candidate=' + candidateId +
         ' code=' + failure.code);
     });
@@ -3141,7 +3247,7 @@ struct Index {
     const interestGeneration = this.interestWaterfallGeneration;
     candidate.commentLoadState = 'loading';
     this.persistSavedWaterfallCandidate(candidate);
-    this.publishWaterfallCandidate(target, surfaceId);
+    this.publishWaterfallCandidate(target, surfaceId, candidateId);
     callConfiguredWaterfallComments(source, providerItemId).then((result: WaterfallCommentsResult): void => {
       const current = this.activeWaterfallCandidate(
         target, surfaceId, candidateId, runtimeOwner, runtimeGeneration, interestGeneration);
@@ -3151,7 +3257,7 @@ struct Index {
       current.commentLoadState = current.comments.length > 0 ? 'ready' :
         (result.state === 'error' ? 'error' : 'empty');
       this.persistSavedWaterfallCandidate(current);
-      this.publishWaterfallCandidate(target, surfaceId);
+      this.publishWaterfallCandidate(target, surfaceId, candidateId);
     }).catch((_error: Error): void => {
       const current = this.activeWaterfallCandidate(
         target, surfaceId, candidateId, runtimeOwner, runtimeGeneration, interestGeneration);
@@ -3160,7 +3266,7 @@ struct Index {
       current.comments = [];
       current.commentLoadState = 'error';
       this.persistSavedWaterfallCandidate(current);
-      this.publishWaterfallCandidate(target, surfaceId);
+      this.publishWaterfallCandidate(target, surfaceId, candidateId);
     });
   }
 
@@ -3193,8 +3299,6 @@ struct Index {
       event.topics.forEach((topic: string): void => {
         updateWaterfallPreferenceWeight(this.waterfallSessionTopicWeights, topic, delta, event.timestamp);
       });
-      this.waterfallSessionTopicWeights = boundedWaterfallSessionTopicWeights(
-        this.waterfallSessionTopicWeights);
       updateWaterfallPreferenceWeight(this.waterfallSessionSourceWeights, event.source, delta, event.timestamp);
       updateWaterfallPreferenceWeight(this.waterfallSessionFormatWeights, event.format, delta, event.timestamp);
     }
@@ -3260,6 +3364,7 @@ struct Index {
     this.waterfallPayloadJson = '';
     this.waterfallFeedState = null;
     this.waterfallFeedSurfaceId = '';
+    this.waterfallPublishedPayload = null;
     this.htmlHomeStableHtml = this.currentHtmlHomeHtml();
   }
 
@@ -5599,6 +5704,7 @@ struct Index {
     this.interestSourceRequestSeq.clear();
     this.clearInterestRefreshPreload();
     this.interestWaterfallFeedState = null;
+    this.interestWaterfallPublishedPayload = null;
     this.interestWaterfallSearchSnapshot = null;
     this.interestWaterfallHtml = '';
     this.interestWaterfallPayloadJson = '';

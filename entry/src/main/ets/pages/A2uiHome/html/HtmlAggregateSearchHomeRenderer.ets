@@ -18,6 +18,9 @@ import {
   WaterfallCardActionArgs,
   WaterfallCardViewState,
   WaterfallHomePayload,
+  WaterfallHomePatchUpdate,
+  WaterfallHomeSnapshotUpdate,
+  WaterfallHomeUpdate,
   WaterfallSavedCardView
 } from './HtmlHomeTypes';
 import {
@@ -1859,6 +1862,7 @@ const WATERFALL_JS: string = `
   var waterfallSurfaceActive = !directDiscovery;
   var metricTimer = null;
   var payloadSettleTimer = null;
+  var waterfallSnapshotRequestPending = false;
   var metricsDirty = false;
   var cardMetrics = [];
   var presentedIndex = -1;
@@ -1915,7 +1919,103 @@ const WATERFALL_JS: string = `
       refreshIndicator.classList.remove('is-visible', 'is-ready');
     }
   }
-  window.__aiphoneApplyWaterfallUpdate = function (payload) {
+  function requestWaterfallSnapshot(surfaceId) {
+    if (waterfallSnapshotRequestPending || !window.AIPhoneHome ||
+      typeof window.AIPhoneHome.postAction !== 'function') return;
+    waterfallSnapshotRequestPending = true;
+    window.AIPhoneHome.postAction(JSON.stringify({
+      id: 'waterfall.feed.snapshot.request', label: '同步信息流', prompt: '', variant: 'secondary', kind: 'client',
+      args: { surfaceId: text(surfaceId) }
+    }));
+  }
+  function commitWaterfallPatchState(nextState) {
+    if (typeof nextState.aggregateHtml === 'string' && nextState.aggregateHtml !== aggregateHtml) {
+      aggregateHtml = nextState.aggregateHtml;
+      if (!overlay || !overlay.classList.contains('active')) applyDeferredAggregateHtml();
+    }
+    rememberUnavailableSourceStates(state && state.sources);
+    rememberUnavailableSourceStates(nextState.sources);
+    state = nextState;
+    var acknowledgedItems = candidates(nextState);
+    var acknowledgedCurrentIndex = acknowledgedItems.findIndex(function (item) {
+      return text(item.id) === text(nextState.currentId);
+    });
+    if (acknowledgedCurrentIndex < 0) return;
+    delete reportedAdvanceTargets['$terminal:' + text(nextState.currentId)];
+    Object.keys(reportedAdvanceTargets).forEach(function (key) {
+      var reportedId = key.substring(1);
+      var reportedIndex = acknowledgedItems.findIndex(function (item) { return text(item.id) === reportedId; });
+      if (reportedIndex >= 0 && reportedIndex <= acknowledgedCurrentIndex) delete reportedAdvanceTargets[key];
+    });
+  }
+  function applyWaterfallPatch(patch) {
+    var stateRevision = state ? Number(state.__waterfallTransportRevision || 0) : -1;
+    if (!state || text(state.surfaceId) !== text(patch.surfaceId) ||
+      stateRevision !== Number(patch.baseRevision)) {
+      requestWaterfallSnapshot(patch.surfaceId || (state && state.surfaceId));
+      return false;
+    }
+    var candidateByKey = {};
+    (state.candidates || []).forEach(function (candidate) {
+      candidateByKey['$' + text(candidate.id)] = candidate;
+    });
+    var changedIds = [];
+    (patch.upsertCandidates || []).forEach(function (candidate) {
+      var key = '$' + text(candidate.id);
+      candidateByKey[key] = candidate;
+      changedIds.push(text(candidate.id));
+    });
+    var orderedCandidateIds = Array.isArray(patch.candidateIds) ? patch.candidateIds.slice() :
+      (state.candidates || []).map(function (candidate) { return text(candidate.id); });
+    (patch.upsertCandidates || []).forEach(function (candidate) {
+      var candidateId = text(candidate.id);
+      if (orderedCandidateIds.indexOf(candidateId) < 0) orderedCandidateIds.push(candidateId);
+    });
+    var nextCandidates = [];
+    var missingCandidate = false;
+    orderedCandidateIds.forEach(function (candidateId) {
+      var candidate = candidateByKey['$' + text(candidateId)];
+      if (!candidate) missingCandidate = true;
+      else nextCandidates.push(candidate);
+    });
+    if (missingCandidate) {
+      requestWaterfallSnapshot(patch.surfaceId);
+      return false;
+    }
+    var previousCurrentId = text(state.currentId);
+    var nextState = Object.assign({}, state, {
+      feedRevision: Number(patch.feedRevision || 0),
+      currentId: text(patch.currentId),
+      stableIds: Array.isArray(patch.stableIds) ? patch.stableIds.slice() : [],
+      candidates: nextCandidates,
+      mediaEmbeds: patch.mediaEmbeds || {},
+      sources: Array.isArray(patch.sources) ? patch.sources : [],
+      cardStates: Array.isArray(patch.cardStates) ? patch.cardStates : [],
+      savedCards: Array.isArray(patch.savedCards) ? patch.savedCards : [],
+      replenishing: patch.replenishing === true,
+      exhausted: patch.exhausted === true,
+      __waterfallTransportRevision: Number(patch.revision)
+    });
+    if (typeof patch.aggregateHtml === 'string') nextState.aggregateHtml = patch.aggregateHtml;
+    applyCardActionAcknowledgement(nextState);
+    commitWaterfallPatchState(nextState);
+    renderWaterfallPatch(changedIds);
+    if (previousCurrentId !== text(state && state.currentId)) {
+      pauseCurrentBehavior(false);
+      behaviorCandidateId = '';
+      behaviorDurationMs = 0;
+    }
+    resumeCurrentBehavior();
+    waterfallSnapshotRequestPending = false;
+    return true;
+  }
+  window.__aiphoneApplyWaterfallUpdate = function (update) {
+    if (update && update.kind === 'patch') return applyWaterfallPatch(update);
+    var payload = update && update.kind === 'snapshot' ? update.payload : update;
+    if (update && update.kind === 'snapshot' && payload) {
+      payload.__waterfallTransportRevision = Number(update.revision);
+      waterfallSnapshotRequestPending = false;
+    }
     if (refreshInFlight && payload && payload.mode === 'search') clearRefreshInFlight();
     if (refreshInFlight && payload && Number(payload.feedRevision || 0) < expectedRefreshRevision) return;
     applyCardActionAcknowledgement(payload);
@@ -1965,6 +2065,7 @@ const WATERFALL_JS: string = `
     var restoringSearch = searchRestorePending && payload && text(payload.query) !== searchQuery;
     flushPendingPayload();
     if (restoringSearch) restoreSearchScrollAfterPaint();
+    return true;
   };
   function applyCardActionAcknowledgement(payload) {
     if (!pendingCardAction || !payload || !Array.isArray(payload.cardStates)) return false;
@@ -2792,9 +2893,10 @@ const WATERFALL_JS: string = `
       });
       if (frozenEnd >= 0) values = values.slice(0, frozenEnd + 1);
     }
-    return values.filter(function (item) {
+    values = values.filter(function (item) {
       return enabledSources.indexOf(item.source) >= 0;
     });
+    return values;
   }
   function candidateById(id) {
     var live = candidates(state).find(function (item) { return text(item.id) === text(id); });
@@ -3804,6 +3906,94 @@ const WATERFALL_JS: string = `
     syncVideoVisibilityObserver(true);
     if (directDiscovery) setFullscreen(false);
   }
+  function renderWaterfallPatch(changedIds) {
+    if (!track || !state) return false;
+    var items = renderedOrderCandidates(state);
+    showNewAudioError(items);
+    var changedById = {};
+    (changedIds || []).forEach(function (id) { changedById['$' + text(id)] = true; });
+    var nodes = typeof track.querySelectorAll === 'function' ?
+      track.querySelectorAll('[data-waterfall-id]') : [];
+    var domChanged = false;
+    var liveById = {};
+    for (var liveIndex = 0; liveIndex < nodes.length; liveIndex += 1) {
+      var liveId = nodes[liveIndex] && typeof nodes[liveIndex].getAttribute === 'function' ?
+        text(nodes[liveIndex].getAttribute('data-waterfall-id')) : '';
+      if (liveId) liveById['$' + liveId] = nodes[liveIndex];
+    }
+    for (var updateIndex = 0; updateIndex < items.length; updateIndex += 1) {
+      var updateId = text(items[updateIndex].id);
+      var updateNode = liveById['$' + updateId];
+      if (!updateNode || !changedById['$' + updateId]) continue;
+      if (updateId === activeInlineCandidateId) destroyInlinePlayer(false);
+      if ('outerHTML' in updateNode) {
+        updateNode.outerHTML = renderCandidate(items[updateIndex]);
+        domChanged = true;
+      }
+    }
+    nodes = typeof track.querySelectorAll === 'function' ?
+      track.querySelectorAll('[data-waterfall-id]') : [];
+    liveById = {};
+    for (liveIndex = 0; liveIndex < nodes.length; liveIndex += 1) {
+      liveId = nodes[liveIndex] && typeof nodes[liveIndex].getAttribute === 'function' ?
+        text(nodes[liveIndex].getAttribute('data-waterfall-id')) : '';
+      if (liveId) liveById['$' + liveId] = nodes[liveIndex];
+    }
+    for (var insertIndex = 0; insertIndex < items.length; insertIndex += 1) {
+      var insertId = text(items[insertIndex].id);
+      if (liveById['$' + insertId]) continue;
+      var beforeNode = null;
+      for (var aheadIndex = insertIndex + 1; aheadIndex < items.length; aheadIndex += 1) {
+        beforeNode = liveById['$' + text(items[aheadIndex].id)] || null;
+        if (beforeNode) break;
+      }
+      var insertedHtml = renderCandidate(items[insertIndex]);
+      if (beforeNode && typeof beforeNode.insertAdjacentHTML === 'function') {
+        beforeNode.insertAdjacentHTML('beforebegin', insertedHtml);
+      } else {
+        var tail = track.querySelector('.waterfall-tail-status');
+        if (tail) tail.insertAdjacentHTML('beforebegin', insertedHtml);
+        else track.insertAdjacentHTML('beforeend', insertedHtml);
+      }
+      domChanged = true;
+      nodes = track.querySelectorAll('[data-waterfall-id]');
+      liveById = {};
+      for (liveIndex = 0; liveIndex < nodes.length; liveIndex += 1) {
+        liveId = nodes[liveIndex] && typeof nodes[liveIndex].getAttribute === 'function' ?
+          text(nodes[liveIndex].getAttribute('data-waterfall-id')) : '';
+        if (liveId) liveById['$' + liveId] = nodes[liveIndex];
+      }
+    }
+    var previousHtmlById = {};
+    renderedCards.forEach(function (card) { previousHtmlById['$' + card.id] = card.html; });
+    renderedCards = items.map(function (item) {
+      var id = text(item.id);
+      return { id: id, html: previousHtmlById['$' + id] || '' };
+    });
+    var currentId = text(state.currentId);
+    if (alignToCurrent || alignToCandidateId) {
+      var alignId = alignToCandidateId || currentId;
+      var alignIndex = items.findIndex(function (item) { return text(item.id) === alignId; });
+      track.scrollTop = scrollTopForCard(alignIndex >= 0 ? alignIndex : Math.max(0, items.length - 1));
+      alignToCurrent = false;
+      alignToCandidateId = '';
+    }
+    renderedCurrentId = currentId;
+    var sourceControl = document.querySelector('.waterfall-source-control-logos');
+    if (sourceControl) {
+      var sourceLogoHtml = items.length > 0 ? sourceLogoMarkup(items[0].source) : '';
+      if (sourceControl.innerHTML !== sourceLogoHtml) sourceControl.innerHTML = sourceLogoHtml;
+    }
+    if (domChanged) {
+      cardMetrics = [];
+      syncCardsAfterPaint();
+    } else {
+      scheduleAdvance(updateCardPresentation());
+    }
+    syncActiveInlinePlayer();
+    syncVideoVisibilityObserver();
+    return domChanged;
+  }
   function render() {
     if (!track || !state) return false;
     var items = renderedOrderCandidates(state);
@@ -4567,6 +4757,11 @@ export function waterfallRefreshFromAction(action: A2uiAction, surfaceId: string
   return args !== null && Object.keys(args).sort().join(',') === 'surfaceId';
 }
 
+export function waterfallSnapshotRequestFromAction(action: A2uiAction, surfaceId: string): boolean {
+  const args = waterfallArgsFromAction(action, 'waterfall.feed.snapshot.request', surfaceId);
+  return args !== null && Object.keys(args).sort().join(',') === 'surfaceId';
+}
+
 export function waterfallAdvanceCurrentFromAction(action: A2uiAction, surfaceId: string): string | null {
   const args = waterfallArgsFromAction(action, 'waterfall.feed.advance', surfaceId);
   if (args === null || typeof args['currentId'] !== 'string') {
@@ -4760,6 +4955,80 @@ export function buildWaterfallHomePayload(
     replenishing: replenishing,
     exhausted: exhausted
   };
+}
+
+function sameWaterfallPayloadSession(left: WaterfallHomePayload, right: WaterfallHomePayload): boolean {
+  return left.surfaceId === right.surfaceId && left.mode === right.mode && left.query === right.query &&
+    left.enabledSources.join('|') === right.enabledSources.join('|');
+}
+
+function waterfallPayloadCandidate(
+  candidates: WaterfallRankedCandidate[],
+  candidateId: string
+): WaterfallRankedCandidate | null {
+  for (let index = 0; index < candidates.length; index += 1) {
+    if (candidates[index].id === candidateId) return candidates[index];
+  }
+  return null;
+}
+
+export function buildWaterfallHomeUpdate(
+  previous: WaterfallHomePayload | null,
+  current: WaterfallHomePayload,
+  revision: number,
+  forceSnapshot: boolean = false,
+  forceCandidateIds: string[] = []
+): WaterfallHomeUpdate {
+  if (forceSnapshot || previous === null || !sameWaterfallPayloadSession(previous, current)) {
+    const snapshot: WaterfallHomeSnapshotUpdate = {
+      kind: 'snapshot',
+      revision,
+      payload: current
+    };
+    return snapshot;
+  }
+  const candidateIds = current.candidates.map(
+    (candidate: WaterfallRankedCandidate): string => candidate.id);
+  const previousCandidateIds = previous.candidates.map(
+    (candidate: WaterfallRankedCandidate): string => candidate.id);
+  const upsertCandidates = current.candidates.filter((candidate: WaterfallRankedCandidate): boolean =>
+    waterfallPayloadCandidate(previous.candidates, candidate.id) === null ||
+      forceCandidateIds.indexOf(candidate.id) >= 0);
+  const removedCandidateIds = previous.candidates.filter((candidate: WaterfallRankedCandidate): boolean =>
+    candidateIds.indexOf(candidate.id) < 0).map(
+    (candidate: WaterfallRankedCandidate): string => candidate.id);
+  if (removedCandidateIds.length > 0) {
+    const replacementSnapshot: WaterfallHomeSnapshotUpdate = {
+      kind: 'snapshot',
+      revision,
+      payload: current
+    };
+    return replacementSnapshot;
+  }
+  const patch: WaterfallHomePatchUpdate = {
+    kind: 'patch',
+    revision,
+    baseRevision: revision - 1,
+    surfaceId: current.surfaceId,
+    feedRevision: current.feedRevision,
+    currentId: current.currentId,
+    stableIds: current.stableIds.slice(),
+    upsertCandidates,
+    removedCandidateIds,
+    mediaEmbeds: current.mediaEmbeds,
+    sources: current.sources,
+    cardStates: current.cardStates,
+    savedCards: current.savedCards,
+    replenishing: current.replenishing,
+    exhausted: current.exhausted
+  };
+  let candidateOrderNeedsReplacement = candidateIds.length < previousCandidateIds.length;
+  for (let index = 0; !candidateOrderNeedsReplacement && index < previousCandidateIds.length; index += 1) {
+    if (candidateIds[index] !== previousCandidateIds[index]) candidateOrderNeedsReplacement = true;
+  }
+  if (candidateOrderNeedsReplacement) patch.candidateIds = candidateIds;
+  if (current.aggregateHtml !== previous.aggregateHtml) patch.aggregateHtml = current.aggregateHtml;
+  return patch;
 }
 
 function waterfallMediaEmbeds(document: HtmlHomeDocument): Record<string, string> {
