@@ -191,6 +191,13 @@ class WaterfallAdapterSearchQueue {
       resolve: resolveTask,
       reject: rejectTask
     });
+    if (this.adapterId === 'youtube.search') {
+      aiLogInfo('[AIPhone][WaterfallSearchQueue] adapter=' + this.adapterId +
+        ' event=enqueue pending=' + this.pending.length.toString() +
+        ' running=' + (this.taskRunning ? 'true' : 'false') +
+        ' queryChars=' + normalizedQuery.length.toString() +
+        ' continuation=' + (continuation === null ? 'none' : 'present'));
+    }
     this.runNext();
     return promise;
   }
@@ -214,6 +221,13 @@ class WaterfallAdapterSearchQueue {
   }
 
   private async execute(task: WaterfallQueuedSearchTask): Promise<void> {
+    const startedAtMs = Date.now();
+    if (this.adapterId === 'youtube.search') {
+      aiLogInfo('[AIPhone][WaterfallSearchQueue] adapter=' + this.adapterId +
+        ' event=start pending=' + this.pending.length.toString() +
+        ' queryChars=' + task.query.length.toString() +
+        ' continuation=' + (task.continuation === null ? 'none' : 'present'));
+    }
     try {
       const accepted = await this.runner(task.query, task.continuation);
       task.resolve(accepted);
@@ -227,6 +241,11 @@ class WaterfallAdapterSearchQueue {
     this.promisesByKey.delete(task.key);
     this.taskRunning = false;
     this.currentQuery = '';
+    if (this.adapterId === 'youtube.search') {
+      aiLogInfo('[AIPhone][WaterfallSearchQueue] adapter=' + this.adapterId +
+        ' event=end elapsedMs=' + (Date.now() - startedAtMs).toString() +
+        ' pending=' + this.pending.length.toString());
+    }
     this.runNext();
   }
 }

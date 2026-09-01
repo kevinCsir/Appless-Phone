@@ -15632,6 +15632,7 @@ export function waterfallAdapterIdsForPlatforms(platformIds: string[]): string[]
 const WATERFALL_SCHEDULED_LIMIT: number = 10;
 const WATERFALL_FAST_REFRESH_MS: number = 5 * 60 * 1000;
 const WATERFALL_STANDARD_REFRESH_MS: number = 15 * 60 * 1000;
+let youtubePopularDiagnosticSequence: number = 0;
 
 function configuredAggregateAdapterLoader(
   source: AggregateSearchSource,
@@ -15662,11 +15663,28 @@ function configuredYouTubePopularLoader(): WaterfallAggregateSourceLoader {
     continuation: WaterfallContinuation | null,
     limit: number
   ): Promise<AggregateSearchSourceBatch> => {
+    const requestId = ++youtubePopularDiagnosticSequence;
+    const startedAtMs = Date.now();
     const token = continuation !== null && continuation.kind === 'cursor' ? continuation.value : '';
-    const dynamic = youtubeVideoResultsFromComposioPopular(
-      await callComposioYouTubeMostPopularWithProviderData(limit, token)
-    );
-    return aggregateVideoSourceBatchFromDynamicResults('youtube', dynamic, continuation, limit);
+    aiLogInfo('[AIPhone][YouTubePopularStage] requestId=' + requestId.toString() +
+      ' stage=start continuation=' + (token.length > 0 ? 'present' : 'none'));
+    try {
+      const raw = await callComposioYouTubeMostPopularWithProviderData(limit, token);
+      aiLogInfo('[AIPhone][YouTubePopularStage] requestId=' + requestId.toString() +
+        ' stage=composio-end elapsedMs=' + (Date.now() - startedAtMs).toString() +
+        ' status=' + raw.status);
+      const dynamic = youtubeVideoResultsFromComposioPopular(raw);
+      const batch = aggregateVideoSourceBatchFromDynamicResults('youtube', dynamic, continuation, limit);
+      aiLogInfo('[AIPhone][YouTubePopularStage] requestId=' + requestId.toString() +
+        ' stage=end elapsedMs=' + (Date.now() - startedAtMs).toString() +
+        ' videos=' + batch.videos.length.toString() +
+        ' status=' + batch.status.status);
+      return batch;
+    } catch (_error) {
+      aiLogInfo('[AIPhone][YouTubePopularStage] requestId=' + requestId.toString() +
+        ' stage=exception elapsedMs=' + (Date.now() - startedAtMs).toString());
+      throw _error instanceof Error ? _error : new Error('YouTube popular request failed.');
+    }
   };
 }
 

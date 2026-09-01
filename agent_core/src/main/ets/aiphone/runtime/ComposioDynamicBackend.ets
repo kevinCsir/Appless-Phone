@@ -130,6 +130,7 @@ const GITHUB_REPOSITORIES_TOOL: string = 'GITHUB_LIST_REPOSITORIES_FOR_A_USER';
 const GITHUB_EVENTS_TOOL: string = 'GITHUB_LIST_EVENTS_FOR_USER';
 const YOUTUBE_MOST_POPULAR_TOOL: string = 'YOUTUBE_LIST_MOST_POPULAR_VIDEOS';
 const YOUTUBE_SEARCH_TOOL: string = 'YOUTUBE_SEARCH_YOU_TUBE';
+const YOUTUBE_VIDEO_DETAILS_BATCH_TOOL: string = 'YOUTUBE_GET_VIDEO_DETAILS_BATCH';
 const MAX_TRUSTED_GITHUB_SCHEMA_CHARS: number = 3000;
 
 function emptyGitHubRecord(): GitHubJsonRecord {
@@ -3403,6 +3404,24 @@ export async function callComposioYouTubeSearchWithProviderData(
   if (pageToken.trim().length > 0) args['pageToken'] = pageToken.trim();
   return callComposioYouTubeToolWithProviderData(
     YOUTUBE_SEARCH_TOOL, 'Composio YouTube search for ' + query, args
+  );
+}
+
+export async function callComposioYouTubeVideoDetailsBatchWithProviderData(
+  videoIds: string[]
+): Promise<DynamicGenericToolResult> {
+  const normalizedIds: string[] = [];
+  videoIds.forEach((videoId: string): void => {
+    const normalized = videoId.trim();
+    if (normalized.length > 0 && normalizedIds.indexOf(normalized) < 0 && normalizedIds.length < 50) {
+      normalizedIds.push(normalized);
+    }
+  });
+  const args = new Object() as Record<string, Object | string | number | boolean>;
+  args['id'] = normalizedIds;
+  args['parts'] = ['statistics'];
+  return callComposioYouTubeToolWithProviderData(
+    YOUTUBE_VIDEO_DETAILS_BATCH_TOOL, 'Composio YouTube video statistics batch', args
   );
 }
 
